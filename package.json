@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build:oqs-wasm": "bash scripts/build-oqs-wasm.sh",
+    "smoke:relay": "node scripts/relay-smoke.js",
     "test": "node --test"
   },
   "keywords": [

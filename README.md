@@ -47,6 +47,14 @@ const response = await relay.send(
 
 Supported web transports are `http`, `https`, `ws`, and `wss`. Raw TCP relays are intentionally not supported in browser JavaScript.
 
+For a quick live relay smoke test:
+
+```sh
+npm run smoke:relay -- --relay http://127.0.0.1:9339
+```
+
+This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips. It is a transport/mailbox/proof test; it does not yet create a full encrypted chat session visible inside the native app.
+
 ## Storage Choices
 
 Browser `localStorage`:
