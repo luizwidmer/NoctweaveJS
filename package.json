@@ -1,0 +1,24 @@
+{
+  "name": "@noctweave/js-client",
+  "version": "0.1.0",
+  "description": "JavaScript relay client and storage adapters for simple Noctweave web applications.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "noctweave",
+    "noctyra",
+    "relay",
+    "privacy",
+    "federation"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=20"
+  }
+}
