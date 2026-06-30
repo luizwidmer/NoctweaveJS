@@ -7,7 +7,15 @@
   "exports": {
     ".": "./src/index.js"
   },
+  "files": [
+    "README.md",
+    "scripts/",
+    "src/",
+    "wasm/dist/",
+    "wasm/noctweave_oqs_shim.c"
+  ],
   "scripts": {
+    "build:oqs-wasm": "bash scripts/build-oqs-wasm.sh",
     "test": "node --test"
   },
   "keywords": [

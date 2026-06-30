@@ -2,7 +2,7 @@
 
 NoctweaveJS is a small JavaScript client for simple web applications that need to talk to Noctweave relays and persist client-side state. It targets browsers, workers, and Node-backed web apps.
 
-This package currently covers relay transport and storage. It does not yet implement the full post-quantum message/session engine in JavaScript; use it for diagnostics, inbox polling, web dashboards, or applications that provide their own audited crypto/WASM adapter.
+This package covers relay transport, storage, browser-safe symmetric primitives, and an optional liboqs WASM adapter for Noctweave's post-quantum public-key operations. The WASM surface is intentionally narrow: ML-KEM-768 for KEM and ML-DSA-65 for signatures.
 
 ## Install
 
@@ -15,6 +15,13 @@ For local repository development:
 ```sh
 cd NoctweaveJS
 npm test
+```
+
+Build the optional liboqs WASM module after installing Emscripten:
+
+```sh
+source ~/emsdk/emsdk_env.sh
+npm run build:oqs-wasm
 ```
 
 ## Relay Client
@@ -96,9 +103,40 @@ await client.saveState({ selectedRelay: "https://relay.example" });
 await client.health();
 ```
 
+## Crypto Suite
+
+Use WebCrypto for symmetric operations and the bundled liboqs WASM adapter for post-quantum keys:
+
+```js
+import oqsFactory from "./wasm/dist/noctweave_oqs.js";
+import { NoctweaveCryptoSuite } from "@noctweave/js-client";
+
+const cryptoSuite = await NoctweaveCryptoSuite.fromOQSWasmFactory(oqsFactory, {
+  wasmOptions: {
+    locateFile: (path) => `/assets/${path}`
+  }
+});
+
+const signing = cryptoSuite.generateSigningKeypair();
+const kem = cryptoSuite.generateKemKeypair();
+const encapsulated = cryptoSuite.encapsulate(kem.publicKey);
+const plaintextKey = await cryptoSuite.hkdfSha256({
+  ikm: encapsulated.sharedSecret,
+  info: "noctweave-message",
+  length: 32
+});
+```
+
+The native Swift core and the JS/WASM adapter use the same algorithm profile:
+
+- KEM: `ML-KEM-768`, public key `1184`, secret key `2400`, ciphertext `1088`, shared secret `32`.
+- Signatures: `ML-DSA-65`, public key `1952`, secret key `4032`, max signature `3309`.
+
 ## Security Notes
 
 - Relay responses and stored records are untrusted until your application verifies them.
 - Local browser storage is not secure against a compromised browser profile, extension, or OS account.
 - Store only ciphertext or non-sensitive state unless an application-specific threat model accepts the risk.
-- Full Noctweave message encryption requires the protocol crypto layer; this package does not downgrade or replace it.
+- The WASM adapter validates key and ciphertext lengths before calling liboqs.
+- WebCrypto remains responsible for AES-GCM, HKDF/SHA-256, and random bytes.
+- A browser runtime cannot protect secrets from a compromised browser, extension, JavaScript supply chain, or OS account.

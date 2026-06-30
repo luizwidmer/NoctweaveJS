@@ -1,0 +1,16 @@
+{
+  "source": "NoctweaveCore/Sources/NoctweaveCore/Crypto.swift via bundled liboqs headers",
+  "kem": {
+    "algorithm": "ML-KEM-768",
+    "publicKeyLength": 1184,
+    "secretKeyLength": 2400,
+    "ciphertextLength": 1088,
+    "sharedSecretLength": 32
+  },
+  "signature": {
+    "algorithm": "ML-DSA-65",
+    "publicKeyLength": 1952,
+    "secretKeyLength": 4032,
+    "signatureLength": 3309
+  }
+}

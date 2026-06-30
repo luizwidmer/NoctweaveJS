@@ -9,3 +9,6 @@ export {
   MemoryNoctweaveStore,
   NoctweaveStateRepository
 } from "./storage.js";
+export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
+export { NoctweaveOQSWasmAdapter, OQSWasmError } from "./crypto/oqs-wasm-adapter.js";
+export { NoctweaveCryptoSuite } from "./crypto/noctweave-crypto-suite.js";
