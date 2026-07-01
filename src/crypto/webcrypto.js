@@ -39,6 +39,18 @@ export class WebCryptoPrimitives {
     return new Uint8Array(digest);
   }
 
+  async hmacSha256({ key, data }) {
+    const cryptoKey = await this.subtle.importKey(
+      "raw",
+      bytes(key, "key"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await this.subtle.sign("HMAC", cryptoKey, bytes(data, "data"));
+    return new Uint8Array(signature);
+  }
+
   async hkdfSha256({ ikm, salt = new Uint8Array(), info = new Uint8Array(), length }) {
     if (!Number.isSafeInteger(length) || length <= 0) {
       throw new TypeError("length must be a positive safe integer");

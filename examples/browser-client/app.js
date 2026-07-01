@@ -5,17 +5,24 @@ import {
   WebCryptoPrimitives,
   base64,
   canonicalJsonBytes,
-  envelopeSignableBytes,
+  createNativeInboundSession,
+  createNativeOutboundSession,
+  decodeNativeContactCode,
+  decryptNativeEnvelope,
+  encodeNativeContactCode,
+  encryptNativeTextEnvelope,
+  makeNativeContactOffer,
+  nativeConversationKey,
   parseRelayEndpoint,
   relayRequests,
   swiftISODate,
-  swiftUUID
+  swiftUUID,
+  verifyNativeContactOffer
 } from "../../src/index.js";
 
 const BECH32_CHARSET = Array.from("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
 const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const profile = new URL(location.href).searchParams.get("profile") || "default";
 const storageKey = `noctweave-js-browser-client:${profile}`;
 
@@ -24,6 +31,7 @@ const state = {
   pqc: null,
   identity: null,
   contacts: [],
+  conversations: {},
   messages: [],
   seenEnvelopeIds: new Set()
 };
@@ -90,20 +98,16 @@ async function createIdentity() {
   const accessFingerprint = base64(await state.crypto.sha256(access.publicKey));
   const signingFingerprint = base64(await state.crypto.sha256(signing.publicKey));
   const relayEndpoint = relayEndpointForContactOffer(parseRelayEndpoint(elements.relay.value));
-  const unsignedContactOffer = {
-    agreementPublicKey: base64(agreement.publicKey),
+  const identity = {
     displayName: `JS ${profile}`,
-    fingerprint: signingFingerprint,
-    inboxAccessPublicKey: base64(access.publicKey),
+    signing: serializeKeypair(signing),
+    agreement: serializeKeypair(agreement),
+    access: serializeKeypair(access),
     inboxId,
-    relay: relayEndpoint,
-    signingPublicKey: base64(signing.publicKey),
-    version: 3
+    accessFingerprint,
+    signingFingerprint
   };
-  const contactOffer = {
-    ...unsignedContactOffer,
-    signature: base64(state.pqc.sign(canonicalJsonBytes(unsignedContactOffer), signing.secretKey))
-  };
+  const contactOffer = makeNativeContactOffer({ pqc: state.pqc, identity, relayEndpoint });
   const signedAt = swiftISODate();
   const nonce = swiftUUID();
   const registerRequest = relayRequests.registerInbox({
@@ -122,16 +126,7 @@ async function createIdentity() {
   if (response.type !== "ok") {
     throw new Error(`Inbox registration failed: ${JSON.stringify(response)}`);
   }
-  state.identity = {
-    signing: serializeKeypair(signing),
-    agreement: serializeKeypair(agreement),
-    access: serializeKeypair(access),
-    inboxId,
-    accessFingerprint,
-    signingFingerprint,
-    contactOffer,
-    messageCounter: 0
-  };
+  state.identity = { ...identity, contactOffer };
   saveState();
   renderAll();
   log(`registered inbox ${inboxId}`);
@@ -149,8 +144,8 @@ async function importContactCode() {
   if (!code) {
     throw new Error("Paste a peer contact code first.");
   }
-  const offer = decodeContactCode(code);
-  await verifyContactOffer(offer);
+  const offer = decodeNativeContactCode(code);
+  await verifyNativeContactOffer({ crypto: state.crypto, pqc: state.pqc, offer });
   if (offer.fingerprint === state.identity.signingFingerprint) {
     throw new Error("That contact code belongs to this profile.");
   }
@@ -173,46 +168,31 @@ async function sendMessage() {
   if (!text) {
     throw new Error("Type a message first.");
   }
-  const ownSigning = deserializeKeypair(state.identity.signing);
-  const encapsulated = state.pqc.encapsulate(fromBase64(contact.agreementPublicKey));
-  const envelopeId = crypto.randomUUID();
+  const conversationKey = nativeConversationKey(contact);
+  let conversation = state.conversations[conversationKey];
+  let kemCiphertext = null;
+  if (!conversation) {
+    const created = await createNativeOutboundSession({
+      crypto: state.crypto,
+      pqc: state.pqc,
+      identity: state.identity,
+      contact
+    });
+    conversation = created.conversation;
+    kemCiphertext = created.kemCiphertext;
+    state.conversations[conversationKey] = conversation;
+  }
   const sentAt = swiftISODate();
-  const conversationId = conversationIdFor(contact);
-  const messageCounter = ++state.identity.messageCounter;
-  const plaintext = encoder.encode(JSON.stringify({
-    type: "text",
+  const envelope = await encryptNativeTextEnvelope({
+    crypto: state.crypto,
+    pqc: state.pqc,
+    identity: state.identity,
+    contact,
+    conversation,
     text,
     sentAt,
-    senderDisplayName: state.identity.contactOffer.displayName
-  }));
-  const key = await messageKey(encapsulated.sharedSecret, conversationId);
-  const nonce = state.crypto.randomBytes(12);
-  const encrypted = await state.crypto.aesGcmEncrypt({
-    key,
-    nonce,
-    plaintext,
-    additionalData: encoder.encode(conversationId)
+    kemCiphertext
   });
-  const envelope = {
-    id: envelopeId,
-    conversationId,
-    sessionId: "noctweave-js-v1",
-    senderFingerprint: state.identity.signingFingerprint,
-    sentAt,
-    messageCounter,
-    kemCiphertext: base64(encapsulated.ciphertext),
-    prekey: null,
-    rootRatchet: null,
-    authenticatedContext: null,
-    payload: {
-      nonce: base64(nonce),
-      ciphertext: base64(encrypted.slice(0, -16)),
-      tag: base64(encrypted.slice(-16))
-    },
-    signature: ""
-  };
-  envelope.signature = base64(state.pqc.sign(envelopeSignableBytes(envelope), ownSigning.secretKey));
-
   const response = await relayClient(contact.relay).send(relayRequests.deliver({
     inboxId: contact.inboxId,
     envelope
@@ -221,7 +201,7 @@ async function sendMessage() {
     throw new Error(`Deliver failed: ${JSON.stringify(response)}`);
   }
   state.messages.push({
-    id: envelopeId,
+    id: envelope.id,
     direction: "out",
     contactFingerprint: contact.fingerprint,
     text,
@@ -283,31 +263,35 @@ async function decodeEnvelope(envelope) {
     log(`ignored unknown sender ${envelope.senderFingerprint}`);
     return null;
   }
-  const verified = state.pqc.verify(
-    envelopeSignableBytes(envelope),
-    fromBase64(envelope.signature),
-    fromBase64(contact.signingPublicKey)
-  );
-  if (!verified) {
-    log(`invalid signature from ${contact.displayName}`);
-    return null;
+  const conversationKey = nativeConversationKey(contact);
+  let conversation = state.conversations[conversationKey];
+  if (!conversation) {
+    if (!envelope.kemCiphertext) {
+      log(`ignored ${contact.displayName}: no session has been established`);
+      return null;
+    }
+    conversation = await createNativeInboundSession({
+      crypto: state.crypto,
+      pqc: state.pqc,
+      identity: state.identity,
+      contact,
+      kemCiphertext: envelope.kemCiphertext
+    });
+    state.conversations[conversationKey] = conversation;
   }
-  const ownAgreement = deserializeKeypair(state.identity.agreement);
-  const sharedSecret = state.pqc.decapsulate(fromBase64(envelope.kemCiphertext), ownAgreement.secretKey);
-  const key = await messageKey(sharedSecret, envelope.conversationId);
-  const combinedCiphertext = concatBytes(fromBase64(envelope.payload.ciphertext), fromBase64(envelope.payload.tag));
-  const plaintext = await state.crypto.aesGcmDecrypt({
-    key,
-    nonce: fromBase64(envelope.payload.nonce),
-    ciphertext: combinedCiphertext,
-    additionalData: encoder.encode(envelope.conversationId)
+  const text = await decryptNativeEnvelope({
+    crypto: state.crypto,
+    pqc: state.pqc,
+    identity: state.identity,
+    contact,
+    conversation,
+    envelope
   });
-  const body = JSON.parse(decoder.decode(plaintext));
   return {
     id: envelope.id,
     direction: "in",
     contactFingerprint: contact.fingerprint,
-    text: body.text,
+    text,
     sentAt: envelope.sentAt
   };
 }
@@ -348,36 +332,6 @@ function registerProofPayload(contactOffer, inboxId, accessPublicKey, signedAt, 
   };
 }
 
-async function messageKey(sharedSecret, conversationId) {
-  return state.crypto.hkdfSha256({
-    ikm: sharedSecret,
-    salt: encoder.encode(conversationId),
-    info: "NoctweaveJS message v1",
-    length: 32
-  });
-}
-
-async function verifyContactOffer(offer) {
-  const unsigned = {
-    agreementPublicKey: offer.agreementPublicKey,
-    displayName: offer.displayName,
-    fingerprint: offer.fingerprint,
-    inboxAccessPublicKey: offer.inboxAccessPublicKey,
-    inboxId: offer.inboxId,
-    relay: offer.relay,
-    signingPublicKey: offer.signingPublicKey,
-    version: offer.version
-  };
-  const actualFingerprint = base64(await state.crypto.sha256(fromBase64(offer.signingPublicKey)));
-  if (actualFingerprint !== offer.fingerprint) {
-    throw new Error("Contact fingerprint does not match its signing key.");
-  }
-  const valid = state.pqc.verify(canonicalJsonBytes(unsigned), fromBase64(offer.signature), fromBase64(offer.signingPublicKey));
-  if (!valid) {
-    throw new Error("Contact offer signature failed verification.");
-  }
-}
-
 function contactFromOffer(offer) {
   return {
     displayName: offer.displayName,
@@ -387,14 +341,6 @@ function contactFromOffer(offer) {
     signingPublicKey: offer.signingPublicKey,
     agreementPublicKey: offer.agreementPublicKey
   };
-}
-
-function encodeContactCode(offer) {
-  return base64(encoder.encode(JSON.stringify(offer)));
-}
-
-function decodeContactCode(code) {
-  return JSON.parse(decoder.decode(fromBase64(code)));
 }
 
 function selectedContact() {
@@ -407,16 +353,11 @@ function selectedContact() {
   return contact;
 }
 
-function conversationIdFor(contact) {
-  const pair = [state.identity.signingFingerprint, contact.fingerprint].sort().join(":");
-  return `noctweave-js:${pair}`;
-}
-
 function renderAll() {
   elements.profile.textContent = profile;
   elements.inbox.textContent = state.identity?.inboxId ?? "Not created";
   elements.fingerprint.textContent = state.identity?.signingFingerprint ?? "Not created";
-  elements.contactCode.value = state.identity ? encodeContactCode(state.identity.contactOffer) : "";
+  elements.contactCode.value = state.identity ? encodeNativeContactCode(state.identity.contactOffer) : "";
   elements.copyCode.disabled = !state.identity;
   elements.send.disabled = !state.identity || state.contacts.length === 0;
   elements.fetch.disabled = !state.identity;
@@ -473,6 +414,7 @@ function saveState() {
   localStorage.setItem(storageKey, JSON.stringify({
     identity: state.identity,
     contacts: state.contacts,
+    conversations: state.conversations,
     messages: state.messages,
     seenEnvelopeIds: [...state.seenEnvelopeIds],
     relay: elements.relay.value
@@ -483,6 +425,7 @@ function loadState() {
   const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
   state.identity = saved.identity ?? null;
   state.contacts = saved.contacts ?? [];
+  state.conversations = saved.conversations ?? {};
   state.messages = saved.messages ?? [];
   state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds ?? []);
   if (saved.relay) {
@@ -494,6 +437,7 @@ function resetProfile() {
   localStorage.removeItem(storageKey);
   state.identity = null;
   state.contacts = [];
+  state.conversations = {};
   state.messages = [];
   state.seenEnvelopeIds = new Set();
   renderAll();
@@ -532,13 +476,6 @@ function serializeKeypair(keypair) {
   };
 }
 
-function deserializeKeypair(keypair) {
-  return {
-    publicKey: fromBase64(keypair.publicKey),
-    secretKey: fromBase64(keypair.secretKey)
-  };
-}
-
 function relayEndpointForContactOffer(endpoint) {
   return {
     host: endpoint.host,
@@ -563,22 +500,6 @@ function setStatus(value) {
 
 function log(value) {
   elements.log.textContent = `${new Date().toLocaleTimeString()} ${value}\n${elements.log.textContent}`;
-}
-
-function fromBase64(value) {
-  const binary = atob(value);
-  const output = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) {
-    output[index] = binary.charCodeAt(index);
-  }
-  return output;
-}
-
-function concatBytes(a, b) {
-  const output = new Uint8Array(a.byteLength + b.byteLength);
-  output.set(a, 0);
-  output.set(b, a.byteLength);
-  return output;
 }
 
 function bech32Encode(hrp, data) {

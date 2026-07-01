@@ -14,3 +14,14 @@ export { NoctweaveOQSWasmAdapter, OQSWasmError } from "./crypto/oqs-wasm-adapter
 export { NoctweaveCryptoSuite } from "./crypto/noctweave-crypto-suite.js";
 export { base64, canonicalJson, canonicalJsonBytes, swiftISODate, swiftUUID } from "./crypto/swift-canonical.js";
 export { envelopeSignableBytes, envelopeSignablePayload } from "./crypto/noctweave-wire.js";
+export {
+  createNativeInboundSession,
+  createNativeOutboundSession,
+  decodeNativeContactCode,
+  decryptNativeEnvelope,
+  encodeNativeContactCode,
+  encryptNativeTextEnvelope,
+  makeNativeContactOffer,
+  nativeConversationKey,
+  verifyNativeContactOffer
+} from "./crypto/noctweave-native-message.js";
