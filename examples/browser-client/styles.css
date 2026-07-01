@@ -106,7 +106,8 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   margin-top: 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -119,6 +120,10 @@ textarea {
 
 textarea {
   resize: vertical;
+}
+
+select {
+  appearance: none;
 }
 
 button {
@@ -135,6 +140,38 @@ button:hover {
   background: rgba(115, 91, 255, 0.42);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.subtle {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.split,
+.sectionHeader,
+.buttonRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.split > div {
+  flex: 1;
+}
+
+.sectionHeader span {
+  color: #a8a1bd;
+}
+
+.buttonRow {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
 dl {
   margin: 16px 0 0;
 }
@@ -145,18 +182,62 @@ dd {
   overflow-wrap: anywhere;
 }
 
-.info,
-.messages {
+.info {
   margin-top: 14px;
   color: #c9c3d6;
   overflow-wrap: anywhere;
 }
 
-.message {
+.chat {
+  display: flex;
+  min-height: 280px;
+  max-height: 420px;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  margin: 14px 0;
   padding: 12px;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.07);
-  margin-top: 10px;
+  background: rgba(3, 4, 8, 0.32);
+  color: #c9c3d6;
+}
+
+.bubble {
+  max-width: min(78%, 620px);
+  padding: 11px 13px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f0ff;
+  overflow-wrap: anywhere;
+}
+
+.bubble.out {
+  align-self: flex-end;
+  background: rgba(115, 91, 255, 0.34);
+}
+
+.bubble.in {
+  align-self: flex-start;
+  background: rgba(22, 196, 174, 0.18);
+}
+
+.bubble span {
+  display: block;
+  margin-top: 6px;
+  color: #aaa3bb;
+  font-size: 0.72rem;
+}
+
+.steps {
+  display: grid;
+  gap: 10px;
+  color: #c9c3d6;
+}
+
+code {
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  padding: 2px 6px;
 }
 
 pre {
@@ -170,7 +251,9 @@ pre {
 
 @media (max-width: 760px) {
   .hero,
-  .row {
+  .row,
+  .split,
+  .sectionHeader {
     align-items: stretch;
     flex-direction: column;
   }

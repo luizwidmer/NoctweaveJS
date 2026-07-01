@@ -11,16 +11,18 @@
     <section class="hero">
       <div>
         <p class="eyebrow">NoctweaveJS</p>
-        <h1>Relay Client</h1>
-        <p>Browser-side WASM keys and signed relay requests, forwarded through a local proxy for testing.</p>
+        <h1>Browser Messenger</h1>
+        <p>Pair two JS profiles, exchange post-quantum encrypted messages, and fetch them from a Noctweave relay.</p>
       </div>
       <div class="status" id="status">Idle</div>
     </section>
 
     <section class="panel">
-      <label for="relay">Relay URL</label>
-      <div class="row">
-        <input id="relay" value="http://127.0.0.1:9339" spellcheck="false">
+      <div class="split">
+        <div>
+          <label for="relay">Relay URL</label>
+          <input id="relay" value="http://127.0.0.1:9339" spellcheck="false">
+        </div>
         <button id="connect">Health + Info</button>
       </div>
       <div id="relayInfo" class="info">No relay checked yet.</div>
@@ -28,30 +30,58 @@
 
     <section class="grid">
       <article class="panel">
-        <h2>Identity</h2>
-        <button id="createIdentity">Create Test Inbox</button>
+        <div class="sectionHeader">
+          <h2>Identity</h2>
+          <span>Profile: <strong id="profile">default</strong></span>
+        </div>
+        <div class="buttonRow">
+          <button id="createIdentity">Create / Replace Inbox</button>
+          <button id="resetProfile" class="subtle">Reset Local Profile</button>
+        </div>
         <dl>
           <dt>Inbox</dt>
           <dd id="inbox">Not created</dd>
-          <dt>Fingerprint</dt>
+          <dt>Signing Fingerprint</dt>
           <dd id="fingerprint">Not created</dd>
         </dl>
       </article>
 
       <article class="panel">
-        <h2>Message</h2>
-        <label for="message">Payload</label>
-        <textarea id="message" rows="4">Hello from NoctweaveJS</textarea>
-        <div class="row">
+        <h2>My Contact Code</h2>
+        <textarea id="contactCode" rows="7" readonly placeholder="Create an inbox first."></textarea>
+        <button id="copyCode">Copy Code</button>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Pair Contact</h2>
+        <textarea id="peerCode" rows="7" placeholder="Paste the other JS client's contact code here."></textarea>
+        <button id="importContact">Import Contact</button>
+      </article>
+
+      <article class="panel">
+        <h2>Chat</h2>
+        <label for="contacts">Contact</label>
+        <select id="contacts"></select>
+        <div id="chat" class="chat">Pair with a contact to start.</div>
+        <label for="message">Message</label>
+        <textarea id="message" rows="3" placeholder="Type a message. Cmd/Ctrl+Enter sends."></textarea>
+        <div class="buttonRow">
           <button id="send">Send</button>
-          <button id="fetch">Fetch</button>
+          <button id="fetch" class="subtle">Fetch Messages</button>
         </div>
       </article>
     </section>
 
     <section class="panel">
-      <h2>Fetched Messages</h2>
-      <div id="messages" class="messages">No messages fetched.</div>
+      <h2>How To Test Two Clients</h2>
+      <div class="steps">
+        <span>Open this page as <code>?profile=alice</code> and <code>?profile=bob</code>.</span>
+        <span>Create an inbox in both profiles.</span>
+        <span>Copy each contact code into the other profile.</span>
+        <span>Send from one profile, then press Fetch Messages on the other.</span>
+      </div>
     </section>
 
     <section class="panel">

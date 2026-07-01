@@ -63,7 +63,14 @@ Run a local browser client:
 npm run dev:browser-client
 ```
 
-Open `http://127.0.0.1:5173/examples/browser-client/`. The demo generates WASM ML-DSA/ML-KEM keys in the browser, registers a test inbox, sends an encoded envelope, and fetches it back. A local Node proxy is used only to avoid browser CORS restrictions while testing relays.
+Open `http://127.0.0.1:5173/examples/browser-client/`. The demo generates WASM ML-DSA/ML-KEM keys in the browser, registers a test inbox, pairs by copy/pasting contact codes, sends ML-KEM/AES-GCM encrypted messages, verifies ML-DSA envelope signatures, and fetches/decrypts messages from the relay. A local Node proxy is used only to avoid browser CORS restrictions while testing relays.
+
+To test two browser clients on one machine, open:
+
+- `http://127.0.0.1:5173/examples/browser-client/?profile=alice`
+- `http://127.0.0.1:5173/examples/browser-client/?profile=bob`
+
+Create an inbox in each profile, copy Alice's contact code into Bob and Bob's into Alice, then send from one profile and press `Fetch Messages` on the other.
 
 ## Storage Choices
 

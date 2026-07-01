@@ -13,12 +13,18 @@ import {
 
 const BECH32_CHARSET = Array.from("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
 const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const profile = new URL(location.href).searchParams.get("profile") || "default";
+const storageKey = `noctweave-js-browser-client:${profile}`;
 
 const state = {
   crypto: new WebCryptoPrimitives(),
   pqc: null,
   identity: null,
-  relayInfo: null
+  contacts: [],
+  messages: [],
+  seenEnvelopeIds: new Set()
 };
 
 const elements = {
@@ -27,33 +33,51 @@ const elements = {
   connect: document.querySelector("#connect"),
   relayInfo: document.querySelector("#relayInfo"),
   createIdentity: document.querySelector("#createIdentity"),
+  resetProfile: document.querySelector("#resetProfile"),
+  profile: document.querySelector("#profile"),
   inbox: document.querySelector("#inbox"),
   fingerprint: document.querySelector("#fingerprint"),
+  contactCode: document.querySelector("#contactCode"),
+  copyCode: document.querySelector("#copyCode"),
+  peerCode: document.querySelector("#peerCode"),
+  importContact: document.querySelector("#importContact"),
+  contacts: document.querySelector("#contacts"),
   message: document.querySelector("#message"),
   send: document.querySelector("#send"),
   fetch: document.querySelector("#fetch"),
-  messages: document.querySelector("#messages"),
+  chat: document.querySelector("#chat"),
   log: document.querySelector("#log")
 };
 
 elements.connect.addEventListener("click", () => runAction("Checking relay", checkRelay));
 elements.createIdentity.addEventListener("click", () => runAction("Creating inbox", createIdentity));
+elements.resetProfile.addEventListener("click", () => runAction("Resetting", resetProfile));
+elements.copyCode.addEventListener("click", () => runAction("Copying", copyContactCode));
+elements.importContact.addEventListener("click", () => runAction("Importing", importContactCode));
+elements.contacts.addEventListener("change", renderChat);
 elements.send.addEventListener("click", () => runAction("Sending", sendMessage));
 elements.fetch.addEventListener("click", () => runAction("Fetching", fetchMessages));
+elements.message.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    runAction("Sending", sendMessage);
+  }
+});
 
 runAction("Loading WASM", async () => {
   state.pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
-  log("WASM ready: " + JSON.stringify(state.pqc.profile()));
+  loadState();
+  renderAll();
+  log(`profile ${profile}`);
+  log("WASM ready");
 });
 
 async function checkRelay() {
   const client = relayClient();
   const health = await client.health();
   const info = await client.info();
-  state.relayInfo = info.relayInfo;
-  elements.relayInfo.textContent = `${state.relayInfo?.relayName ?? "Relay"} | ${state.relayInfo?.softwareVersion ?? "unknown software"} | ${state.relayInfo?.transport ?? "unknown transport"}`;
+  elements.relayInfo.textContent = `${info.relayInfo?.relayName ?? "Relay"} | ${info.relayInfo?.softwareVersion ?? "unknown software"} | ${info.relayInfo?.transport ?? "unknown transport"}`;
   log(`health ${JSON.stringify(health)}`);
-  log(`info ${JSON.stringify(info.relayInfo ?? info)}`);
 }
 
 async function createIdentity() {
@@ -67,7 +91,7 @@ async function createIdentity() {
   const relayEndpoint = relayEndpointForContactOffer(parseRelayEndpoint(elements.relay.value));
   const unsignedContactOffer = {
     agreementPublicKey: base64(agreement.publicKey),
-    displayName: "NoctweaveJS Browser",
+    displayName: `JS ${profile}`,
     fingerprint: signingFingerprint,
     inboxAccessPublicKey: base64(access.publicKey),
     inboxId,
@@ -97,46 +121,121 @@ async function createIdentity() {
   if (response.type !== "ok") {
     throw new Error(`Inbox registration failed: ${JSON.stringify(response)}`);
   }
-  state.identity = { signing, agreement, access, inboxId, accessFingerprint, sent: [] };
-  elements.inbox.textContent = inboxId;
-  elements.fingerprint.textContent = accessFingerprint;
+  state.identity = {
+    signing: serializeKeypair(signing),
+    agreement: serializeKeypair(agreement),
+    access: serializeKeypair(access),
+    inboxId,
+    accessFingerprint,
+    signingFingerprint,
+    contactOffer,
+    messageCounter: 0
+  };
+  saveState();
+  renderAll();
   log(`registered inbox ${inboxId}`);
+}
+
+async function copyContactCode() {
+  ensureIdentity();
+  await navigator.clipboard.writeText(elements.contactCode.value);
+  log("contact code copied");
+}
+
+async function importContactCode() {
+  ensureIdentity();
+  const code = elements.peerCode.value.trim();
+  if (!code) {
+    throw new Error("Paste a peer contact code first.");
+  }
+  const offer = decodeContactCode(code);
+  await verifyContactOffer(offer);
+  if (offer.fingerprint === state.identity.signingFingerprint) {
+    throw new Error("That contact code belongs to this profile.");
+  }
+  const existing = state.contacts.find((contact) => contact.fingerprint === offer.fingerprint);
+  if (existing) {
+    Object.assign(existing, contactFromOffer(offer));
+  } else {
+    state.contacts.push(contactFromOffer(offer));
+  }
+  elements.peerCode.value = "";
+  saveState();
+  renderAll();
+  log(`paired ${offer.displayName}`);
 }
 
 async function sendMessage() {
   ensureIdentity();
-  const plaintext = new TextEncoder().encode(elements.message.value);
-  const ciphertext = await state.crypto.sha256(plaintext);
+  const contact = selectedContact();
+  const text = elements.message.value.trim();
+  if (!text) {
+    throw new Error("Type a message first.");
+  }
+  const ownSigning = deserializeKeypair(state.identity.signing);
+  const encapsulated = state.pqc.encapsulate(fromBase64(contact.agreementPublicKey));
   const envelopeId = crypto.randomUUID();
+  const sentAt = swiftISODate();
+  const conversationId = conversationIdFor(contact);
+  const messageCounter = ++state.identity.messageCounter;
+  const plaintext = encoder.encode(JSON.stringify({
+    type: "text",
+    text,
+    sentAt,
+    senderDisplayName: state.identity.contactOffer.displayName
+  }));
+  const key = await messageKey(encapsulated.sharedSecret, conversationId);
+  const nonce = state.crypto.randomBytes(12);
+  const encrypted = await state.crypto.aesGcmEncrypt({
+    key,
+    nonce,
+    plaintext,
+    additionalData: encoder.encode(conversationId)
+  });
   const envelope = {
     id: envelopeId,
-    conversationId: `browser-${Date.now()}`,
-    sessionId: "browser-session",
-    senderFingerprint: "browser-smoke",
-    sentAt: swiftISODate(),
-    messageCounter: state.identity.sent.length + 1,
-    kemCiphertext: null,
+    conversationId,
+    sessionId: "noctweave-js-v1",
+    senderFingerprint: state.identity.signingFingerprint,
+    sentAt,
+    messageCounter,
+    kemCiphertext: base64(encapsulated.ciphertext),
     prekey: null,
     rootRatchet: null,
     authenticatedContext: null,
     payload: {
-      nonce: base64(state.crypto.randomBytes(12)),
-      ciphertext: base64(ciphertext),
-      tag: base64(state.crypto.randomBytes(16))
+      nonce: base64(nonce),
+      ciphertext: base64(encrypted.slice(0, -16)),
+      tag: base64(encrypted.slice(-16))
     },
-    signature: base64(state.crypto.randomBytes(3309))
+    signature: ""
   };
-  const response = await relayClient().send(relayRequests.deliver({ inboxId: state.identity.inboxId, envelope }));
+  envelope.signature = base64(state.pqc.sign(envelopeSignableBytes(envelope), ownSigning.secretKey));
+
+  const response = await relayClient(contact.relay).send(relayRequests.deliver({
+    inboxId: contact.inboxId,
+    envelope
+  }));
   if (response.type !== "delivered") {
     throw new Error(`Deliver failed: ${JSON.stringify(response)}`);
   }
-  state.identity.sent.push(envelope);
-  log(`delivered ${envelopeId}`);
+  state.messages.push({
+    id: envelopeId,
+    direction: "out",
+    contactFingerprint: contact.fingerprint,
+    text,
+    sentAt
+  });
+  elements.message.value = "";
+  saveState();
+  renderChat();
+  log(`sent to ${contact.displayName}`);
 }
 
 async function fetchMessages() {
   ensureIdentity();
-  const maxCount = 20;
+  const ownAccess = deserializeKeypair(state.identity.access);
+  const maxCount = 50;
   const signedAt = swiftISODate();
   const nonce = swiftUUID();
   const response = await relayClient().send(relayRequests.fetch({
@@ -145,7 +244,7 @@ async function fetchMessages() {
     maxCount,
     longPollTimeoutSeconds: null,
     accessProof: actorProof({
-      keypair: state.identity.access,
+      keypair: ownAccess,
       fingerprint: state.identity.accessFingerprint,
       signedAt,
       nonce,
@@ -160,12 +259,60 @@ async function fetchMessages() {
   if (response.type !== "messages") {
     throw new Error(`Fetch failed: ${JSON.stringify(response)}`);
   }
-  renderMessages(response.messages ?? []);
-  log(`fetched ${(response.messages ?? []).length} message(s)`);
+  let decodedCount = 0;
+  for (const envelope of response.messages ?? []) {
+    if (state.seenEnvelopeIds.has(envelope.id?.toLowerCase())) {
+      continue;
+    }
+    state.seenEnvelopeIds.add(envelope.id?.toLowerCase());
+    const decoded = await decodeEnvelope(envelope);
+    if (decoded) {
+      state.messages.push(decoded);
+      decodedCount++;
+    }
+  }
+  saveState();
+  renderChat();
+  log(`fetch complete: ${decodedCount} new message(s)`);
 }
 
-function relayClient() {
-  const endpoint = elements.relay.value.trim();
+async function decodeEnvelope(envelope) {
+  const contact = state.contacts.find((candidate) => candidate.fingerprint === envelope.senderFingerprint);
+  if (!contact) {
+    log(`ignored unknown sender ${envelope.senderFingerprint}`);
+    return null;
+  }
+  const verified = state.pqc.verify(
+    envelopeSignableBytes(envelope),
+    fromBase64(envelope.signature),
+    fromBase64(contact.signingPublicKey)
+  );
+  if (!verified) {
+    log(`invalid signature from ${contact.displayName}`);
+    return null;
+  }
+  const ownAgreement = deserializeKeypair(state.identity.agreement);
+  const sharedSecret = state.pqc.decapsulate(fromBase64(envelope.kemCiphertext), ownAgreement.secretKey);
+  const key = await messageKey(sharedSecret, envelope.conversationId);
+  const combinedCiphertext = concatBytes(fromBase64(envelope.payload.ciphertext), fromBase64(envelope.payload.tag));
+  const plaintext = await state.crypto.aesGcmDecrypt({
+    key,
+    nonce: fromBase64(envelope.payload.nonce),
+    ciphertext: combinedCiphertext,
+    additionalData: encoder.encode(envelope.conversationId)
+  });
+  const body = JSON.parse(decoder.decode(plaintext));
+  return {
+    id: envelope.id,
+    direction: "in",
+    contactFingerprint: contact.fingerprint,
+    text: body.text,
+    sentAt: envelope.sentAt
+  };
+}
+
+function relayClient(endpointOverride = undefined) {
+  const endpoint = endpointOverride ? relayURLFromEndpoint(endpointOverride) : elements.relay.value.trim();
   return new NoctweaveRelayClient(endpoint, {
     fetch: async (url, init) => {
       const path = new URL(url).pathname === "/health" ? "/proxy/health" : "/proxy/relay";
@@ -200,27 +347,171 @@ function registerProofPayload(contactOffer, inboxId, accessPublicKey, signedAt, 
   };
 }
 
-function relayEndpointForContactOffer(endpoint) {
+function envelopeSignableBytes(envelope) {
+  return canonicalJsonBytes({
+    authenticatedContext: envelope.authenticatedContext,
+    conversationId: envelope.conversationId,
+    kemCiphertext: envelope.kemCiphertext,
+    messageCounter: envelope.messageCounter,
+    payload: envelope.payload,
+    prekey: envelope.prekey,
+    rootRatchet: envelope.rootRatchet,
+    senderFingerprint: envelope.senderFingerprint,
+    sentAt: envelope.sentAt,
+    sessionId: envelope.sessionId
+  });
+}
+
+async function messageKey(sharedSecret, conversationId) {
+  return state.crypto.hkdfSha256({
+    ikm: sharedSecret,
+    salt: encoder.encode(conversationId),
+    info: "NoctweaveJS message v1",
+    length: 32
+  });
+}
+
+async function verifyContactOffer(offer) {
+  const unsigned = {
+    agreementPublicKey: offer.agreementPublicKey,
+    displayName: offer.displayName,
+    fingerprint: offer.fingerprint,
+    inboxAccessPublicKey: offer.inboxAccessPublicKey,
+    inboxId: offer.inboxId,
+    relay: offer.relay,
+    signingPublicKey: offer.signingPublicKey,
+    version: offer.version
+  };
+  const actualFingerprint = base64(await state.crypto.sha256(fromBase64(offer.signingPublicKey)));
+  if (actualFingerprint !== offer.fingerprint) {
+    throw new Error("Contact fingerprint does not match its signing key.");
+  }
+  const valid = state.pqc.verify(canonicalJsonBytes(unsigned), fromBase64(offer.signature), fromBase64(offer.signingPublicKey));
+  if (!valid) {
+    throw new Error("Contact offer signature failed verification.");
+  }
+}
+
+function contactFromOffer(offer) {
   return {
-    host: endpoint.host,
-    port: endpoint.port,
-    useTLS: Boolean(endpoint.useTLS),
-    transport: endpoint.transport ?? "http"
+    displayName: offer.displayName,
+    inboxId: offer.inboxId,
+    relay: offer.relay,
+    fingerprint: offer.fingerprint,
+    signingPublicKey: offer.signingPublicKey,
+    agreementPublicKey: offer.agreementPublicKey
   };
 }
 
-function renderMessages(messages) {
-  if (messages.length === 0) {
-    elements.messages.textContent = "No messages fetched.";
+function encodeContactCode(offer) {
+  return base64(encoder.encode(JSON.stringify(offer)));
+}
+
+function decodeContactCode(code) {
+  return JSON.parse(decoder.decode(fromBase64(code)));
+}
+
+function selectedContact() {
+  ensureIdentity();
+  const fingerprint = elements.contacts.value;
+  const contact = state.contacts.find((candidate) => candidate.fingerprint === fingerprint);
+  if (!contact) {
+    throw new Error("Pair with a contact first.");
+  }
+  return contact;
+}
+
+function conversationIdFor(contact) {
+  const pair = [state.identity.signingFingerprint, contact.fingerprint].sort().join(":");
+  return `noctweave-js:${pair}`;
+}
+
+function renderAll() {
+  elements.profile.textContent = profile;
+  elements.inbox.textContent = state.identity?.inboxId ?? "Not created";
+  elements.fingerprint.textContent = state.identity?.signingFingerprint ?? "Not created";
+  elements.contactCode.value = state.identity ? encodeContactCode(state.identity.contactOffer) : "";
+  elements.copyCode.disabled = !state.identity;
+  elements.send.disabled = !state.identity || state.contacts.length === 0;
+  elements.fetch.disabled = !state.identity;
+  renderContacts();
+  renderChat();
+}
+
+function renderContacts() {
+  const previous = elements.contacts.value;
+  elements.contacts.innerHTML = "";
+  if (state.contacts.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = "No contacts paired";
+    option.value = "";
+    elements.contacts.append(option);
     return;
   }
-  elements.messages.innerHTML = "";
-  for (const message of messages) {
-    const item = document.createElement("div");
-    item.className = "message";
-    item.textContent = `${message.id} | ciphertext ${message.payload?.ciphertext?.length ?? 0} chars | ${message.sentAt}`;
-    elements.messages.append(item);
+  for (const contact of state.contacts) {
+    const option = document.createElement("option");
+    option.value = contact.fingerprint;
+    option.textContent = contact.displayName;
+    elements.contacts.append(option);
   }
+  if (state.contacts.some((contact) => contact.fingerprint === previous)) {
+    elements.contacts.value = previous;
+  }
+}
+
+function renderChat() {
+  const fingerprint = elements.contacts.value;
+  const rows = state.messages.filter((message) => message.contactFingerprint === fingerprint);
+  if (!fingerprint) {
+    elements.chat.textContent = "Pair with a contact to start.";
+    return;
+  }
+  if (rows.length === 0) {
+    elements.chat.textContent = "No messages in this chat.";
+    return;
+  }
+  elements.chat.innerHTML = "";
+  for (const message of rows) {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${message.direction}`;
+    bubble.textContent = message.text;
+    const meta = document.createElement("span");
+    meta.textContent = `${message.direction === "out" ? "Sent" : "Received"} ${message.sentAt}`;
+    bubble.append(meta);
+    elements.chat.append(bubble);
+  }
+  elements.chat.scrollTop = elements.chat.scrollHeight;
+}
+
+function saveState() {
+  localStorage.setItem(storageKey, JSON.stringify({
+    identity: state.identity,
+    contacts: state.contacts,
+    messages: state.messages,
+    seenEnvelopeIds: [...state.seenEnvelopeIds],
+    relay: elements.relay.value
+  }));
+}
+
+function loadState() {
+  const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+  state.identity = saved.identity ?? null;
+  state.contacts = saved.contacts ?? [];
+  state.messages = saved.messages ?? [];
+  state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds ?? []);
+  if (saved.relay) {
+    elements.relay.value = saved.relay;
+  }
+}
+
+function resetProfile() {
+  localStorage.removeItem(storageKey);
+  state.identity = null;
+  state.contacts = [];
+  state.messages = [];
+  state.seenEnvelopeIds = new Set();
+  renderAll();
+  log("profile reset");
 }
 
 async function runAction(label, action) {
@@ -248,12 +539,60 @@ function ensureIdentity() {
   }
 }
 
+function serializeKeypair(keypair) {
+  return {
+    publicKey: base64(keypair.publicKey),
+    secretKey: base64(keypair.secretKey)
+  };
+}
+
+function deserializeKeypair(keypair) {
+  return {
+    publicKey: fromBase64(keypair.publicKey),
+    secretKey: fromBase64(keypair.secretKey)
+  };
+}
+
+function relayEndpointForContactOffer(endpoint) {
+  return {
+    host: endpoint.host,
+    port: endpoint.port,
+    useTLS: Boolean(endpoint.useTLS),
+    transport: endpoint.transport ?? "http"
+  };
+}
+
+function relayURLFromEndpoint(endpoint) {
+  const scheme = endpoint.transport === "websocket"
+    ? endpoint.useTLS ? "wss" : "ws"
+    : endpoint.useTLS ? "https" : "http";
+  const defaultPort = endpoint.useTLS ? 443 : 80;
+  const port = Number(endpoint.port);
+  return `${scheme}://${endpoint.host}${port && port !== defaultPort ? `:${port}` : ""}`;
+}
+
 function setStatus(value) {
   elements.status.textContent = value;
 }
 
 function log(value) {
   elements.log.textContent = `${new Date().toLocaleTimeString()} ${value}\n${elements.log.textContent}`;
+}
+
+function fromBase64(value) {
+  const binary = atob(value);
+  const output = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    output[index] = binary.charCodeAt(index);
+  }
+  return output;
+}
+
+function concatBytes(a, b) {
+  const output = new Uint8Array(a.byteLength + b.byteLength);
+  output.set(a, 0);
+  output.set(b, a.byteLength);
+  return output;
 }
 
 function bech32Encode(hrp, data) {
@@ -273,7 +612,7 @@ function createChecksum(hrp, data) {
 }
 
 function hrpExpand(hrp) {
-  const bytes = Array.from(new TextEncoder().encode(hrp));
+  const bytes = Array.from(encoder.encode(hrp));
   return [...bytes.map((byte) => byte >> 5), 0, ...bytes.map((byte) => byte & 31)];
 }
 
