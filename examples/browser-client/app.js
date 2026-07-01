@@ -5,6 +5,7 @@ import {
   WebCryptoPrimitives,
   base64,
   canonicalJsonBytes,
+  envelopeSignableBytes,
   parseRelayEndpoint,
   relayRequests,
   swiftISODate,
@@ -345,21 +346,6 @@ function registerProofPayload(contactOffer, inboxId, accessPublicKey, signedAt, 
     nonce,
     signedAt
   };
-}
-
-function envelopeSignableBytes(envelope) {
-  return canonicalJsonBytes({
-    authenticatedContext: envelope.authenticatedContext,
-    conversationId: envelope.conversationId,
-    kemCiphertext: envelope.kemCiphertext,
-    messageCounter: envelope.messageCounter,
-    payload: envelope.payload,
-    prekey: envelope.prekey,
-    rootRatchet: envelope.rootRatchet,
-    senderFingerprint: envelope.senderFingerprint,
-    sentAt: envelope.sentAt,
-    sessionId: envelope.sessionId
-  });
 }
 
 async function messageKey(sharedSecret, conversationId) {
