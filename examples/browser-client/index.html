@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoctweaveJS Client</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">NoctweaveJS</p>
+        <h1>Relay Client</h1>
+        <p>Browser-side WASM keys and signed relay requests, forwarded through a local proxy for testing.</p>
+      </div>
+      <div class="status" id="status">Idle</div>
+    </section>
+
+    <section class="panel">
+      <label for="relay">Relay URL</label>
+      <div class="row">
+        <input id="relay" value="http://127.0.0.1:9339" spellcheck="false">
+        <button id="connect">Health + Info</button>
+      </div>
+      <div id="relayInfo" class="info">No relay checked yet.</div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Identity</h2>
+        <button id="createIdentity">Create Test Inbox</button>
+        <dl>
+          <dt>Inbox</dt>
+          <dd id="inbox">Not created</dd>
+          <dt>Fingerprint</dt>
+          <dd id="fingerprint">Not created</dd>
+        </dl>
+      </article>
+
+      <article class="panel">
+        <h2>Message</h2>
+        <label for="message">Payload</label>
+        <textarea id="message" rows="4">Hello from NoctweaveJS</textarea>
+        <div class="row">
+          <button id="send">Send</button>
+          <button id="fetch">Fetch</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Fetched Messages</h2>
+      <div id="messages" class="messages">No messages fetched.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

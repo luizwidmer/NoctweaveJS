@@ -9,6 +9,7 @@
   },
   "files": [
     "README.md",
+    "examples/browser-client/",
     "scripts/",
     "src/",
     "wasm/dist/",
@@ -16,6 +17,7 @@
   ],
   "scripts": {
     "build:oqs-wasm": "bash scripts/build-oqs-wasm.sh",
+    "dev:browser-client": "node examples/browser-client/server.js",
     "smoke:relay": "node scripts/relay-smoke.js",
     "test": "node --test"
   },

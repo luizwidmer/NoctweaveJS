@@ -55,6 +55,16 @@ npm run smoke:relay -- --relay http://127.0.0.1:9339
 
 This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips. It is a transport/mailbox/proof test; it does not yet create a full encrypted chat session visible inside the native app.
 
+## Browser Demo
+
+Run a local browser client:
+
+```sh
+npm run dev:browser-client
+```
+
+Open `http://127.0.0.1:5173/examples/browser-client/`. The demo generates WASM ML-DSA/ML-KEM keys in the browser, registers a test inbox, sends an encoded envelope, and fetches it back. A local Node proxy is used only to avoid browser CORS restrictions while testing relays.
+
 ## Storage Choices
 
 Browser `localStorage`:
