@@ -476,6 +476,13 @@ function serializeKeypair(keypair) {
   };
 }
 
+function deserializeKeypair(keypair) {
+  return {
+    publicKey: fromBase64(keypair.publicKey),
+    secretKey: fromBase64(keypair.secretKey)
+  };
+}
+
 function relayEndpointForContactOffer(endpoint) {
   return {
     host: endpoint.host,
@@ -500,6 +507,15 @@ function setStatus(value) {
 
 function log(value) {
   elements.log.textContent = `${new Date().toLocaleTimeString()} ${value}\n${elements.log.textContent}`;
+}
+
+function fromBase64(value) {
+  const binary = atob(value);
+  const output = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    output[index] = binary.charCodeAt(index);
+  }
+  return output;
 }
 
 function bech32Encode(hrp, data) {
