@@ -31,12 +31,25 @@ test("oqs wasm adapter matches native Swift/liboqs profile and marshals memory",
   assert.equal(signature.byteLength, fixture.signature.signatureLength);
   assert.equal(adapter.verify(message, signature, signing.publicKey), true);
   assert.equal(adapter.verify(new TextEncoder().encode("tampered"), signature, signing.publicKey), false);
+  assertAllocatedRangesWereZeroed(module);
+});
+
+test("oqs wasm adapter self test clears temporary heap allocations", () => {
+  const module = createFakeOQSModule(fixture);
+  const adapter = new NoctweaveOQSWasmAdapter(module);
+
+  assert.deepEqual(adapter.selfTest(), {
+    kemSharedSecretsMatch: true,
+    signatureVerified: true
+  });
+  assertAllocatedRangesWereZeroed(module);
 });
 
 function createFakeOQSModule(profile) {
   const memory = new ArrayBuffer(1024 * 1024);
   const HEAPU8 = new Uint8Array(memory);
   const HEAPU32 = new Uint32Array(memory);
+  const allocations = [];
   let offset = 16;
 
   const json = new TextEncoder().encode(JSON.stringify({ kem: profile.kem, signature: profile.signature }) + "\0");
@@ -62,9 +75,11 @@ function createFakeOQSModule(profile) {
   return {
     HEAPU8,
     HEAPU32,
+    __allocations: allocations,
     _malloc(length) {
       const ptr = offset;
       offset += Math.max(length, 1) + 16;
+      allocations.push({ ptr, length: Math.max(length, 1) });
       return ptr;
     },
     _free() {},
@@ -120,7 +135,18 @@ function createFakeOQSModule(profile) {
       ) {
         return -1;
       }
-      return same(messagePtr, "hello") && HEAPU8[signaturePtr] === "h".charCodeAt(0) ? 0 : -3;
+      return HEAPU8[signaturePtr] === (HEAPU8[messagePtr] ?? 0) ? 0 : -3;
     }
   };
+}
+
+function assertAllocatedRangesWereZeroed(module) {
+  for (const { ptr, length } of module.__allocations) {
+    const range = module.HEAPU8.subarray(ptr, ptr + length);
+    assert.equal(
+      range.every((byte) => byte === 0),
+      true,
+      `allocated WASM heap range ${ptr}..${ptr + length} was not zeroed`
+    );
+  }
 }

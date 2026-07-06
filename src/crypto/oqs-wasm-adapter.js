@@ -107,6 +107,7 @@ export class NoctweaveOQSWasmAdapter {
     this.#assertLength(secretKey, profile.secretKeyLength, "secretKey");
     const signatureLengthPtr = this.module._malloc(4);
     this.#heapU32()[signatureLengthPtr >> 2] = profile.signatureLength;
+    let signatureBuffer;
     try {
       const result = this.#withInputOutput(
         { message, secretKey },
@@ -122,8 +123,10 @@ export class NoctweaveOQSWasmAdapter {
           )
       );
       const signatureLength = this.#heapU32()[signatureLengthPtr >> 2];
-      return result.signature.slice(0, signatureLength);
+      signatureBuffer = result.signature;
+      return signatureBuffer.slice(0, signatureLength);
     } finally {
+      wipeBytes(signatureBuffer);
       this.#zero(signatureLengthPtr, 4);
       this.module._free(signatureLengthPtr);
     }
@@ -158,10 +161,19 @@ export class NoctweaveOQSWasmAdapter {
     const signature = this.sign(message, sig.secretKey);
     const verified = this.verify(message, signature, sig.publicKey);
 
-    return {
-      kemSharedSecretsMatch: equalBytes(encapsulated.sharedSecret, decapsulated),
-      signatureVerified: verified
-    };
+    try {
+      return {
+        kemSharedSecretsMatch: equalBytes(encapsulated.sharedSecret, decapsulated),
+        signatureVerified: verified
+      };
+    } finally {
+      wipeBytes(kem.secretKey);
+      wipeBytes(encapsulated.sharedSecret);
+      wipeBytes(decapsulated);
+      wipeBytes(sig.secretKey);
+      wipeBytes(message);
+      wipeBytes(signature);
+    }
   }
 
   #withOutputPairs(definitions, operation) {
@@ -291,4 +303,10 @@ function equalBytes(a, b) {
     difference |= a[index] ^ b[index];
   }
   return difference === 0;
+}
+
+function wipeBytes(value) {
+  if (value instanceof Uint8Array) {
+    value.fill(0);
+  }
 }
