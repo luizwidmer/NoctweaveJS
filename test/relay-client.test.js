@@ -35,3 +35,33 @@ test("tcp endpoint fails explicitly in web client", async () => {
 
   await assert.rejects(() => client.health(), /not raw TCP/);
 });
+
+test("relay client redacts HTTP error bodies", async () => {
+  const fetch = async () => new Response("relay-secret-token", { status: 500 });
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  await assert.rejects(
+    () => client.info(),
+    (error) => {
+      assert.match(error.message, /Relay returned HTTP 500/);
+      assert.doesNotMatch(error.message, /relay-secret-token/);
+      assert.match(error.message, /non-json response/);
+      return true;
+    }
+  );
+});
+
+test("relay client redacts invalid JSON bodies", async () => {
+  const fetch = async () => new Response("not-json-secret", { status: 200 });
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  await assert.rejects(
+    () => client.info(),
+    (error) => {
+      assert.match(error.message, /Relay returned invalid JSON/);
+      assert.doesNotMatch(error.message, /not-json-secret/);
+      assert.match(error.message, /non-json response/);
+      return true;
+    }
+  );
+});

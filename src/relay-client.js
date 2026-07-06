@@ -51,12 +51,9 @@ export class NoctweaveRelayClient {
         body: JSON.stringify(request),
         signal: controller.signal
       });
-      const text = await response.text();
-      if (text.length > MAX_RESPONSE_BYTES) {
-        throw new Error("Relay response exceeds client size limit.");
-      }
+      const text = await boundedResponseText(response);
       if (!response.ok) {
-        throw new Error(`Relay returned HTTP ${response.status}: ${text.slice(0, 160)}`);
+        throw new Error(redactedHTTPError("Relay returned", response.status, text));
       }
       return decodeRelayResponse(text, request.type);
     } catch (error) {
@@ -78,9 +75,9 @@ export class NoctweaveRelayClient {
         headers: { "accept": "application/json, text/plain;q=0.9" },
         signal: controller.signal
       });
-      const text = await response.text();
+      const text = await boundedResponseText(response);
       if (!response.ok) {
-        throw new Error(`Relay health probe returned HTTP ${response.status}: ${text.slice(0, 160)}`);
+        throw new Error(redactedHTTPError("Relay health probe returned", response.status, text));
       }
       return decodeRelayResponse(text, "health");
     } finally {
@@ -142,8 +139,47 @@ function decodeRelayResponse(text, requestType) {
     if (requestType === "health" && ["ok", "healthy", "up", "\"ok\""].includes(lowered)) {
       return { type: "ok" };
     }
-    throw new Error(`Relay returned invalid JSON: ${trimmed.slice(0, 160)}`);
+    throw new Error(`Relay returned invalid JSON: ${responseClassification(trimmed)}`);
   }
+}
+
+async function boundedResponseText(response) {
+  const contentLength = Number(response.headers?.get?.("content-length") ?? 0);
+  if (contentLength > MAX_RESPONSE_BYTES) {
+    throw new Error("Relay response exceeds client size limit.");
+  }
+  const text = await response.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new Error("Relay response exceeds client size limit.");
+  }
+  return text;
+}
+
+function redactedHTTPError(prefix, status, text) {
+  return `${prefix} HTTP ${status}: ${responseClassification(text)}`;
+}
+
+function responseClassification(text) {
+  const byteCount = new TextEncoder().encode(text).byteLength;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return "empty response";
+  }
+  if (looksLikeHTML(trimmed)) {
+    return `html response (${byteCount} bytes)`;
+  }
+  if (looksLikeJSON(trimmed)) {
+    return `json response (${byteCount} bytes)`;
+  }
+  return `non-json response (${byteCount} bytes)`;
+}
+
+function looksLikeHTML(text) {
+  return /^<!doctype\s+html/i.test(text) || /^<html[\s>]/i.test(text);
+}
+
+function looksLikeJSON(text) {
+  return /^[\[{]/.test(text);
 }
 
 async function blobLikeToText(data) {
