@@ -5,6 +5,7 @@ export { NoctweaveWebClient } from "./client.js";
 export {
   BrowserLocalStorageStore,
   DatabaseNoctweaveStore,
+  EncryptedNoctweaveStore,
   IndexedDBNoctweaveStore,
   MemoryNoctweaveStore,
   NoctweaveStateRepository

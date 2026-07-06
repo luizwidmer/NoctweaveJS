@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   BrowserLocalStorageStore,
   DatabaseNoctweaveStore,
+  EncryptedNoctweaveStore,
   MemoryNoctweaveStore,
   NoctweaveStateRepository
 } from "../src/index.js";
@@ -43,6 +44,34 @@ test("database adapter store delegates persistence", async () => {
   assert.deepEqual(await repo.load(), { inboxId: "nw1..." });
   await repo.clear();
   assert.equal(await repo.load(), null);
+});
+
+test("encrypted store refuses plaintext records and hides persisted state", async () => {
+  const backend = new MemoryNoctweaveStore();
+  const store = new EncryptedNoctweaveStore(backend, {
+    keyBytes: new Uint8Array(32).fill(7)
+  });
+
+  await store.set("state", { inboxId: "nw1secret", contacts: [{ name: "Alice" }] });
+  const raw = await backend.get("state");
+
+  assert.equal(raw.__noctweaveEncrypted, 1);
+  assert.equal(JSON.stringify(raw).includes("nw1secret"), false);
+  assert.deepEqual(await store.get("state"), { inboxId: "nw1secret", contacts: [{ name: "Alice" }] });
+
+  await backend.set("plaintext", { inboxId: "leak" });
+  await assert.rejects(() => store.get("plaintext"), /refused to load plaintext/);
+});
+
+test("state repository serializes concurrent updates", async () => {
+  const repository = new NoctweaveStateRepository(new MemoryNoctweaveStore());
+  await repository.save({ count: 0 });
+
+  await Promise.all(Array.from({ length: 20 }, () => repository.update((state) => ({
+    count: state.count + 1
+  }))));
+
+  assert.deepEqual(await repository.load(), { count: 20 });
 });
 
 function makeLocalStorage() {

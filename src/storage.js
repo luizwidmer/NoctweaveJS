@@ -90,17 +90,43 @@ export class IndexedDBNoctweaveStore {
     return new Promise((resolve, reject) => {
       const tx = database.transaction(this.storeName, mode);
       const store = tx.objectStore(this.storeName);
-      let operationPromise;
-      tx.oncomplete = () => {};
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
+      let operationResult;
+      let settled = false;
+      const fail = (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      };
+      tx.oncomplete = () => {
+        if (!settled) {
+          settled = true;
+          resolve(operationResult);
+        }
+      };
+      tx.onerror = () => fail(tx.error);
+      tx.onabort = () => fail(tx.error);
       try {
-        operationPromise = Promise.resolve(operation(store));
+        Promise.resolve(operation(store))
+          .then((result) => {
+            operationResult = result;
+          })
+          .catch((error) => {
+            try {
+              tx.abort();
+            } catch {
+              // Ignore abort failures; the original error is more useful.
+            }
+            fail(error);
+          });
       } catch (error) {
-        reject(error);
-        return;
+        try {
+          tx.abort();
+        } catch {
+          // Ignore abort failures; the original error is more useful.
+        }
+        fail(error);
       }
-      operationPromise.then(resolve, reject);
     });
   }
 
@@ -120,6 +146,113 @@ export class IndexedDBNoctweaveStore {
       request.onerror = () => reject(request.error);
     });
     return this.databasePromise;
+  }
+}
+
+export class EncryptedNoctweaveStore {
+  constructor(store, options = {}) {
+    for (const method of ["get", "set", "delete"]) {
+      if (typeof store?.[method] !== "function") {
+        throw new TypeError(`Encrypted store backend must implement ${method}(...)`);
+      }
+    }
+    this.store = store;
+    this.crypto = options.crypto ?? globalThis.crypto;
+    if (!this.crypto?.subtle || typeof this.crypto.getRandomValues !== "function") {
+      throw new Error("WebCrypto is required for encrypted Noctweave storage.");
+    }
+    this.keyPromise = this.resolveKey(options);
+  }
+
+  async get(key) {
+    const envelope = await this.store.get(key);
+    if (envelope == null) {
+      return null;
+    }
+    if (envelope.__noctweaveEncrypted !== 1) {
+      throw new Error("Encrypted store refused to load plaintext state.");
+    }
+    const cryptoKey = await this.keyPromise;
+    const plaintext = await this.crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(envelope.nonce),
+        additionalData: storageAAD(key)
+      },
+      cryptoKey,
+      base64ToBytes(envelope.ciphertext)
+    );
+    return JSON.parse(new TextDecoder().decode(plaintext));
+  }
+
+  async set(key, value) {
+    const cryptoKey = await this.keyPromise;
+    const nonce = randomBytes(this.crypto, 12);
+    const plaintext = new TextEncoder().encode(JSON.stringify(value));
+    const ciphertext = await this.crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: nonce,
+        additionalData: storageAAD(key)
+      },
+      cryptoKey,
+      plaintext
+    );
+    await this.store.set(key, {
+      __noctweaveEncrypted: 1,
+      version: 1,
+      algorithm: "AES-256-GCM",
+      nonce: bytesToBase64(nonce),
+      ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+    });
+  }
+
+  async delete(key) {
+    await this.store.delete(key);
+  }
+
+  async clear() {
+    if (typeof this.store.clear === "function") {
+      await this.store.clear();
+      return;
+    }
+    throw new Error("Encrypted store backend does not implement clear().");
+  }
+
+  async resolveKey(options) {
+    if (typeof globalThis.CryptoKey !== "undefined" && options.key instanceof globalThis.CryptoKey) {
+      return options.key;
+    }
+    if (options.keyBytes || options.rawKey) {
+      const raw = bytesFromInput(options.keyBytes ?? options.rawKey);
+      if (raw.byteLength !== 32) {
+        throw new Error("Encrypted store raw key must be 32 bytes.");
+      }
+      return this.crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+    }
+    if (options.passphrase) {
+      const salt = bytesFromInput(options.salt ?? "noctweave-js-storage-v1");
+      const baseKey = await this.crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(String(options.passphrase)),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+      return this.crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt,
+          iterations: Number(options.iterations ?? 210_000),
+          hash: "SHA-256"
+        },
+        baseKey,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+    throw new Error("Encrypted store requires keyBytes, rawKey, key, or passphrase.");
   }
 }
 
@@ -158,6 +291,7 @@ export class NoctweaveStateRepository {
   constructor(store, { key = "client-state" } = {}) {
     this.store = store;
     this.key = key;
+    this.queue = Promise.resolve();
   }
 
   async load() {
@@ -165,19 +299,29 @@ export class NoctweaveStateRepository {
   }
 
   async save(state) {
-    await this.store.set(this.key, state);
-    return state;
+    return this.serialized(async () => {
+      await this.store.set(this.key, state);
+      return state;
+    });
   }
 
   async update(mutator) {
-    const current = await this.load();
-    const next = await mutator(current);
-    await this.save(next);
-    return next;
+    return this.serialized(async () => {
+      const current = await this.store.get(this.key);
+      const next = await mutator(current);
+      await this.store.set(this.key, next);
+      return next;
+    });
   }
 
   async clear() {
-    await this.store.delete(this.key);
+    await this.serialized(() => this.store.delete(this.key));
+  }
+
+  serialized(operation) {
+    const next = this.queue.then(operation, operation);
+    this.queue = next.catch(() => {});
+    return next;
   }
 }
 
@@ -196,4 +340,53 @@ function cloneValue(value) {
     return structuredClone(value);
   }
   return JSON.parse(JSON.stringify(value));
+}
+
+function storageAAD(key) {
+  return new TextEncoder().encode(`noctweave-storage:v1:${key}`);
+}
+
+function randomBytes(crypto, length) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function bytesFromInput(value) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (typeof value === "string") {
+    return new TextEncoder().encode(value);
+  }
+  if (Array.isArray(value)) {
+    return new Uint8Array(value);
+  }
+  throw new TypeError("Expected bytes, ArrayBuffer, array, or string.");
+}
+
+function bytesToBase64(bytes) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64");
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(value, "base64"));
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
