@@ -10,26 +10,36 @@ const MAX_SKIP = 64;
 
 export async function createNativeOutboundSession({ crypto, pqc, identity, contact }) {
   const encapsulated = pqc.encapsulate(fromBase64(contact.agreementPublicKey));
-  const conversation = await conversationFromSharedSecret({
-    crypto,
-    sharedSecret: encapsulated.sharedSecret,
-    ownAgreementPublicKey: fromBase64(identity.agreement.publicKey),
-    contactAgreementPublicKey: fromBase64(contact.agreementPublicKey),
-    contactFingerprint: contact.fingerprint
-  });
-  return { conversation, kemCiphertext: encapsulated.ciphertext };
+  try {
+    const conversation = await conversationFromSharedSecret({
+      crypto,
+      sharedSecret: encapsulated.sharedSecret,
+      ownAgreementPublicKey: fromBase64(identity.agreement.publicKey),
+      contactAgreementPublicKey: fromBase64(contact.agreementPublicKey),
+      contactFingerprint: contact.fingerprint
+    });
+    return { conversation, kemCiphertext: encapsulated.ciphertext };
+  } finally {
+    wipeBytes(encapsulated.sharedSecret);
+  }
 }
 
 export async function createNativeInboundSession({ crypto, pqc, identity, contact, kemCiphertext }) {
   const ownAgreement = deserializeKeypair(identity.agreement);
-  const sharedSecret = pqc.decapsulate(fromBase64(kemCiphertext), ownAgreement.secretKey);
-  return conversationFromSharedSecret({
-    crypto,
-    sharedSecret,
-    ownAgreementPublicKey: ownAgreement.publicKey,
-    contactAgreementPublicKey: fromBase64(contact.agreementPublicKey),
-    contactFingerprint: contact.fingerprint
-  });
+  let sharedSecret;
+  try {
+    sharedSecret = pqc.decapsulate(fromBase64(kemCiphertext), ownAgreement.secretKey);
+    return await conversationFromSharedSecret({
+      crypto,
+      sharedSecret,
+      ownAgreementPublicKey: ownAgreement.publicKey,
+      contactAgreementPublicKey: fromBase64(contact.agreementPublicKey),
+      contactFingerprint: contact.fingerprint
+    });
+  } finally {
+    wipeBytes(sharedSecret);
+    wipeBytes(ownAgreement.secretKey);
+  }
 }
 
 export async function encryptNativeTextEnvelope({
@@ -47,31 +57,37 @@ export async function encryptNativeTextEnvelope({
   const plaintext = encodePaddedText(text, (length) => crypto.randomBytes(length));
   const aad = authenticatedData(conversation.id, conversation.sessionId);
   const nonce = crypto.randomBytes(12);
-  const encrypted = await crypto.aesGcmEncrypt({
-    key: prepared.key,
-    nonce,
-    plaintext,
-    additionalData: aad
-  });
-  const envelope = {
-    id: swiftUUID(),
-    conversationId: conversation.id,
-    sessionId: conversation.sessionId,
-    senderFingerprint: identity.signingFingerprint,
-    sentAt,
-    messageCounter: prepared.counter,
-    payload: {
-      nonce: base64(nonce),
-      ciphertext: base64(encrypted.slice(0, -16)),
-      tag: base64(encrypted.slice(-16))
-    },
-    signature: ""
-  };
-  if (kemCiphertext) {
-    envelope.kemCiphertext = base64(kemCiphertext);
+  try {
+    const encrypted = await crypto.aesGcmEncrypt({
+      key: prepared.key,
+      nonce,
+      plaintext,
+      additionalData: aad
+    });
+    const envelope = {
+      id: swiftUUID(),
+      conversationId: conversation.id,
+      sessionId: conversation.sessionId,
+      senderFingerprint: identity.signingFingerprint,
+      sentAt,
+      messageCounter: prepared.counter,
+      payload: {
+        nonce: base64(nonce),
+        ciphertext: base64(encrypted.slice(0, -16)),
+        tag: base64(encrypted.slice(-16))
+      },
+      signature: ""
+    };
+    if (kemCiphertext) {
+      envelope.kemCiphertext = base64(kemCiphertext);
+    }
+    envelope.signature = base64(pqc.sign(canonicalEnvelopeBytes(envelope), ownSigning.secretKey));
+    return envelope;
+  } finally {
+    wipeBytes(ownSigning.secretKey);
+    wipeBytes(prepared.key);
+    wipeBytes(plaintext);
   }
-  envelope.signature = base64(pqc.sign(canonicalEnvelopeBytes(envelope), ownSigning.secretKey));
-  return envelope;
 }
 
 export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, conversation, envelope }) {
@@ -91,13 +107,19 @@ export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, co
   }
   const key = await receiveMessageKey(crypto, conversation.receiveChain, Number(envelope.messageCounter));
   const ciphertext = concatBytes(fromBase64(envelope.payload.ciphertext), fromBase64(envelope.payload.tag));
-  const plaintext = await crypto.aesGcmDecrypt({
-    key,
-    nonce: fromBase64(envelope.payload.nonce),
-    ciphertext,
-    additionalData: authenticatedData(conversation.id, conversation.sessionId)
-  });
-  return decodePaddedText(plaintext);
+  let plaintext;
+  try {
+    plaintext = await crypto.aesGcmDecrypt({
+      key,
+      nonce: fromBase64(envelope.payload.nonce),
+      ciphertext,
+      additionalData: authenticatedData(conversation.id, conversation.sessionId)
+    });
+    return decodePaddedText(plaintext);
+  } finally {
+    wipeBytes(key);
+    wipeBytes(plaintext);
+  }
 }
 
 export async function verifyNativeContactOffer({ crypto, pqc, offer }) {
@@ -198,26 +220,49 @@ async function conversationFromSharedSecret({
     info: receiveLabel,
     length: 32
   });
-  return {
-    id: await conversationIdForAgreement(crypto, ownAgreementPublicKey, contactAgreementPublicKey),
-    contactFingerprint,
-    sessionId: base64(await crypto.sha256(concatBytes(encoder.encode("NOCTWEAVE-SESSION"), sharedSecret))),
-    rootKey: base64(rootKey),
-    rootCounter: 0,
-    sendChain: serializeChain(sendKey),
-    receiveChain: serializeChain(receiveKey)
-  };
+  let sessionMaterial;
+  let sessionHash;
+  try {
+    sessionMaterial = concatBytes(encoder.encode("NOCTWEAVE-SESSION"), sharedSecret);
+    sessionHash = await crypto.sha256(sessionMaterial);
+    return {
+      id: await conversationIdForAgreement(crypto, ownAgreementPublicKey, contactAgreementPublicKey),
+      contactFingerprint,
+      sessionId: base64(sessionHash),
+      rootKey: base64(rootKey),
+      rootCounter: 0,
+      sendChain: serializeChain(sendKey),
+      receiveChain: serializeChain(receiveKey)
+    };
+  } finally {
+    wipeBytes(rootKey);
+    wipeBytes(sendKey);
+    wipeBytes(receiveKey);
+    wipeBytes(sessionMaterial);
+    wipeBytes(sessionHash);
+  }
 }
 
 async function nextMessageKey(crypto, chain) {
   const counter = Number(chain.counter ?? 0);
   const keyData = fromBase64(chain.keyData);
   const counterBytes = uint64BE(counter);
-  const messageKey = await crypto.hmacSha256({ key: keyData, data: concatBytes(encoder.encode("MSG"), counterBytes) });
-  const nextChain = await crypto.hmacSha256({ key: keyData, data: concatBytes(encoder.encode("CK"), counterBytes) });
-  chain.keyData = base64(nextChain);
-  chain.counter = counter + 1;
-  return { counter, key: messageKey };
+  const messageData = concatBytes(encoder.encode("MSG"), counterBytes);
+  const chainData = concatBytes(encoder.encode("CK"), counterBytes);
+  let nextChain;
+  try {
+    const messageKey = await crypto.hmacSha256({ key: keyData, data: messageData });
+    nextChain = await crypto.hmacSha256({ key: keyData, data: chainData });
+    chain.keyData = base64(nextChain);
+    chain.counter = counter + 1;
+    return { counter, key: messageKey };
+  } finally {
+    wipeBytes(keyData);
+    wipeBytes(counterBytes);
+    wipeBytes(messageData);
+    wipeBytes(chainData);
+    wipeBytes(nextChain);
+  }
 }
 
 async function receiveMessageKey(crypto, chain, targetCounter) {
@@ -237,6 +282,7 @@ async function receiveMessageKey(crypto, chain, targetCounter) {
   while (Number(chain.counter ?? 0) < targetCounter) {
     const skipped = await nextMessageKey(crypto, chain);
     chain.skippedMessageKeys[String(skipped.counter)] = base64(skipped.key);
+    wipeBytes(skipped.key);
   }
   const prepared = await nextMessageKey(crypto, chain);
   return prepared.key;
@@ -248,19 +294,26 @@ function authenticatedData(conversationId, sessionId) {
 
 function encodePaddedText(text, randomBytes) {
   const bodyData = canonicalJsonBytes({ text, type: "text" });
-  const paddedSize = paddedSizeFor(bodyData.byteLength);
-  if (paddedSize > MAX_PADDED_BYTES) {
-    throw new Error("Plaintext exceeds native message size limit.");
+  let padding;
+  try {
+    const paddedSize = paddedSizeFor(bodyData.byteLength);
+    if (paddedSize > MAX_PADDED_BYTES) {
+      throw new Error("Plaintext exceeds native message size limit.");
+    }
+    const paddingCount = paddedSize - NPAD_HEADER_BYTES - bodyData.byteLength;
+    const output = new Uint8Array(paddedSize);
+    output.set(NPAD_MAGIC, 0);
+    output.set(uint32BE(bodyData.byteLength), NPAD_MAGIC.byteLength);
+    output.set(bodyData, NPAD_HEADER_BYTES);
+    if (paddingCount > 0) {
+      padding = randomBytes(paddingCount);
+      output.set(padding, NPAD_HEADER_BYTES + bodyData.byteLength);
+    }
+    return output;
+  } finally {
+    wipeBytes(bodyData);
+    wipeBytes(padding);
   }
-  const paddingCount = paddedSize - NPAD_HEADER_BYTES - bodyData.byteLength;
-  const output = new Uint8Array(paddedSize);
-  output.set(NPAD_MAGIC, 0);
-  output.set(uint32BE(bodyData.byteLength), NPAD_MAGIC.byteLength);
-  output.set(bodyData, NPAD_HEADER_BYTES);
-  if (paddingCount > 0) {
-    output.set(randomBytes(paddingCount), NPAD_HEADER_BYTES + bodyData.byteLength);
-  }
-  return output;
 }
 
 function decodePaddedText(data) {
@@ -364,4 +417,14 @@ function concatBytes(a, b) {
   output.set(a, 0);
   output.set(b, a.byteLength);
   return output;
+}
+
+function wipeBytes(value) {
+  if (value instanceof Uint8Array) {
+    value.fill(0);
+    return;
+  }
+  if (value instanceof ArrayBuffer) {
+    new Uint8Array(value).fill(0);
+  }
 }
