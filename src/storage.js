@@ -182,29 +182,38 @@ export class EncryptedNoctweaveStore {
       cryptoKey,
       base64ToBytes(envelope.ciphertext)
     );
-    return JSON.parse(new TextDecoder().decode(plaintext));
+    const plaintextBytes = new Uint8Array(plaintext);
+    try {
+      return JSON.parse(new TextDecoder().decode(plaintextBytes));
+    } finally {
+      plaintextBytes.fill(0);
+    }
   }
 
   async set(key, value) {
     const cryptoKey = await this.keyPromise;
     const nonce = randomBytes(this.crypto, 12);
     const plaintext = new TextEncoder().encode(JSON.stringify(value));
-    const ciphertext = await this.crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce,
-        additionalData: storageAAD(key)
-      },
-      cryptoKey,
-      plaintext
-    );
-    await this.store.set(key, {
-      __noctweaveEncrypted: 1,
-      version: 1,
-      algorithm: "AES-256-GCM",
-      nonce: bytesToBase64(nonce),
-      ciphertext: bytesToBase64(new Uint8Array(ciphertext))
-    });
+    try {
+      const ciphertext = await this.crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv: nonce,
+          additionalData: storageAAD(key)
+        },
+        cryptoKey,
+        plaintext
+      );
+      await this.store.set(key, {
+        __noctweaveEncrypted: 1,
+        version: 1,
+        algorithm: "AES-256-GCM",
+        nonce: bytesToBase64(nonce),
+        ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+      });
+    } finally {
+      plaintext.fill(0);
+    }
   }
 
   async delete(key) {
@@ -224,21 +233,32 @@ export class EncryptedNoctweaveStore {
       return options.key;
     }
     if (options.keyBytes || options.rawKey) {
-      const raw = bytesFromInput(options.keyBytes ?? options.rawKey);
+      const raw = copyBytesFromInput(options.keyBytes ?? options.rawKey);
       if (raw.byteLength !== 32) {
+        raw.fill(0);
         throw new Error("Encrypted store raw key must be 32 bytes.");
       }
-      return this.crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+      try {
+        return await this.crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+      } finally {
+        raw.fill(0);
+      }
     }
     if (options.passphrase) {
       const salt = bytesFromInput(options.salt ?? "noctweave-js-storage-v1");
-      const baseKey = await this.crypto.subtle.importKey(
-        "raw",
-        new TextEncoder().encode(String(options.passphrase)),
-        "PBKDF2",
-        false,
-        ["deriveKey"]
-      );
+      const passphraseBytes = new TextEncoder().encode(String(options.passphrase));
+      let baseKey;
+      try {
+        baseKey = await this.crypto.subtle.importKey(
+          "raw",
+          passphraseBytes,
+          "PBKDF2",
+          false,
+          ["deriveKey"]
+        );
+      } finally {
+        passphraseBytes.fill(0);
+      }
       return this.crypto.subtle.deriveKey(
         {
           name: "PBKDF2",
@@ -366,6 +386,10 @@ function bytesFromInput(value) {
     return new Uint8Array(value);
   }
   throw new TypeError("Expected bytes, ArrayBuffer, array, or string.");
+}
+
+function copyBytesFromInput(value) {
+  return new Uint8Array(bytesFromInput(value));
 }
 
 function bytesToBase64(bytes) {
