@@ -33,7 +33,12 @@ const state = {
   contacts: [],
   conversations: {},
   messages: [],
-  seenEnvelopeIds: new Set()
+  seenEnvelopeIds: new Set(),
+  selectedContactFingerprint: "",
+  isContactCodeVisible: false,
+  autoFetchEnabled: false,
+  autoFetchTimer: null,
+  isFetching: false
 };
 
 const elements = {
@@ -43,33 +48,59 @@ const elements = {
   relayInfo: document.querySelector("#relayInfo"),
   createIdentity: document.querySelector("#createIdentity"),
   resetProfile: document.querySelector("#resetProfile"),
+  exportProfile: document.querySelector("#exportProfile"),
+  importProfile: document.querySelector("#importProfile"),
+  identityDot: document.querySelector("#identityDot"),
   profile: document.querySelector("#profile"),
   inbox: document.querySelector("#inbox"),
   fingerprint: document.querySelector("#fingerprint"),
   contactCode: document.querySelector("#contactCode"),
+  toggleCode: document.querySelector("#toggleCode"),
   copyCode: document.querySelector("#copyCode"),
   peerCode: document.querySelector("#peerCode"),
   importContact: document.querySelector("#importContact"),
+  contactList: document.querySelector("#contactList"),
+  contactCount: document.querySelector("#contactCount"),
   contacts: document.querySelector("#contacts"),
+  deleteContact: document.querySelector("#deleteContact"),
   message: document.querySelector("#message"),
+  messageCount: document.querySelector("#messageCount"),
   send: document.querySelector("#send"),
   fetch: document.querySelector("#fetch"),
+  autoFetch: document.querySelector("#autoFetch"),
+  chatTitle: document.querySelector("#chatTitle"),
   chat: document.querySelector("#chat"),
-  log: document.querySelector("#log")
+  log: document.querySelector("#log"),
+  clearLog: document.querySelector("#clearLog")
 };
 
 elements.connect.addEventListener("click", () => runAction("Checking relay", checkRelay));
 elements.createIdentity.addEventListener("click", () => runAction("Creating inbox", createIdentity));
 elements.resetProfile.addEventListener("click", () => runAction("Resetting", resetProfile));
+elements.exportProfile.addEventListener("click", () => runAction("Exporting", exportProfile));
+elements.importProfile.addEventListener("change", () => runAction("Importing profile", importProfile));
+elements.relay.addEventListener("change", saveState);
+elements.toggleCode.addEventListener("click", toggleContactCode);
 elements.copyCode.addEventListener("click", () => runAction("Copying", copyContactCode));
 elements.importContact.addEventListener("click", () => runAction("Importing", importContactCode));
-elements.contacts.addEventListener("change", renderChat);
+elements.contacts.addEventListener("change", () => selectContact(elements.contacts.value));
+elements.deleteContact.addEventListener("click", () => runAction("Deleting", deleteSelectedContact));
 elements.send.addEventListener("click", () => runAction("Sending", sendMessage));
 elements.fetch.addEventListener("click", () => runAction("Fetching", fetchMessages));
+elements.autoFetch.addEventListener("change", toggleAutoFetch);
+elements.clearLog.addEventListener("click", () => {
+  elements.log.textContent = "";
+});
+elements.message.addEventListener("input", renderMessageCount);
 elements.message.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     runAction("Sending", sendMessage);
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.identity) {
+    runAction("Fetching", fetchMessages);
   }
 });
 
@@ -85,7 +116,7 @@ async function checkRelay() {
   const client = relayClient();
   const health = await client.health();
   const info = await client.info();
-  elements.relayInfo.textContent = `${info.relayInfo?.relayName ?? "Relay"} | ${info.relayInfo?.softwareVersion ?? "unknown software"} | ${info.relayInfo?.transport ?? "unknown transport"}`;
+  renderRelayInfo({ health, info });
   log(`health ${JSON.stringify(health)}`);
 }
 
@@ -134,7 +165,7 @@ async function createIdentity() {
 
 async function copyContactCode() {
   ensureIdentity();
-  await navigator.clipboard.writeText(elements.contactCode.value);
+  await navigator.clipboard.writeText(currentContactCode());
   log("contact code copied");
 }
 
@@ -155,6 +186,7 @@ async function importContactCode() {
   } else {
     state.contacts.push(contactFromOffer(offer));
   }
+  state.selectedContactFingerprint = offer.fingerprint;
   elements.peerCode.value = "";
   saveState();
   renderAll();
@@ -208,6 +240,7 @@ async function sendMessage() {
     sentAt
   });
   elements.message.value = "";
+  renderMessageCount();
   saveState();
   renderChat();
   log(`sent to ${contact.displayName}`);
@@ -215,46 +248,140 @@ async function sendMessage() {
 
 async function fetchMessages() {
   ensureIdentity();
-  const ownAccess = deserializeKeypair(state.identity.access);
-  const maxCount = 50;
-  const signedAt = swiftISODate();
-  const nonce = swiftUUID();
-  const response = await relayClient().send(relayRequests.fetch({
-    inboxId: state.identity.inboxId,
-    routingToken: null,
-    maxCount,
-    longPollTimeoutSeconds: null,
-    accessProof: actorProof({
-      keypair: ownAccess,
-      fingerprint: state.identity.accessFingerprint,
-      signedAt,
-      nonce,
-      payload: {
-        inboxId: state.identity.inboxId,
-        maxCount,
-        nonce,
-        signedAt
-      }
-    })
-  }));
-  if (response.type !== "messages") {
-    throw new Error(`Fetch failed: ${JSON.stringify(response)}`);
+  if (state.isFetching) {
+    return;
   }
-  let decodedCount = 0;
-  for (const envelope of response.messages ?? []) {
-    if (state.seenEnvelopeIds.has(envelope.id?.toLowerCase())) {
-      continue;
+  state.isFetching = true;
+  try {
+    const ownAccess = deserializeKeypair(state.identity.access);
+    const maxCount = 50;
+    const signedAt = swiftISODate();
+    const nonce = swiftUUID();
+    const response = await relayClient().send(relayRequests.fetch({
+      inboxId: state.identity.inboxId,
+      routingToken: null,
+      maxCount,
+      longPollTimeoutSeconds: null,
+      accessProof: actorProof({
+        keypair: ownAccess,
+        fingerprint: state.identity.accessFingerprint,
+        signedAt,
+        nonce,
+        payload: {
+          inboxId: state.identity.inboxId,
+          maxCount,
+          nonce,
+          signedAt
+        }
+      })
+    }));
+    if (response.type !== "messages") {
+      throw new Error(`Fetch failed: ${JSON.stringify(response)}`);
     }
-    state.seenEnvelopeIds.add(envelope.id?.toLowerCase());
-    const decoded = await decodeEnvelope(envelope);
-    if (decoded) {
-      state.messages.push(decoded);
-      decodedCount++;
+    let decodedCount = 0;
+    for (const envelope of response.messages ?? []) {
+      if (state.seenEnvelopeIds.has(envelope.id?.toLowerCase())) {
+        continue;
+      }
+      state.seenEnvelopeIds.add(envelope.id?.toLowerCase());
+      const decoded = await decodeEnvelope(envelope);
+      if (decoded) {
+        state.messages.push(decoded);
+        decodedCount++;
+      }
     }
+    saveState();
+    renderChat();
+    log(`fetch complete: ${decodedCount} new message(s)`);
+  } finally {
+    state.isFetching = false;
+  }
+}
+
+function toggleContactCode() {
+  state.isContactCodeVisible = !state.isContactCodeVisible;
+  renderContactCode();
+}
+
+function toggleAutoFetch() {
+  state.autoFetchEnabled = elements.autoFetch.checked;
+  configureAutoFetch();
+  saveState();
+  log(state.autoFetchEnabled ? "auto-fetch enabled" : "auto-fetch disabled");
+}
+
+function configureAutoFetch() {
+  if (state.autoFetchTimer) {
+    clearInterval(state.autoFetchTimer);
+    state.autoFetchTimer = null;
+  }
+  if (!state.autoFetchEnabled || !state.identity) {
+    return;
+  }
+  state.autoFetchTimer = setInterval(() => {
+    if (document.visibilityState === "visible") {
+      runAction("Fetching", fetchMessages);
+    }
+  }, 4000);
+}
+
+function deleteSelectedContact() {
+  const contact = selectedContact();
+  if (!confirm(`Delete ${contact.displayName} from this browser profile?`)) {
+    return;
+  }
+  state.contacts = state.contacts.filter((candidate) => candidate.fingerprint !== contact.fingerprint);
+  state.messages = state.messages.filter((message) => message.contactFingerprint !== contact.fingerprint);
+  delete state.conversations[nativeConversationKey(contact)];
+  state.selectedContactFingerprint = state.contacts[0]?.fingerprint ?? "";
+  saveState();
+  renderAll();
+  log(`deleted ${contact.displayName}`);
+}
+
+function exportProfile() {
+  const payload = JSON.stringify({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    profile,
+    identity: state.identity,
+    contacts: state.contacts,
+    conversations: state.conversations,
+    messages: state.messages,
+    seenEnvelopeIds: [...state.seenEnvelopeIds],
+    relay: elements.relay.value
+  }, null, 2);
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `noctweave-${profile}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  log("profile exported");
+}
+
+async function importProfile() {
+  const [file] = elements.importProfile.files ?? [];
+  elements.importProfile.value = "";
+  if (!file) {
+    return;
+  }
+  const payload = JSON.parse(await file.text());
+  if (payload.version !== 1) {
+    throw new Error("Unsupported profile export.");
+  }
+  state.identity = payload.identity ?? null;
+  state.contacts = payload.contacts ?? [];
+  state.conversations = payload.conversations ?? {};
+  state.messages = payload.messages ?? [];
+  state.seenEnvelopeIds = new Set(payload.seenEnvelopeIds ?? []);
+  state.selectedContactFingerprint = state.contacts[0]?.fingerprint ?? "";
+  if (payload.relay) {
+    elements.relay.value = payload.relay;
   }
   saveState();
-  renderChat();
-  log(`fetch complete: ${decodedCount} new message(s)`);
+  renderAll();
+  log(`profile imported from ${file.name}`);
 }
 
 async function decodeEnvelope(envelope) {
@@ -357,22 +484,53 @@ function renderAll() {
   elements.profile.textContent = profile;
   elements.inbox.textContent = state.identity?.inboxId ?? "Not created";
   elements.fingerprint.textContent = state.identity?.signingFingerprint ?? "Not created";
-  elements.contactCode.value = state.identity ? encodeNativeContactCode(state.identity.contactOffer) : "";
+  elements.identityDot.classList.toggle("ready", Boolean(state.identity));
+  renderContactCode();
   elements.copyCode.disabled = !state.identity;
+  elements.toggleCode.disabled = !state.identity;
+  elements.exportProfile.disabled = !state.identity;
   elements.send.disabled = !state.identity || state.contacts.length === 0;
   elements.fetch.disabled = !state.identity;
+  elements.autoFetch.disabled = !state.identity;
+  elements.autoFetch.checked = state.autoFetchEnabled;
+  elements.deleteContact.disabled = !state.identity || state.contacts.length === 0;
   renderContacts();
   renderChat();
+  renderMessageCount();
+  configureAutoFetch();
+}
+
+function renderContactCode() {
+  elements.toggleCode.textContent = state.isContactCodeVisible ? "Hide" : "Show";
+  if (!state.identity) {
+    elements.contactCode.value = "";
+    elements.contactCode.placeholder = "Create an inbox first.";
+    return;
+  }
+  if (state.isContactCodeVisible) {
+    elements.contactCode.value = currentContactCode();
+    return;
+  }
+  elements.contactCode.value = "Contact code hidden. Use Copy Code or Show.";
+}
+
+function currentContactCode() {
+  ensureIdentity();
+  return encodeNativeContactCode(state.identity.contactOffer);
 }
 
 function renderContacts() {
-  const previous = elements.contacts.value;
+  const previous = state.selectedContactFingerprint || elements.contacts.value;
   elements.contacts.innerHTML = "";
+  elements.contactList.innerHTML = "";
+  elements.contactCount.textContent = String(state.contacts.length);
   if (state.contacts.length === 0) {
     const option = document.createElement("option");
     option.textContent = "No contacts paired";
     option.value = "";
     elements.contacts.append(option);
+    state.selectedContactFingerprint = "";
+    elements.deleteContact.disabled = true;
     return;
   }
   for (const contact of state.contacts) {
@@ -380,21 +538,52 @@ function renderContacts() {
     option.value = contact.fingerprint;
     option.textContent = contact.displayName;
     elements.contacts.append(option);
+
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "contactCard";
+    card.dataset.fingerprint = contact.fingerprint;
+    card.innerHTML = `<strong></strong><span></span>`;
+    card.querySelector("strong").textContent = contact.displayName;
+    card.querySelector("span").textContent = `${shortFingerprint(contact.fingerprint)} · ${contact.relay?.host ?? "relay"}`;
+    card.addEventListener("click", () => selectContact(contact.fingerprint));
+    elements.contactList.append(card);
   }
   if (state.contacts.some((contact) => contact.fingerprint === previous)) {
-    elements.contacts.value = previous;
+    state.selectedContactFingerprint = previous;
+  } else {
+    state.selectedContactFingerprint = state.contacts[0].fingerprint;
+  }
+  elements.contacts.value = state.selectedContactFingerprint;
+  elements.deleteContact.disabled = false;
+  syncContactCardSelection();
+}
+
+function selectContact(fingerprint) {
+  state.selectedContactFingerprint = fingerprint;
+  elements.contacts.value = fingerprint;
+  saveState();
+  syncContactCardSelection();
+  renderChat();
+}
+
+function syncContactCardSelection() {
+  for (const card of elements.contactList.querySelectorAll(".contactCard")) {
+    card.classList.toggle("active", card.dataset.fingerprint === state.selectedContactFingerprint);
   }
 }
 
 function renderChat() {
-  const fingerprint = elements.contacts.value;
+  const fingerprint = state.selectedContactFingerprint || elements.contacts.value;
   const rows = state.messages.filter((message) => message.contactFingerprint === fingerprint);
+  const contact = state.contacts.find((candidate) => candidate.fingerprint === fingerprint);
+  elements.chatTitle.textContent = contact?.displayName ?? "No contact selected";
   if (!fingerprint) {
-    elements.chat.textContent = "Pair with a contact to start.";
+    renderEmptyChat("Pair with a contact to start.");
     return;
   }
   if (rows.length === 0) {
-    elements.chat.textContent = "No messages in this chat.";
+    renderEmptyChat("No messages in this chat yet.");
     return;
   }
   elements.chat.innerHTML = "";
@@ -403,11 +592,48 @@ function renderChat() {
     bubble.className = `bubble ${message.direction}`;
     bubble.textContent = message.text;
     const meta = document.createElement("span");
-    meta.textContent = `${message.direction === "out" ? "Sent" : "Received"} ${message.sentAt}`;
+    meta.textContent = `${message.direction === "out" ? "Sent" : "Received"} ${formatDate(message.sentAt)}`;
     bubble.append(meta);
     elements.chat.append(bubble);
   }
   elements.chat.scrollTop = elements.chat.scrollHeight;
+}
+
+function renderEmptyChat(text) {
+  elements.chat.innerHTML = "";
+  const empty = document.createElement("div");
+  empty.className = "emptyState";
+  empty.textContent = text;
+  elements.chat.append(empty);
+}
+
+function renderMessageCount() {
+  const count = elements.message.value.length;
+  elements.messageCount.textContent = `${count} character${count === 1 ? "" : "s"}`;
+}
+
+function renderRelayInfo({ health, info }) {
+  const relayInfo = info.relayInfo ?? {};
+  const chips = [
+    ["Name", relayInfo.relayName ?? "Relay"],
+    ["Software", relayInfo.softwareVersion ?? "Unknown"],
+    ["Transport", relayInfo.transport ?? "HTTP"],
+    ["Health", health?.status ?? "OK"]
+  ];
+  elements.relayInfo.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "infoGrid";
+  for (const [title, value] of chips) {
+    const chip = document.createElement("div");
+    chip.className = "infoChip";
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const span = document.createElement("span");
+    span.textContent = String(value);
+    chip.append(strong, span);
+    grid.append(chip);
+  }
+  elements.relayInfo.append(grid);
 }
 
 function saveState() {
@@ -417,7 +643,9 @@ function saveState() {
     conversations: state.conversations,
     messages: state.messages,
     seenEnvelopeIds: [...state.seenEnvelopeIds],
-    relay: elements.relay.value
+    relay: elements.relay.value,
+    selectedContactFingerprint: state.selectedContactFingerprint,
+    autoFetchEnabled: state.autoFetchEnabled
   }));
 }
 
@@ -428,6 +656,8 @@ function loadState() {
   state.conversations = saved.conversations ?? {};
   state.messages = saved.messages ?? [];
   state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds ?? []);
+  state.selectedContactFingerprint = saved.selectedContactFingerprint ?? state.contacts[0]?.fingerprint ?? "";
+  state.autoFetchEnabled = Boolean(saved.autoFetchEnabled);
   if (saved.relay) {
     elements.relay.value = saved.relay;
   }
@@ -440,6 +670,9 @@ function resetProfile() {
   state.conversations = {};
   state.messages = [];
   state.seenEnvelopeIds = new Set();
+  state.selectedContactFingerprint = "";
+  state.isContactCodeVisible = false;
+  state.autoFetchEnabled = false;
   renderAll();
   log("profile reset");
 }
@@ -516,6 +749,25 @@ function fromBase64(value) {
     output[index] = binary.charCodeAt(index);
   }
   return output;
+}
+
+function shortFingerprint(value) {
+  if (!value || value.length <= 14) {
+    return value ?? "";
+  }
+  return `${value.slice(0, 7)}…${value.slice(-6)}`;
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(date);
 }
 
 function bech32Encode(hrp, data) {
