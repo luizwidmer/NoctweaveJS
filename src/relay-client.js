@@ -3,12 +3,49 @@ import { relayRequests } from "./requests.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_RESPONSE_BYTES = 1_000_000;
-const MAX_REQUEST_BYTES = 512 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
+const DEFAULT_MAX_REQUEST_BYTES = 512 * 1024;
+const ABSOLUTE_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const ABSOLUTE_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+const DEFAULT_TCP_PORT = 9339;
+
+export const relayClientPolicyDefaults = Object.freeze({
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+  defaultTCPPort: DEFAULT_TCP_PORT,
+  maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
+  maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES
+});
+
+export const relayClientPolicyLimits = Object.freeze({
+  maximumTimeoutMs: MAX_TIMEOUT_MS,
+  maximumResponseBytes: ABSOLUTE_MAX_RESPONSE_BYTES,
+  maximumRequestBytes: ABSOLUTE_MAX_REQUEST_BYTES
+});
+
+export function normalizeRelayClientPolicy(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Relay client policy must be an object.");
+  }
+  return Object.freeze({
+    timeoutMs: normalizedTimeout(value.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    defaultTCPPort: normalizedPort(value.defaultTCPPort ?? DEFAULT_TCP_PORT),
+    maxResponseBytes: normalizedByteBudget(
+      value.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+      "response",
+      ABSOLUTE_MAX_RESPONSE_BYTES
+    ),
+    maxRequestBytes: normalizedByteBudget(
+      value.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
+      "request",
+      ABSOLUTE_MAX_REQUEST_BYTES
+    )
+  });
+}
 
 export class NoctweaveRelayClient {
   constructor(endpoint, options = {}) {
-    this.endpoint = normalizeRelayEndpoint(endpoint);
+    this.policy = normalizeRelayClientPolicy(options.policy);
+    this.endpoint = normalizeRelayEndpoint(endpoint, { defaultPort: this.policy.defaultTCPPort });
     this.authToken = options.authToken ?? null;
     if (this.authToken !== null &&
         (typeof this.authToken !== "string" || new TextEncoder().encode(this.authToken).byteLength > 4096)) {
@@ -16,7 +53,7 @@ export class NoctweaveRelayClient {
     }
     this.fetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.WebSocket = options.WebSocket ?? globalThis.WebSocket;
-    this.timeoutMs = normalizedTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    this.timeoutMs = normalizedTimeout(options.timeoutMs ?? this.policy.timeoutMs);
 
     if (!this.fetch) {
       throw new Error("fetch is not available. Pass a fetch implementation in options.");
@@ -48,7 +85,7 @@ export class NoctweaveRelayClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const body = encodedRequest(request);
+      const body = encodedRequest(request, this.policy.maxRequestBytes);
       const response = await this.fetch(relayEndpointURL(this.endpoint, "/relay"), {
         method: "POST",
         headers: {
@@ -62,7 +99,7 @@ export class NoctweaveRelayClient {
         cache: "no-store",
         signal: controller.signal
       });
-      const text = await boundedResponseText(response);
+      const text = await boundedResponseText(response, this.policy.maxResponseBytes);
       if (!response.ok) {
         throw new Error(redactedHTTPError("Relay returned", response.status, text));
       }
@@ -90,7 +127,7 @@ export class NoctweaveRelayClient {
         cache: "no-store",
         signal: controller.signal
       });
-      const text = await boundedResponseText(response);
+      const text = await boundedResponseText(response, this.policy.maxResponseBytes);
       if (!response.ok) {
         throw new Error(redactedHTTPError("Relay health probe returned", response.status, text));
       }
@@ -123,7 +160,7 @@ export class NoctweaveRelayClient {
 
       socket.onopen = () => {
         try {
-          socket.send(encodedRequest(request));
+          socket.send(encodedRequest(request, this.policy.maxRequestBytes));
         } catch (error) {
           finish(reject, error);
         }
@@ -134,8 +171,10 @@ export class NoctweaveRelayClient {
       socket.onclose = () => finish(reject, new Error("Relay WebSocket closed before returning a response."));
       socket.onmessage = async (event) => {
         try {
-          const text = typeof event.data === "string" ? event.data : await blobLikeToText(event.data);
-          if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
+          const text = typeof event.data === "string"
+            ? event.data
+            : await blobLikeToText(event.data, this.policy.maxResponseBytes);
+          if (new TextEncoder().encode(text).byteLength > this.policy.maxResponseBytes) {
             throw new Error("Relay response exceeds client size limit.");
           }
           finish(resolve, decodeRelayResponse(text, request.type));
@@ -170,9 +209,9 @@ function decodeRelayResponse(text, requestType) {
   }
 }
 
-async function boundedResponseText(response) {
+async function boundedResponseText(response, maximumBytes) {
   const contentLength = Number(response.headers?.get?.("content-length") ?? 0);
-  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
     throw new Error("Relay response exceeds client size limit.");
   }
   if (!response.body?.getReader) {
@@ -190,7 +229,7 @@ async function boundedResponseText(response) {
         break;
       }
       byteCount += value.byteLength;
-      if (byteCount > MAX_RESPONSE_BYTES) {
+      if (byteCount > maximumBytes) {
         await reader.cancel("Relay response exceeds client size limit.");
         throw new Error("Relay response exceeds client size limit.");
       }
@@ -199,7 +238,7 @@ async function boundedResponseText(response) {
   } finally {
     reader.releaseLock();
   }
-  if (byteCount > MAX_RESPONSE_BYTES) {
+  if (byteCount > maximumBytes) {
     throw new Error("Relay response exceeds client size limit.");
   }
   return text;
@@ -211,6 +250,24 @@ function normalizedTimeout(value) {
     throw new TypeError(`Relay timeout must be between 1 and ${MAX_TIMEOUT_MS} milliseconds.`);
   }
   return Math.ceil(timeout);
+}
+
+function normalizedPort(value) {
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new TypeError("Relay client default TCP port must be between 1 and 65535.");
+  }
+  return port;
+}
+
+function normalizedByteBudget(value, label, absoluteMaximum) {
+  const bytes = Number(value);
+  if (!Number.isSafeInteger(bytes) || bytes < 1_024 || bytes > absoluteMaximum) {
+    throw new TypeError(
+      `Relay client ${label} budget must be between 1024 and ${absoluteMaximum} bytes.`
+    );
+  }
+  return bytes;
 }
 
 function redactedHTTPError(prefix, status, text) {
@@ -240,24 +297,24 @@ function looksLikeJSON(text) {
   return /^[\[{]/.test(text);
 }
 
-async function blobLikeToText(data) {
+async function blobLikeToText(data, maximumBytes = DEFAULT_MAX_RESPONSE_BYTES) {
   if (data == null) {
     return "";
   }
   if (typeof data.text === "function") {
-    if (Number.isFinite(data.size) && data.size > MAX_RESPONSE_BYTES) {
+    if (Number.isFinite(data.size) && data.size > maximumBytes) {
       throw new Error("Relay response exceeds client size limit.");
     }
     return data.text();
   }
   if (data instanceof ArrayBuffer) {
-    if (data.byteLength > MAX_RESPONSE_BYTES) {
+    if (data.byteLength > maximumBytes) {
       throw new Error("Relay response exceeds client size limit.");
     }
     return new TextDecoder().decode(data);
   }
   if (ArrayBuffer.isView(data)) {
-    if (data.byteLength > MAX_RESPONSE_BYTES) {
+    if (data.byteLength > maximumBytes) {
       throw new Error("Relay response exceeds client size limit.");
     }
     return new TextDecoder().decode(data);
@@ -265,9 +322,9 @@ async function blobLikeToText(data) {
   return String(data);
 }
 
-function encodedRequest(request) {
+function encodedRequest(request, maximumBytes) {
   const body = JSON.stringify(request);
-  if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
+  if (new TextEncoder().encode(body).byteLength > maximumBytes) {
     throw new Error("Relay request exceeds client size limit.");
   }
   return body;

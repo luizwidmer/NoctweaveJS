@@ -9,7 +9,7 @@ export function parseRelayEndpoint(input, options = {}) {
   const defaultPort = Number(options.defaultPort ?? DEFAULT_TCP_PORT);
 
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
-    return parseURLRelayEndpoint(trimmed);
+    return parseURLRelayEndpoint(trimmed, defaultPort);
   }
 
   const parsed = parseHostPort(trimmed, defaultPort);
@@ -62,7 +62,7 @@ export function relayEndpointURL(endpoint, path = "/relay") {
   return `${scheme}://${host}${portPart}${path}`;
 }
 
-function parseURLRelayEndpoint(value) {
+function parseURLRelayEndpoint(value, configuredTCPPort) {
   const url = new URL(value);
   let transport;
   let useTLS;
@@ -92,12 +92,12 @@ function parseURLRelayEndpoint(value) {
   case "tcp:":
     transport = "tcp";
     useTLS = false;
-    defaultPort = DEFAULT_TCP_PORT;
+    defaultPort = configuredTCPPort;
     break;
   case "tls:":
     transport = "tcp";
     useTLS = true;
-    defaultPort = DEFAULT_TCP_PORT;
+    defaultPort = configuredTCPPort;
     break;
   default:
     throw new TypeError(`Unsupported relay endpoint protocol: ${url.protocol}`);

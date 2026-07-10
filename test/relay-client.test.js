@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NoctweaveRelayClient, relayRequests } from "../src/index.js";
+import {
+  NoctweaveRelayClient,
+  normalizeRelayClientPolicy,
+  relayClientPolicyLimits,
+  relayRequests
+} from "../src/index.js";
 
 test("relay client posts JSON request and decodes response", async () => {
   const calls = [];
@@ -155,4 +160,45 @@ test("relay client rejects oversized requests before transport", async () => {
     /request exceeds client size limit/
   );
   assert.equal(fetchCalled, false);
+});
+
+test("relay client accepts bounded deployment policy", async () => {
+  let fetchCalled = false;
+  const client = new NoctweaveRelayClient("https://relay.example", {
+    policy: {
+      timeoutMs: 2_500,
+      defaultTCPPort: 7443,
+      maxRequestBytes: 2_048,
+      maxResponseBytes: 4_096
+    },
+    fetch: async () => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({ type: "ok", padding: "x".repeat(5_000) }));
+    }
+  });
+
+  assert.equal(client.policy.timeoutMs, 2_500);
+  assert.equal(client.policy.maxRequestBytes, 2_048);
+  await assert.rejects(() => client.health(), /response exceeds client size limit/);
+  assert.equal(fetchCalled, true);
+  await assert.rejects(
+    () => client.send({ type: "custom", payload: "x".repeat(3_000) }),
+    /request exceeds client size limit/
+  );
+});
+
+test("relay policy cannot exceed absolute allocation ceilings", () => {
+  assert.throws(
+    () => normalizeRelayClientPolicy({
+      maxResponseBytes: relayClientPolicyLimits.maximumResponseBytes + 1
+    }),
+    /response budget/
+  );
+  assert.throws(
+    () => normalizeRelayClientPolicy({
+      maxRequestBytes: relayClientPolicyLimits.maximumRequestBytes + 1
+    }),
+    /request budget/
+  );
+  assert.throws(() => normalizeRelayClientPolicy({ defaultTCPPort: 0 }), /default TCP port/);
 });

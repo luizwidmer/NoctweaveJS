@@ -1,6 +1,11 @@
 export { normalizeRelayEndpoint, parseRelayEndpoint, relayEndpointURL } from "./endpoint.js";
 export { relayRequests } from "./requests.js";
-export { NoctweaveRelayClient } from "./relay-client.js";
+export {
+  NoctweaveRelayClient,
+  normalizeRelayClientPolicy,
+  relayClientPolicyDefaults,
+  relayClientPolicyLimits
+} from "./relay-client.js";
 export { NoctweaveWebClient } from "./client.js";
 export {
   NoctweaveBrowserIdentityService,

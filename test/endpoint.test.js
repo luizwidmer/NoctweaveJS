@@ -34,6 +34,11 @@ test("parses bare host port as tcp", () => {
   });
 });
 
+test("supports an application-configured default TCP port", () => {
+  assert.equal(parseRelayEndpoint("relay.example", { defaultPort: 7443 }).port, 7443);
+  assert.equal(parseRelayEndpoint("tls://relay.example", { defaultPort: 7443 }).port, 7443);
+});
+
 test("rejects URL components that would otherwise be silently discarded", () => {
   for (const value of [
     "https://user:pass@relay.example",

@@ -45,6 +45,25 @@ const response = await relay.send(
 );
 ```
 
+Production applications can supply deployment policy without changing protocol
+invariants:
+
+```js
+const relay = new NoctweaveRelayClient("https://relay.example", {
+  policy: {
+    timeoutMs: 12_000,
+    defaultTCPPort: 9339,
+    maxRequestBytes: 1024 * 1024,
+    maxResponseBytes: 2 * 1024 * 1024
+  }
+});
+```
+
+These values remain constrained by exported absolute ceilings in
+`relayClientPolicyLimits`. Cryptographic key sizes, signature sizes, padding
+buckets, authentication bounds, and wire-format maxima are protocol/security
+invariants and are deliberately not configurable.
+
 Supported web transports are `http`, `https`, `ws`, and `wss`. Raw TCP relays are intentionally not supported in browser JavaScript.
 
 For a quick live relay smoke test:
