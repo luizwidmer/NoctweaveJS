@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Noctyra JS Client</title>
+  <title>NoctweaveJS Client</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
       <header class="setupHeader">
         <div class="brandMark">◇</div>
         <div>
-          <span class="eyebrow">Noctyra for the web</span>
+          <span class="eyebrow">NoctweaveJS</span>
           <h1 id="setupTitle">Private messaging starts here.</h1>
         </div>
       </header>
@@ -36,7 +36,7 @@
       </section>
 
       <section class="setupStep" data-step="unlock">
-        <p class="lead">Unlock the encrypted Noctyra profile stored in this browser.</p>
+        <p class="lead">Unlock the encrypted NoctweaveJS profile stored in this browser.</p>
         <label for="unlockPassphrase">Profile passphrase</label>
         <input id="unlockPassphrase" type="password" autocomplete="current-password" maxlength="1024">
         <p class="hint">The passphrase is never sent to a relay and cannot be recovered.</p>
@@ -55,7 +55,7 @@
       </section>
 
       <section class="setupStep" data-step="relay">
-        <p class="lead">Enter a client-facing HTTP, HTTPS, WS, or WSS relay. Noctyra verifies the service before saving it.</p>
+        <p class="lead">Enter a client-facing HTTP, HTTPS, WS, or WSS relay. NoctweaveJS verifies the service before saving it.</p>
         <label for="relayAddress">Relay URL</label>
         <input id="relayAddress" type="url" inputmode="url" spellcheck="false" placeholder="https://relay.example.org">
         <details>
@@ -82,7 +82,7 @@
 
   <main class="app" id="app" hidden>
     <aside class="rail">
-      <div class="brand"><div class="brandMark small">◇</div><div><strong>Noctyra</strong><span>JS Client</span></div></div>
+      <div class="brand"><div class="brandMark small">◇</div><div><strong>NoctweaveJS</strong><span>Secure Client</span></div></div>
       <nav id="navigation">
         <button data-view="chats" class="active"><span>◌</span> Chats</button>
         <button data-view="contacts"><span>◎</span> Contacts</button>
@@ -119,7 +119,7 @@
       </section>
 
       <section class="view" data-view-panel="settings">
-        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Security</span><h3>Browser profile</h3></div></div><button id="lockClient" class="wide">Lock Noctyra</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted">Reset permanently removes this browser profile, including private keys and local history.</p></div>
+        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Security</span><h3>Browser profile</h3></div></div><button id="lockClient" class="wide">Lock NoctweaveJS</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted">Reset permanently removes this browser profile, including private keys and local history.</p></div>
       </section>
     </section>
   </main>

@@ -55,7 +55,7 @@ npm run smoke:relay -- --relay http://127.0.0.1:9339
 
 This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips. It is a transport/mailbox/proof test; it does not yet create a full encrypted chat session visible inside the native app.
 
-## Noctyra JS Client
+## NoctweaveJS Client
 
 The production-oriented browser client is separate from the protocol demo. Run it with:
 

@@ -13,7 +13,7 @@ import {
 } from "../src/index.js";
 
 const profileName = new URL(location.href).searchParams.get("profile") || "default";
-const namespace = `noctyra-js-client:${profileName}`;
+const namespace = `noctweave-js-client:${profileName}`;
 const saltStorageKey = `${namespace}:salt`;
 const encryptedStorageKey = `${namespace}:vault:profile`;
 const stateKey = "profile";
