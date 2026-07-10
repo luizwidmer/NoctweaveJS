@@ -45,6 +45,35 @@ test("oqs wasm adapter self test clears temporary heap allocations", () => {
   assertAllocatedRangesWereZeroed(module);
 });
 
+test("oqs wasm adapter rejects substituted profiles and failed allocations", () => {
+  const substituted = structuredClone(fixture);
+  substituted.kem.algorithm = "ML-KEM-512";
+  assert.throws(
+    () => new NoctweaveOQSWasmAdapter(createFakeOQSModule(substituted)),
+    /does not match Noctweave/
+  );
+
+  const module = createFakeOQSModule(fixture);
+  const adapter = new NoctweaveOQSWasmAdapter(module);
+  module._malloc = () => 0;
+  assert.throws(() => adapter.generateKemKeypair(), /allocation failed/);
+});
+
+test("oqs wasm adapter bounds signed messages and requires fixed ML-DSA signatures", () => {
+  const module = createFakeOQSModule(fixture);
+  const adapter = new NoctweaveOQSWasmAdapter(module);
+  const signing = adapter.generateSigningKeypair();
+
+  assert.throws(
+    () => adapter.sign(new Uint8Array(512 * 1024 + 1), signing.secretKey),
+    /must not exceed/
+  );
+  assert.throws(
+    () => adapter.verify(new Uint8Array(), new Uint8Array(12), signing.publicKey),
+    /signature must be 3309 bytes/
+  );
+});
+
 function createFakeOQSModule(profile) {
   const memory = new ArrayBuffer(1024 * 1024);
   const HEAPU8 = new Uint8Array(memory);

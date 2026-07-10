@@ -1,7 +1,10 @@
 import oqsFactory from "../../wasm/dist/noctweave_oqs.js";
 import {
+  BrowserLocalStorageStore,
+  EncryptedNoctweaveStore,
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
+  NoctweaveStateRepository,
   WebCryptoPrimitives,
   base64,
   canonicalJsonBytes,
@@ -9,7 +12,9 @@ import {
   createNativeOutboundSession,
   decodeNativeContactCode,
   decryptNativeEnvelope,
+  decryptPortableProfile,
   encodeNativeContactCode,
+  encryptPortableProfile,
   encryptNativeTextEnvelope,
   makeNativeContactOffer,
   nativeConversationKey,
@@ -24,7 +29,13 @@ const BECH32_CHARSET = Array.from("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
 const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const encoder = new TextEncoder();
 const profile = new URL(location.href).searchParams.get("profile") || "default";
-const storageKey = `noctweave-js-browser-client:${profile}`;
+const legacyStorageKey = `noctweave-js-browser-client:${profile}`;
+const vaultNamespace = `${legacyStorageKey}:vault`;
+const vaultSaltKey = `${vaultNamespace}:salt`;
+const vaultStateStorageKey = `${vaultNamespace}:state`;
+const vaultStateKey = "state";
+const maximumProfileFileBytes = 2 * 1024 * 1024;
+let pendingSecretRequest = null;
 
 const state = {
   crypto: new WebCryptoPrimitives(),
@@ -38,15 +49,28 @@ const state = {
   isContactCodeVisible: false,
   autoFetchEnabled: false,
   autoFetchTimer: null,
-  isFetching: false
+  isFetching: false,
+  repository: null
 };
 
 const elements = {
+  appShell: document.querySelector("#appShell"),
+  vaultGate: document.querySelector("#vaultGate"),
+  vaultTitle: document.querySelector("#vaultTitle"),
+  vaultDescription: document.querySelector("#vaultDescription"),
+  vaultPassphrase: document.querySelector("#vaultPassphrase"),
+  vaultConfirmation: document.querySelector("#vaultConfirmation"),
+  vaultConfirmationRow: document.querySelector("#vaultConfirmationRow"),
+  vaultHint: document.querySelector("#vaultHint"),
+  vaultError: document.querySelector("#vaultError"),
+  unlockVault: document.querySelector("#unlockVault"),
+  forgetVault: document.querySelector("#forgetVault"),
   status: document.querySelector("#status"),
   relay: document.querySelector("#relay"),
   connect: document.querySelector("#connect"),
   relayInfo: document.querySelector("#relayInfo"),
   createIdentity: document.querySelector("#createIdentity"),
+  lockProfile: document.querySelector("#lockProfile"),
   resetProfile: document.querySelector("#resetProfile"),
   exportProfile: document.querySelector("#exportProfile"),
   importProfile: document.querySelector("#importProfile"),
@@ -71,15 +95,33 @@ const elements = {
   chatTitle: document.querySelector("#chatTitle"),
   chat: document.querySelector("#chat"),
   log: document.querySelector("#log"),
-  clearLog: document.querySelector("#clearLog")
+  clearLog: document.querySelector("#clearLog"),
+  secretDialog: document.querySelector("#secretDialog"),
+  secretForm: document.querySelector("#secretForm"),
+  secretTitle: document.querySelector("#secretTitle"),
+  secretDescription: document.querySelector("#secretDescription"),
+  secretPassphrase: document.querySelector("#secretPassphrase"),
+  secretConfirmation: document.querySelector("#secretConfirmation"),
+  secretConfirmationRow: document.querySelector("#secretConfirmationRow"),
+  secretError: document.querySelector("#secretError"),
+  secretCancel: document.querySelector("#secretCancel")
 };
 
+elements.unlockVault.addEventListener("click", unlockOrCreateVault);
+elements.forgetVault.addEventListener("click", forgetLocalVault);
+elements.vaultPassphrase.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    unlockOrCreateVault();
+  }
+});
 elements.connect.addEventListener("click", () => runAction("Checking relay", checkRelay));
 elements.createIdentity.addEventListener("click", () => runAction("Creating inbox", createIdentity));
+elements.lockProfile.addEventListener("click", lockProfile);
 elements.resetProfile.addEventListener("click", () => runAction("Resetting", resetProfile));
 elements.exportProfile.addEventListener("click", () => runAction("Exporting", exportProfile));
 elements.importProfile.addEventListener("change", () => runAction("Importing profile", importProfile));
-elements.relay.addEventListener("change", saveState);
+elements.relay.addEventListener("change", scheduleSave);
 elements.toggleCode.addEventListener("click", toggleContactCode);
 elements.copyCode.addEventListener("click", () => runAction("Copying", copyContactCode));
 elements.importContact.addEventListener("click", () => runAction("Importing", importContactCode));
@@ -98,6 +140,12 @@ elements.message.addEventListener("keydown", (event) => {
     runAction("Sending", sendMessage);
   }
 });
+elements.secretForm.addEventListener("submit", submitSecretDialog);
+elements.secretCancel.addEventListener("click", cancelSecretDialog);
+elements.secretDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  cancelSecretDialog();
+});
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && state.identity) {
     runAction("Fetching", fetchMessages);
@@ -106,11 +154,214 @@ document.addEventListener("visibilitychange", () => {
 
 runAction("Loading WASM", async () => {
   state.pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
-  loadState();
-  renderAll();
-  log(`profile ${profile}`);
-  log("WASM ready");
+  configureVaultGate();
+  setStatus("Locked");
 });
+
+function configureVaultGate() {
+  const hasEncryptedState = localStorage.getItem(vaultStateStorageKey) !== null;
+  const hasSalt = localStorage.getItem(vaultSaltKey) !== null;
+  const hasVault = hasEncryptedState || hasSalt;
+  elements.vaultTitle.textContent = hasVault ? `Unlock ${profile}` : `Create ${profile}`;
+  elements.vaultDescription.textContent = hasVault
+    ? "Enter this browser profile’s passphrase. Identity keys remain encrypted at rest."
+    : "Create a local passphrase to encrypt identity keys, sessions, contacts, and message history.";
+  elements.vaultConfirmationRow.hidden = hasVault;
+  elements.vaultPassphrase.autocomplete = hasVault ? "current-password" : "new-password";
+  elements.vaultHint.textContent = hasVault
+    ? "The passphrase is never sent to the relay and cannot be recovered."
+    : "Use at least 12 characters. This passphrase cannot be recovered.";
+  elements.unlockVault.textContent = hasVault ? "Unlock profile" : "Create encrypted profile";
+  elements.unlockVault.dataset.mode = hasVault ? "unlock" : "create";
+  elements.forgetVault.hidden = !hasVault;
+  elements.vaultError.textContent = hasEncryptedState === hasSalt
+    ? ""
+    : "The local vault is incomplete. Reset this browser profile from site storage before continuing.";
+  elements.vaultPassphrase.value = "";
+  elements.vaultConfirmation.value = "";
+  elements.vaultGate.hidden = false;
+  elements.appShell.inert = true;
+  elements.appShell.setAttribute("aria-hidden", "true");
+  document.body.classList.add("vault-locked");
+  queueMicrotask(() => elements.vaultPassphrase.focus());
+}
+
+async function unlockOrCreateVault() {
+  ensurePQC();
+  const mode = elements.unlockVault.dataset.mode;
+  const passphrase = elements.vaultPassphrase.value;
+  elements.vaultError.textContent = "";
+  elements.unlockVault.disabled = true;
+  elements.unlockVault.textContent = mode === "unlock" ? "Unlocking…" : "Creating…";
+  try {
+    if (mode === "create") {
+      if (passphrase.length < 12) {
+        throw new Error("Use a profile passphrase containing at least 12 characters.");
+      }
+      if (passphrase !== elements.vaultConfirmation.value) {
+        throw new Error("The profile passphrases do not match.");
+      }
+      await createVault(passphrase);
+    } else {
+      await openVault(passphrase);
+    }
+    elements.vaultPassphrase.value = "";
+    elements.vaultConfirmation.value = "";
+    elements.vaultGate.hidden = true;
+    elements.appShell.inert = false;
+    elements.appShell.setAttribute("aria-hidden", "false");
+    document.body.classList.remove("vault-locked");
+    renderAll();
+    log(`profile ${profile}`);
+    log("encrypted vault unlocked");
+    setStatus("Ready");
+  } catch (error) {
+    elements.vaultError.textContent = safeVaultError(error);
+  } finally {
+    elements.unlockVault.disabled = false;
+    elements.unlockVault.textContent = mode === "unlock" ? "Unlock profile" : "Create encrypted profile";
+  }
+}
+
+async function createVault(passphrase) {
+  if (localStorage.getItem(vaultStateStorageKey) !== null || localStorage.getItem(vaultSaltKey) !== null) {
+    throw new Error("An encrypted profile already exists in this browser.");
+  }
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const repository = makeVaultRepository(passphrase, salt);
+  try {
+    const initial = legacyStateForMigration() ?? snapshotState();
+    await validatePersistedState(initial);
+    localStorage.setItem(vaultSaltKey, base64(salt));
+    await repository.save(initial);
+    localStorage.removeItem(legacyStorageKey);
+    state.repository = repository;
+    applyPersistedState(initial);
+  } catch (error) {
+    localStorage.removeItem(vaultSaltKey);
+    localStorage.removeItem(vaultStateStorageKey);
+    throw error;
+  } finally {
+    salt.fill(0);
+  }
+}
+
+async function openVault(passphrase) {
+  if (!passphrase) {
+    throw new Error("Enter the profile passphrase.");
+  }
+  const encodedSalt = localStorage.getItem(vaultSaltKey);
+  if (!encodedSalt || localStorage.getItem(vaultStateStorageKey) === null) {
+    throw new Error("The encrypted browser profile is incomplete.");
+  }
+  const salt = fromBase64(encodedSalt);
+  try {
+    if (salt.byteLength !== 16) {
+      throw new Error("The encrypted browser profile is malformed.");
+    }
+    const repository = makeVaultRepository(passphrase, salt);
+    let persisted;
+    try {
+      persisted = await repository.load();
+    } catch {
+      throw new Error("The profile could not be unlocked. Check the passphrase and local profile data.");
+    }
+    if (!persisted) {
+      throw new Error("The encrypted browser profile contains no state.");
+    }
+    await validatePersistedState(persisted);
+    state.repository = repository;
+    applyPersistedState(persisted);
+  } finally {
+    salt.fill(0);
+  }
+}
+
+function makeVaultRepository(passphrase, salt) {
+  const backend = new BrowserLocalStorageStore({ namespace: vaultNamespace });
+  const encrypted = new EncryptedNoctweaveStore(backend, {
+    passphrase,
+    salt,
+    iterations: 310_000
+  });
+  return new NoctweaveStateRepository(encrypted, { key: vaultStateKey });
+}
+
+function legacyStateForMigration() {
+  const raw = localStorage.getItem(legacyStorageKey);
+  if (!raw) {
+    return null;
+  }
+  let legacy;
+  try {
+    legacy = JSON.parse(raw);
+  } catch {
+    throw new Error("Legacy plaintext profile data is malformed and was not migrated.");
+  }
+  return {
+    version: 2,
+    identity: legacy.identity ?? null,
+    contacts: legacy.contacts ?? [],
+    conversations: legacy.conversations ?? {},
+    messages: legacy.messages ?? [],
+    seenEnvelopeIds: legacy.seenEnvelopeIds ?? [],
+    relay: legacy.relay ?? elements.relay.value,
+    selectedContactFingerprint: legacy.selectedContactFingerprint ?? "",
+    autoFetchEnabled: Boolean(legacy.autoFetchEnabled)
+  };
+}
+
+function lockProfile() {
+  stopAutoFetch();
+  clearLiveState();
+  configureVaultGate();
+  setStatus("Locked");
+}
+
+function forgetLocalVault() {
+  if (!confirm(`Forget ${profile}? This permanently deletes its local identity keys and message history.`)) {
+    return;
+  }
+  stopAutoFetch();
+  localStorage.removeItem(vaultStateStorageKey);
+  localStorage.removeItem(vaultSaltKey);
+  localStorage.removeItem(legacyStorageKey);
+  clearLiveState();
+  configureVaultGate();
+}
+
+function stopAutoFetch() {
+  if (state.autoFetchTimer) {
+    clearInterval(state.autoFetchTimer);
+    state.autoFetchTimer = null;
+  }
+}
+
+function clearLiveState() {
+  state.identity = null;
+  state.contacts = [];
+  state.conversations = {};
+  state.messages = [];
+  state.seenEnvelopeIds = new Set();
+  state.selectedContactFingerprint = "";
+  state.isContactCodeVisible = false;
+  state.autoFetchEnabled = false;
+  state.repository = null;
+}
+
+function safeVaultError(error) {
+  if (!(error instanceof Error)) {
+    return "The encrypted profile operation failed.";
+  }
+  const allowed = [
+    "passphrase", "profile", "vault", "encrypted", "malformed", "incomplete",
+    "already exists", "do not match", "state", "contact", "message", "relay"
+  ];
+  return allowed.some((fragment) => error.message.toLowerCase().includes(fragment))
+    ? error.message
+    : "The encrypted profile operation failed.";
+}
 
 async function checkRelay() {
   const client = relayClient();
@@ -158,7 +409,7 @@ async function createIdentity() {
     throw new Error(`Inbox registration failed: ${JSON.stringify(response)}`);
   }
   state.identity = { ...identity, contactOffer };
-  saveState();
+  await saveState();
   renderAll();
   log(`registered inbox ${inboxId}`);
 }
@@ -188,7 +439,7 @@ async function importContactCode() {
   }
   state.selectedContactFingerprint = offer.fingerprint;
   elements.peerCode.value = "";
-  saveState();
+  await saveState();
   renderAll();
   log(`paired ${offer.displayName}`);
 }
@@ -241,7 +492,7 @@ async function sendMessage() {
   });
   elements.message.value = "";
   renderMessageCount();
-  saveState();
+  await saveState();
   renderChat();
   log(`sent to ${contact.displayName}`);
 }
@@ -290,7 +541,7 @@ async function fetchMessages() {
         decodedCount++;
       }
     }
-    saveState();
+    await saveState();
     renderChat();
     log(`fetch complete: ${decodedCount} new message(s)`);
   } finally {
@@ -306,7 +557,7 @@ function toggleContactCode() {
 function toggleAutoFetch() {
   state.autoFetchEnabled = elements.autoFetch.checked;
   configureAutoFetch();
-  saveState();
+  scheduleSave();
   log(state.autoFetchEnabled ? "auto-fetch enabled" : "auto-fetch disabled");
 }
 
@@ -325,7 +576,7 @@ function configureAutoFetch() {
   }, 4000);
 }
 
-function deleteSelectedContact() {
+async function deleteSelectedContact() {
   const contact = selectedContact();
   if (!confirm(`Delete ${contact.displayName} from this browser profile?`)) {
     return;
@@ -334,30 +585,34 @@ function deleteSelectedContact() {
   state.messages = state.messages.filter((message) => message.contactFingerprint !== contact.fingerprint);
   delete state.conversations[nativeConversationKey(contact)];
   state.selectedContactFingerprint = state.contacts[0]?.fingerprint ?? "";
-  saveState();
+  await saveState();
   renderAll();
   log(`deleted ${contact.displayName}`);
 }
 
-function exportProfile() {
-  const payload = JSON.stringify({
-    version: 1,
+async function exportProfile() {
+  ensureIdentity();
+  const passphrase = await requestSecret({
+    title: "Protect profile export",
+    description: "Choose a separate passphrase for this file. It contains identity private keys and message state.",
+    confirmation: true
+  });
+  if (passphrase === null) {
+    return;
+  }
+  const packageData = await encryptPortableProfile({
+    ...snapshotState(),
     exportedAt: new Date().toISOString(),
-    profile,
-    identity: state.identity,
-    contacts: state.contacts,
-    conversations: state.conversations,
-    messages: state.messages,
-    seenEnvelopeIds: [...state.seenEnvelopeIds],
-    relay: elements.relay.value
-  }, null, 2);
-  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+    profile
+  }, passphrase);
+  const payload = JSON.stringify(packageData, null, 2);
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/vnd.noctweave.profile+json" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `noctweave-${profile}.json`;
+  link.download = `noctweave-${profile}.noctweave.json`;
   link.click();
   URL.revokeObjectURL(url);
-  log("profile exported");
+  log("encrypted profile exported");
 }
 
 async function importProfile() {
@@ -366,22 +621,29 @@ async function importProfile() {
   if (!file) {
     return;
   }
-  const payload = JSON.parse(await file.text());
-  if (payload.version !== 1) {
-    throw new Error("Unsupported profile export.");
+  if (file.size <= 0 || file.size > maximumProfileFileBytes) {
+    throw new Error("Encrypted profile file must be between 1 byte and 2 MB.");
   }
-  state.identity = payload.identity ?? null;
-  state.contacts = payload.contacts ?? [];
-  state.conversations = payload.conversations ?? {};
-  state.messages = payload.messages ?? [];
-  state.seenEnvelopeIds = new Set(payload.seenEnvelopeIds ?? []);
-  state.selectedContactFingerprint = state.contacts[0]?.fingerprint ?? "";
-  if (payload.relay) {
-    elements.relay.value = payload.relay;
+  let packageData;
+  try {
+    packageData = JSON.parse(await file.text());
+  } catch {
+    throw new Error("Encrypted profile file is not valid JSON.");
   }
-  saveState();
+  const passphrase = await requestSecret({
+    title: "Unlock profile export",
+    description: "Enter the passphrase used when this encrypted profile file was created.",
+    confirmation: false
+  });
+  if (passphrase === null) {
+    return;
+  }
+  const payload = await decryptPortableProfile(packageData, passphrase);
+  await validatePersistedState(payload);
+  applyPersistedState(payload);
+  await saveState();
   renderAll();
-  log(`profile imported from ${file.name}`);
+  log(`encrypted profile imported from ${file.name}`);
 }
 
 async function decodeEnvelope(envelope) {
@@ -521,8 +783,8 @@ function currentContactCode() {
 
 function renderContacts() {
   const previous = state.selectedContactFingerprint || elements.contacts.value;
-  elements.contacts.innerHTML = "";
-  elements.contactList.innerHTML = "";
+  elements.contacts.replaceChildren();
+  elements.contactList.replaceChildren();
   elements.contactCount.textContent = String(state.contacts.length);
   if (state.contacts.length === 0) {
     const option = document.createElement("option");
@@ -543,9 +805,11 @@ function renderContacts() {
     card.type = "button";
     card.className = "contactCard";
     card.dataset.fingerprint = contact.fingerprint;
-    card.innerHTML = `<strong></strong><span></span>`;
-    card.querySelector("strong").textContent = contact.displayName;
-    card.querySelector("span").textContent = `${shortFingerprint(contact.fingerprint)} · ${contact.relay?.host ?? "relay"}`;
+    const name = document.createElement("strong");
+    const detail = document.createElement("span");
+    name.textContent = contact.displayName;
+    detail.textContent = `${shortFingerprint(contact.fingerprint)} · ${contact.relay?.host ?? "relay"}`;
+    card.append(name, detail);
     card.addEventListener("click", () => selectContact(contact.fingerprint));
     elements.contactList.append(card);
   }
@@ -562,7 +826,7 @@ function renderContacts() {
 function selectContact(fingerprint) {
   state.selectedContactFingerprint = fingerprint;
   elements.contacts.value = fingerprint;
-  saveState();
+  scheduleSave();
   syncContactCardSelection();
   renderChat();
 }
@@ -586,7 +850,7 @@ function renderChat() {
     renderEmptyChat("No messages in this chat yet.");
     return;
   }
-  elements.chat.innerHTML = "";
+  elements.chat.replaceChildren();
   for (const message of rows) {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${message.direction}`;
@@ -600,7 +864,7 @@ function renderChat() {
 }
 
 function renderEmptyChat(text) {
-  elements.chat.innerHTML = "";
+  elements.chat.replaceChildren();
   const empty = document.createElement("div");
   empty.className = "emptyState";
   empty.textContent = text;
@@ -620,7 +884,7 @@ function renderRelayInfo({ health, info }) {
     ["Transport", relayInfo.transport ?? "HTTP"],
     ["Health", health?.status ?? "OK"]
   ];
-  elements.relayInfo.innerHTML = "";
+  elements.relayInfo.replaceChildren();
   const grid = document.createElement("div");
   grid.className = "infoGrid";
   for (const [title, value] of chips) {
@@ -636,8 +900,9 @@ function renderRelayInfo({ health, info }) {
   elements.relayInfo.append(grid);
 }
 
-function saveState() {
-  localStorage.setItem(storageKey, JSON.stringify({
+function snapshotState() {
+  return {
+    version: 2,
     identity: state.identity,
     contacts: state.contacts,
     conversations: state.conversations,
@@ -646,11 +911,24 @@ function saveState() {
     relay: elements.relay.value,
     selectedContactFingerprint: state.selectedContactFingerprint,
     autoFetchEnabled: state.autoFetchEnabled
-  }));
+  };
 }
 
-function loadState() {
-  const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+async function saveState() {
+  if (!state.repository) {
+    throw new Error("Unlock the encrypted browser profile before saving.");
+  }
+  await state.repository.save(snapshotState());
+}
+
+function scheduleSave() {
+  void saveState().catch((error) => {
+    log(safeVaultError(error));
+    setStatus("Save failed");
+  });
+}
+
+function applyPersistedState(saved) {
   state.identity = saved.identity ?? null;
   state.contacts = saved.contacts ?? [];
   state.conversations = saved.conversations ?? {};
@@ -663,18 +941,186 @@ function loadState() {
   }
 }
 
-function resetProfile() {
-  localStorage.removeItem(storageKey);
-  state.identity = null;
-  state.contacts = [];
-  state.conversations = {};
-  state.messages = [];
-  state.seenEnvelopeIds = new Set();
-  state.selectedContactFingerprint = "";
-  state.isContactCodeVisible = false;
-  state.autoFetchEnabled = false;
-  renderAll();
-  log("profile reset");
+async function resetProfile() {
+  if (!confirm(`Reset ${profile}? This permanently deletes its local identity keys and message history.`)) {
+    return;
+  }
+  stopAutoFetch();
+  if (state.repository) {
+    await state.repository.clear();
+  }
+  localStorage.removeItem(vaultStateStorageKey);
+  localStorage.removeItem(vaultSaltKey);
+  localStorage.removeItem(legacyStorageKey);
+  clearLiveState();
+  configureVaultGate();
+  setStatus("Locked");
+}
+
+async function validatePersistedState(saved) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) || saved.version !== 2) {
+    throw new Error("Unsupported encrypted profile state.");
+  }
+  const encodedLength = encoder.encode(JSON.stringify(saved)).byteLength;
+  if (encodedLength > maximumProfileFileBytes) {
+    throw new Error("Encrypted profile state exceeds the 2 MB limit.");
+  }
+  if (!Array.isArray(saved.contacts) || saved.contacts.length > 256 ||
+      !Array.isArray(saved.messages) || saved.messages.length > 10_000 ||
+      !Array.isArray(saved.seenEnvelopeIds) || saved.seenEnvelopeIds.length > 20_000 ||
+      !saved.conversations || typeof saved.conversations !== "object" || Array.isArray(saved.conversations) ||
+      Object.keys(saved.conversations).length > 512) {
+    throw new Error("Encrypted profile collections exceed supported limits.");
+  }
+  parseRelayEndpoint(String(saved.relay ?? ""));
+
+  if (saved.identity !== null && saved.identity !== undefined) {
+    validateBoundedString(saved.identity.displayName, "identity display name", 1, 128);
+    validateBoundedString(saved.identity.inboxId, "identity inbox", 1, 160);
+    validateBoundedString(saved.identity.signingFingerprint, "identity fingerprint", 1, 160);
+    validateBoundedString(saved.identity.accessFingerprint, "inbox access fingerprint", 1, 160);
+    validateSerializedKeypair(saved.identity.signing, "identity signing key");
+    validateSerializedKeypair(saved.identity.agreement, "identity agreement key");
+    validateSerializedKeypair(saved.identity.access, "inbox access key");
+    if (!saved.identity.contactOffer) {
+      throw new Error("Encrypted profile identity is missing its signed contact offer.");
+    }
+    await verifyNativeContactOffer({
+      crypto: state.crypto,
+      pqc: state.pqc,
+      offer: saved.identity.contactOffer
+    });
+    if (saved.identity.contactOffer.fingerprint !== saved.identity.signingFingerprint ||
+        saved.identity.contactOffer.inboxId !== saved.identity.inboxId) {
+      throw new Error("Encrypted profile identity binding is invalid.");
+    }
+  }
+
+  const fingerprints = new Set();
+  for (const contact of saved.contacts) {
+    validateBoundedString(contact?.displayName, "contact display name", 1, 128);
+    validateBoundedString(contact?.inboxId, "contact inbox", 1, 160);
+    validateBoundedString(contact?.fingerprint, "contact fingerprint", 1, 160);
+    if (fingerprints.has(contact.fingerprint)) {
+      throw new Error("Encrypted profile contains duplicate contacts.");
+    }
+    fingerprints.add(contact.fingerprint);
+    const signingKey = validatedBase64Bytes(contact.signingPublicKey, "contact signing key", 16_384);
+    const agreementKey = validatedBase64Bytes(contact.agreementPublicKey, "contact agreement key", 16_384);
+    try {
+      if (base64(await state.crypto.sha256(signingKey)) !== contact.fingerprint) {
+        throw new Error("Encrypted profile contact fingerprint is invalid.");
+      }
+    } finally {
+      signingKey.fill(0);
+      agreementKey.fill(0);
+    }
+    parseRelayEndpoint(relayURLFromEndpoint(contact.relay));
+  }
+
+  for (const message of saved.messages) {
+    validateBoundedString(message?.id, "message identifier", 1, 160);
+    validateBoundedString(message?.contactFingerprint, "message contact", 1, 160);
+    validateBoundedString(message?.text, "message text", 0, 32_768);
+    if (message.direction !== "in" && message.direction !== "out") {
+      throw new Error("Encrypted profile contains an invalid message direction.");
+    }
+  }
+  for (const id of saved.seenEnvelopeIds) {
+    validateBoundedString(id, "seen envelope identifier", 1, 160);
+  }
+}
+
+function validateSerializedKeypair(value, label) {
+  if (!value || typeof value !== "object") {
+    throw new Error(`Encrypted profile ${label} is missing.`);
+  }
+  const publicKey = validatedBase64Bytes(value.publicKey, `${label} public material`, 16_384);
+  const secretKey = validatedBase64Bytes(value.secretKey, `${label} private material`, 32_768);
+  publicKey.fill(0);
+  secretKey.fill(0);
+}
+
+function validatedBase64Bytes(value, label, maximumBytes) {
+  validateBoundedString(value, label, 4, Math.ceil(maximumBytes * 4 / 3) + 4);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error(`Encrypted profile ${label} is malformed.`);
+  }
+  let bytes;
+  try {
+    bytes = fromBase64(value);
+  } catch {
+    throw new Error(`Encrypted profile ${label} is malformed.`);
+  }
+  if (bytes.byteLength === 0 || bytes.byteLength > maximumBytes || base64(bytes) !== value) {
+    bytes.fill(0);
+    throw new Error(`Encrypted profile ${label} is malformed.`);
+  }
+  return bytes;
+}
+
+function validateBoundedString(value, label, minimum, maximum) {
+  if (typeof value !== "string" || value.length < minimum || value.length > maximum) {
+    throw new Error(`Encrypted profile ${label} is invalid.`);
+  }
+}
+
+function requestSecret({ title, description, confirmation }) {
+  if (pendingSecretRequest) {
+    throw new Error("Another encrypted profile operation is already open.");
+  }
+  elements.secretTitle.textContent = title;
+  elements.secretDescription.textContent = description;
+  elements.secretConfirmationRow.hidden = !confirmation;
+  elements.secretPassphrase.autocomplete = confirmation ? "new-password" : "current-password";
+  elements.secretPassphrase.value = "";
+  elements.secretConfirmation.value = "";
+  elements.secretError.textContent = "";
+  elements.secretDialog.showModal();
+  queueMicrotask(() => elements.secretPassphrase.focus());
+  return new Promise((resolve) => {
+    pendingSecretRequest = { resolve, confirmation };
+  });
+}
+
+function submitSecretDialog(event) {
+  event.preventDefault();
+  if (!pendingSecretRequest) {
+    elements.secretDialog.close();
+    return;
+  }
+  const passphrase = elements.secretPassphrase.value;
+  if (!passphrase) {
+    elements.secretError.textContent = "Enter the profile passphrase.";
+    return;
+  }
+  if (pendingSecretRequest.confirmation && passphrase.length < 12) {
+    elements.secretError.textContent = "Use at least 12 characters.";
+    return;
+  }
+  if (pendingSecretRequest.confirmation && passphrase !== elements.secretConfirmation.value) {
+    elements.secretError.textContent = "The passphrases do not match.";
+    return;
+  }
+  const { resolve } = pendingSecretRequest;
+  pendingSecretRequest = null;
+  elements.secretPassphrase.value = "";
+  elements.secretConfirmation.value = "";
+  elements.secretDialog.close();
+  resolve(passphrase);
+}
+
+function cancelSecretDialog() {
+  if (!pendingSecretRequest) {
+    elements.secretDialog.close();
+    return;
+  }
+  const { resolve } = pendingSecretRequest;
+  pendingSecretRequest = null;
+  elements.secretPassphrase.value = "";
+  elements.secretConfirmation.value = "";
+  elements.secretDialog.close();
+  resolve(null);
 }
 
 async function runAction(label, action) {

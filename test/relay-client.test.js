@@ -15,7 +15,30 @@ test("relay client posts JSON request and decodes response", async () => {
   assert.equal(response.type, "info");
   assert.equal(calls[0].url, "https://relay.example/relay");
   assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.redirect, "error");
+  assert.equal(calls[0].init.credentials, "omit");
+  assert.equal(calls[0].init.referrerPolicy, "no-referrer");
+  assert.equal(calls[0].init.cache, "no-store");
   assert.deepEqual(JSON.parse(calls[0].init.body), { type: "info", authToken: "secret" });
+});
+
+test("relay health fallback preserves redirect and credential isolation", async () => {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url, init });
+    if (calls.length === 1) {
+      throw new TypeError("POST health unavailable");
+    }
+    return new Response("ok", { status: 200 });
+  };
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  assert.deepEqual(await client.health(), { type: "ok" });
+  assert.equal(calls[1].url, "https://relay.example/health");
+  assert.equal(calls[1].init.redirect, "error");
+  assert.equal(calls[1].init.credentials, "omit");
+  assert.equal(calls[1].init.referrerPolicy, "no-referrer");
+  assert.equal(calls[1].init.cache, "no-store");
 });
 
 test("relay client supports raw request helpers", async () => {
@@ -64,4 +87,72 @@ test("relay client redacts invalid JSON bodies", async () => {
       return true;
     }
   );
+});
+
+test("relay client rejects invalid timeout configuration", () => {
+  assert.throws(
+    () => new NoctweaveRelayClient("https://relay.example", { timeoutMs: 0, fetch: async () => new Response("{}") }),
+    /Relay timeout must be between/
+  );
+  assert.throws(
+    () => new NoctweaveRelayClient("https://relay.example", { timeoutMs: Number.NaN, fetch: async () => new Response("{}") }),
+    /Relay timeout must be between/
+  );
+});
+
+test("relay client rejects oversized authentication and malformed endpoint objects", () => {
+  assert.throws(
+    () => new NoctweaveRelayClient("https://relay.example", {
+      authToken: "x".repeat(4097),
+      fetch: async () => new Response("{}")
+    }),
+    /authentication token/
+  );
+  assert.throws(
+    () => new NoctweaveRelayClient(
+      { host: "relay.example/path", port: 443, useTLS: true, transport: "http" },
+      { fetch: async () => new Response("{}") }
+    )
+  );
+});
+
+test("relay client stops reading oversized chunked responses", async () => {
+  const oversized = new Uint8Array(1_000_001).fill(0x61);
+  const fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(oversized);
+      controller.close();
+    }
+  }), { status: 200 });
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  await assert.rejects(() => client.info(), /response exceeds client size limit/);
+});
+
+test("relay client rejects fetch implementations without bounded streaming reads", async () => {
+  const fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ type: "info" })
+  });
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  await assert.rejects(() => client.info(), /must expose a streaming response body/);
+});
+
+test("relay client rejects oversized requests before transport", async () => {
+  let fetchCalled = false;
+  const client = new NoctweaveRelayClient("https://relay.example", {
+    fetch: async () => {
+      fetchCalled = true;
+      return new Response("{}");
+    }
+  });
+
+  await assert.rejects(
+    () => client.send({ type: "raw-test", payload: "x".repeat(600_000) }),
+    /request exceeds client size limit/
+  );
+  assert.equal(fetchCalled, false);
 });

@@ -18,6 +18,27 @@ test("memory store clones records", async () => {
   assert.equal(loaded.contacts[0].name, "Alice");
 });
 
+test("raw stores reject unbounded keys, oversized records, and non-JSON values", async () => {
+  const memory = new MemoryNoctweaveStore();
+  await assert.rejects(() => memory.set("x".repeat(257), { value: 1 }), /Storage key/);
+  await assert.rejects(
+    () => memory.set("state", { payload: "x".repeat(12 * 1024 * 1024 + 1) }),
+    /size limit/
+  );
+  await assert.rejects(() => memory.set("state", { value: 1n }), /JSON serializable/);
+
+  const database = new DatabaseNoctweaveStore({
+    get: async () => null,
+    set: async () => {},
+    delete: async () => {}
+  });
+  await assert.rejects(() => database.get("x".repeat(257)), /Storage key/);
+  assert.throws(
+    () => new NoctweaveStateRepository({}, { key: "state" }),
+    /must implement get/
+  );
+});
+
 test("localStorage store namespaces records", async () => {
   const storage = makeLocalStorage();
   const store = new BrowserLocalStorageStore({ namespace: "test", storage });
@@ -61,6 +82,67 @@ test("encrypted store refuses plaintext records and hides persisted state", asyn
 
   await backend.set("plaintext", { inboxId: "leak" });
   await assert.rejects(() => store.get("plaintext"), /refused to load plaintext/);
+});
+
+test("encrypted store passphrase mode requires a strong explicit KDF configuration", async () => {
+  assert.throws(
+    () => new EncryptedNoctweaveStore(new MemoryNoctweaveStore(), {
+      passphrase: "too short",
+      salt: new Uint8Array(16)
+    }),
+    /at least 12 characters/
+  );
+  assert.throws(
+    () => new EncryptedNoctweaveStore(new MemoryNoctweaveStore(), {
+      passphrase: "correct horse battery staple"
+    }),
+    /requires a unique persisted salt/
+  );
+  assert.throws(
+    () => new EncryptedNoctweaveStore(new MemoryNoctweaveStore(), {
+      passphrase: "correct horse battery staple",
+      salt: new Uint8Array(8)
+    }),
+    /at least 16 bytes/
+  );
+  assert.throws(
+    () => new EncryptedNoctweaveStore(new MemoryNoctweaveStore(), {
+      passphrase: "correct horse battery staple",
+      salt: new Uint8Array(16),
+      iterations: 1_000
+    }),
+    /between 100000 and 10000000/
+  );
+});
+
+test("encrypted store rejects malformed envelopes and unbounded keys", async () => {
+  const backend = new MemoryNoctweaveStore();
+  const store = new EncryptedNoctweaveStore(backend, {
+    keyBytes: new Uint8Array(32).fill(3)
+  });
+  await backend.set("bad", {
+    __noctweaveEncrypted: 1,
+    version: 1,
+    algorithm: "AES-256-GCM",
+    nonce: "not-base64",
+    ciphertext: "AAAA"
+  });
+  await assert.rejects(() => store.get("bad"), /Invalid storage nonce/);
+  await assert.rejects(() => store.set("x".repeat(257), { value: 1 }), /Storage key/);
+});
+
+test("encrypted store passphrase mode round trips with a persisted salt", async () => {
+  const backend = new MemoryNoctweaveStore();
+  const options = {
+    passphrase: "correct horse battery staple",
+    salt: new Uint8Array(16).fill(9),
+    iterations: 100_000
+  };
+  const writer = new EncryptedNoctweaveStore(backend, options);
+  await writer.set("state", { value: "encrypted" });
+
+  const reader = new EncryptedNoctweaveStore(backend, options);
+  assert.deepEqual(await reader.get("state"), { value: "encrypted" });
 });
 
 test("state repository serializes concurrent updates", async () => {

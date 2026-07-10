@@ -65,7 +65,7 @@ npm run dev:browser-client
 
 Open `http://127.0.0.1:5173/examples/browser-client/`. The demo generates WASM ML-DSA/ML-KEM keys in the browser, registers a test inbox, pairs by copy/pasting contact codes, sends ML-KEM/AES-GCM encrypted messages, verifies ML-DSA envelope signatures, and fetches/decrypts messages from the relay. A local Node proxy is used only to avoid browser CORS restrictions while testing relays.
 
-The browser client includes a small address book, hidden-by-default contact code display, manual and automatic fetch controls, local profile export/import, contact deletion, and a compact diagnostics log. It is still a development client: exported profiles contain local test keys and should be handled as sensitive material.
+The browser client includes a small address book, hidden-by-default contact code display, manual and automatic fetch controls, encrypted local profile storage, password-protected profile export/import, contact deletion, and a compact diagnostics log. It is still a development client and has not received an independent security audit.
 
 To test two browser clients on one machine, open:
 
@@ -76,12 +76,20 @@ Create an inbox in each profile, copy Alice's contact code into Bob and Bob's in
 
 ## Storage Choices
 
-Browser `localStorage`:
+Browser `localStorage` with encryption at the storage boundary:
 
 ```js
-import { BrowserLocalStorageStore, NoctweaveStateRepository } from "@noctweave/js-client";
+import {
+  BrowserLocalStorageStore,
+  EncryptedNoctweaveStore,
+  NoctweaveStateRepository
+} from "@noctweave/js-client";
 
-const store = new BrowserLocalStorageStore({ namespace: "my-app:noctweave" });
+const backend = new BrowserLocalStorageStore({ namespace: "my-app:noctweave" });
+const applicationManagedKeyBytes = await loadApplicationKey(); // exactly 32 bytes
+const store = new EncryptedNoctweaveStore(backend, {
+  keyBytes: applicationManagedKeyBytes
+});
 const repo = new NoctweaveStateRepository(store);
 
 await repo.save({ activeRelay: "https://relay.example" });
@@ -98,6 +106,13 @@ const store = new IndexedDBNoctweaveStore({
   storeName: "noctweave"
 });
 ```
+
+`BrowserLocalStorageStore`, `IndexedDBNoctweaveStore`, and
+`DatabaseNoctweaveStore` are bounded raw adapters; they do not encrypt values by
+themselves. Wrap any adapter in `EncryptedNoctweaveStore` before persisting
+identity, contact, conversation, or key material. Supply either a 32-byte key
+managed outside that adapter, or a strong passphrase with a unique persisted
+salt and an explicit supported PBKDF2 iteration count.
 
 Database adapter:
 
@@ -163,7 +178,8 @@ The native Swift core and the JS/WASM adapter use the same algorithm profile:
 
 - Relay responses and stored records are untrusted until your application verifies them.
 - Local browser storage is not secure against a compromised browser profile, extension, or OS account.
-- Store only ciphertext or non-sensitive state unless an application-specific threat model accepts the risk.
+- Raw storage adapters are plaintext. Use `EncryptedNoctweaveStore` for sensitive state and keep its key outside the wrapped adapter.
 - The WASM adapter validates key and ciphertext lengths before calling liboqs.
+- Relay requests reject redirects and omit ambient credentials to reduce cross-origin credential leakage.
 - WebCrypto remains responsible for AES-GCM, HKDF/SHA-256, and random bytes.
 - A browser runtime cannot protect secrets from a compromised browser, extension, JavaScript supply chain, or OS account.

@@ -19,7 +19,29 @@ LIBOQS_DIR="$ROOT_DIR/NoctweaveCore/liboqs"
 BUILD_DIR="$JS_DIR/wasm/build"
 INSTALL_DIR="$BUILD_DIR/liboqs-install"
 DIST_DIR="$JS_DIR/wasm/dist"
+EXPECTED_LIBOQS_COMMIT="97f6b86b1b6d109cfd43cf276ae39c2e776aed80"
+EXPECTED_EMSCRIPTEN_VERSION="6.0.1"
 
+if [ ! -d "$LIBOQS_DIR/.git" ]; then
+  echo "Pinned liboqs checkout is missing at $LIBOQS_DIR." >&2
+  exit 1
+fi
+
+actual_liboqs_commit="$(git -C "$LIBOQS_DIR" rev-parse HEAD)"
+if [ "$actual_liboqs_commit" != "$EXPECTED_LIBOQS_COMMIT" ]; then
+  echo "Refusing to build from unreviewed liboqs commit $actual_liboqs_commit." >&2
+  echo "Expected $EXPECTED_LIBOQS_COMMIT (liboqs 0.15.0)." >&2
+  exit 1
+fi
+
+actual_emscripten_version="$(emcc --version | sed -n '1s/.*emcc.* \([0-9][0-9.]*\) .*/\1/p')"
+if [ "$actual_emscripten_version" != "$EXPECTED_EMSCRIPTEN_VERSION" ]; then
+  echo "Refusing a non-reproducible Emscripten toolchain: $actual_emscripten_version." >&2
+  echo "Expected Emscripten $EXPECTED_EMSCRIPTEN_VERSION." >&2
+  exit 1
+fi
+
+rm -rf "$BUILD_DIR/liboqs" "$INSTALL_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 emcmake cmake -S "$LIBOQS_DIR" -B "$BUILD_DIR/liboqs" \

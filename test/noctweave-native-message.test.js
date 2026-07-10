@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import oqsFactory from "../wasm/dist/noctweave_oqs.js";
+import { canonicalEnvelopeBytes } from "../src/crypto/noctweave-native-message.js";
 import {
   createNativeInboundSession,
   createNativeOutboundSession,
@@ -32,6 +33,22 @@ test("native wire messages establish a session and decrypt replies", async () =>
     identity: alice,
     contact: contactFromOffer(bobContact)
   });
+  const sendChainBeforeFailure = structuredClone(outbound.conversation.sendChain);
+  const failingPqc = Object.create(pqc);
+  failingPqc.sign = () => { throw new Error("injected signing failure"); };
+  await assert.rejects(
+    encryptNativeTextEnvelope({
+      crypto,
+      pqc: failingPqc,
+      identity: alice,
+      contact: contactFromOffer(bobContact),
+      conversation: outbound.conversation,
+      text: "must not consume a ratchet step"
+    }),
+    /injected signing failure/
+  );
+  assert.deepEqual(outbound.conversation.sendChain, sendChainBeforeFailure);
+
   const first = await encryptNativeTextEnvelope({
     crypto,
     pqc,
@@ -50,6 +67,27 @@ test("native wire messages establish a session and decrypt replies", async () =>
     contact: contactFromOffer(aliceContact),
     kemCiphertext: first.kemCiphertext
   });
+  const corrupt = structuredClone(first);
+  const corruptCiphertext = Buffer.from(corrupt.payload.ciphertext, "base64");
+  corruptCiphertext[0] ^= 0xff;
+  corrupt.payload.ciphertext = corruptCiphertext.toString("base64");
+  corrupt.signature = base64(pqc.sign(
+    canonicalEnvelopeBytes(corrupt),
+    Buffer.from(alice.signing.secretKey, "base64")
+  ));
+  const receiveChainBeforeFailure = structuredClone(inbound.receiveChain);
+  await assert.rejects(
+    decryptNativeEnvelope({
+      crypto,
+      pqc,
+      identity: bob,
+      contact: contactFromOffer(aliceContact),
+      conversation: inbound,
+      envelope: corrupt
+    })
+  );
+  assert.deepEqual(inbound.receiveChain, receiveChainBeforeFailure);
+
   assert.equal(
     await decryptNativeEnvelope({
       crypto,

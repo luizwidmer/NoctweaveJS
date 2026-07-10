@@ -6,6 +6,15 @@
 #define NOCTWEAVE_ERR_INVALID_ARGUMENT -1
 #define NOCTWEAVE_ERR_UNAVAILABLE -2
 #define NOCTWEAVE_ERR_CRYPTO -3
+#define NOCTWEAVE_MAX_SIGNED_MESSAGE_LENGTH (512u * 1024u)
+
+_Static_assert(OQS_KEM_ml_kem_768_length_public_key == 1184, "Unexpected ML-KEM-768 public-key length");
+_Static_assert(OQS_KEM_ml_kem_768_length_secret_key == 2400, "Unexpected ML-KEM-768 secret-key length");
+_Static_assert(OQS_KEM_ml_kem_768_length_ciphertext == 1088, "Unexpected ML-KEM-768 ciphertext length");
+_Static_assert(OQS_KEM_ml_kem_768_length_shared_secret == 32, "Unexpected ML-KEM-768 shared-secret length");
+_Static_assert(OQS_SIG_ml_dsa_65_length_public_key == 1952, "Unexpected ML-DSA-65 public-key length");
+_Static_assert(OQS_SIG_ml_dsa_65_length_secret_key == 4032, "Unexpected ML-DSA-65 secret-key length");
+_Static_assert(OQS_SIG_ml_dsa_65_length_signature == 3309, "Unexpected ML-DSA-65 signature length");
 
 static OQS_KEM *noctweave_kem = NULL;
 static OQS_SIG *noctweave_sig = NULL;
@@ -154,6 +163,7 @@ int noctweave_sig_sign(
         signature_len == NULL ||
         message == NULL ||
         secret_key == NULL ||
+        message_len > NOCTWEAVE_MAX_SIGNED_MESSAGE_LENGTH ||
         secret_key_len != OQS_SIG_ml_dsa_65_length_secret_key
     ) {
         return NOCTWEAVE_ERR_INVALID_ARGUMENT;
@@ -178,6 +188,8 @@ int noctweave_sig_verify(
         message == NULL ||
         signature == NULL ||
         public_key == NULL ||
+        message_len > NOCTWEAVE_MAX_SIGNED_MESSAGE_LENGTH ||
+        signature_len != OQS_SIG_ml_dsa_65_length_signature ||
         public_key_len != OQS_SIG_ml_dsa_65_length_public_key
     ) {
         return NOCTWEAVE_ERR_INVALID_ARGUMENT;

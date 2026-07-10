@@ -15,6 +15,19 @@ const DEFAULT_PROFILE = Object.freeze({
     signatureLength: 3309
   })
 });
+const MAX_SIGNED_MESSAGE_BYTES = 512 * 1024;
+const MAX_PROFILE_JSON_BYTES = 2 * 1024;
+const REQUIRED_EXPORTS = Object.freeze([
+  "_malloc",
+  "_free",
+  "_noctweave_oqs_init",
+  "_noctweave_kem_keypair",
+  "_noctweave_kem_encaps",
+  "_noctweave_kem_decaps",
+  "_noctweave_sig_keypair",
+  "_noctweave_sig_sign",
+  "_noctweave_sig_verify"
+]);
 
 export class OQSWasmError extends Error {
   constructor(message, code) {
@@ -32,11 +45,20 @@ export class NoctweaveOQSWasmAdapter {
 
   constructor(module) {
     this.module = module;
-    this.#requireFunction("_malloc");
-    this.#requireFunction("_free");
-    this.#requireFunction("_noctweave_oqs_init");
+    for (const name of REQUIRED_EXPORTS) {
+      this.#requireFunction(name);
+    }
     this.#assertOk(this.module._noctweave_oqs_init(), "liboqs WASM initialization failed");
-    this.profileValue = this.#readProfile();
+    const profile = this.#readProfile();
+    this.#assertExpectedProfile(profile);
+    Object.defineProperty(this, "profileValue", {
+      value: Object.freeze({
+        kem: Object.freeze({ ...profile.kem }),
+        signature: Object.freeze({ ...profile.signature })
+      }),
+      writable: false,
+      configurable: false
+    });
   }
 
   profile() {
@@ -104,8 +126,9 @@ export class NoctweaveOQSWasmAdapter {
 
   sign(message, secretKey) {
     const profile = this.profileValue.signature;
+    this.#assertMaximumLength(message, MAX_SIGNED_MESSAGE_BYTES, "message");
     this.#assertLength(secretKey, profile.secretKeyLength, "secretKey");
-    const signatureLengthPtr = this.module._malloc(4);
+    const signatureLengthPtr = this.#allocate(4, "signature length");
     this.#heapU32()[signatureLengthPtr >> 2] = profile.signatureLength;
     let signatureBuffer;
     try {
@@ -123,6 +146,9 @@ export class NoctweaveOQSWasmAdapter {
           )
       );
       const signatureLength = this.#heapU32()[signatureLengthPtr >> 2];
+      if (signatureLength !== profile.signatureLength) {
+        throw new OQSWasmError("liboqs returned an invalid ML-DSA-65 signature length");
+      }
       signatureBuffer = result.signature;
       return signatureBuffer.slice(0, signatureLength);
     } finally {
@@ -134,6 +160,8 @@ export class NoctweaveOQSWasmAdapter {
 
   verify(message, signature, publicKey) {
     const profile = this.profileValue.signature;
+    this.#assertMaximumLength(message, MAX_SIGNED_MESSAGE_BYTES, "message");
+    this.#assertLength(signature, profile.signatureLength, "signature");
     this.#assertLength(publicKey, profile.publicKeyLength, "publicKey");
     const input = this.#allocInputs({ message, signature, publicKey });
     try {
@@ -199,14 +227,19 @@ export class NoctweaveOQSWasmAdapter {
   }
 
   #allocInputs(inputs) {
-    return Object.fromEntries(
-      Object.entries(inputs).map(([name, value]) => {
+    const allocated = {};
+    try {
+      for (const [name, value] of Object.entries(inputs)) {
         const input = bytes(value, name);
-        const ptr = this.module._malloc(input.byteLength || 1);
+        const ptr = this.#allocate(input.byteLength || 1, name);
         this.#heapU8().set(input, ptr);
-        return [name, { ptr, length: input.byteLength }];
-      })
-    );
+        allocated[name] = { ptr, length: input.byteLength };
+      }
+      return allocated;
+    } catch (error) {
+      this.#freeInputs(allocated);
+      throw error;
+    }
   }
 
   #freeInputs(inputs) {
@@ -217,12 +250,17 @@ export class NoctweaveOQSWasmAdapter {
   }
 
   #allocOutputs(definitions) {
-    return Object.fromEntries(
-      definitions.map(([name, length]) => {
-        const ptr = this.module._malloc(length || 1);
-        return [name, { ptr, length }];
-      })
-    );
+    const allocated = {};
+    try {
+      for (const [name, length] of definitions) {
+        const ptr = this.#allocate(length || 1, name);
+        allocated[name] = { ptr, length };
+      }
+      return allocated;
+    } catch (error) {
+      this.#freeOutputs(allocated);
+      throw error;
+    }
   }
 
   #freeOutputs(outputs) {
@@ -233,6 +271,7 @@ export class NoctweaveOQSWasmAdapter {
   }
 
   #read(ptr, length) {
+    this.#assertHeapRange(ptr, length);
     return new Uint8Array(this.#heapU8().slice(ptr, ptr + length));
   }
 
@@ -253,17 +292,67 @@ export class NoctweaveOQSWasmAdapter {
     }
     const ptr = this.module._noctweave_oqs_profile_json();
     const heap = this.#heapU8();
+    if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr >= heap.byteLength) {
+      throw new OQSWasmError("WASM module returned an invalid profile pointer");
+    }
     let end = ptr;
-    while (heap[end] !== 0) {
+    const limit = Math.min(heap.byteLength, ptr + MAX_PROFILE_JSON_BYTES);
+    while (end < limit && heap[end] !== 0) {
       end++;
     }
-    return JSON.parse(new TextDecoder().decode(heap.slice(ptr, end)));
+    if (end === limit) {
+      throw new OQSWasmError("WASM profile is missing a bounded terminator");
+    }
+    try {
+      return JSON.parse(new TextDecoder().decode(heap.slice(ptr, end)));
+    } catch {
+      throw new OQSWasmError("WASM module returned an invalid profile");
+    }
   }
 
   #assertLength(value, expectedLength, name) {
     const input = bytes(value, name);
     if (input.byteLength !== expectedLength) {
       throw new TypeError(`${name} must be ${expectedLength} bytes`);
+    }
+  }
+
+  #assertMaximumLength(value, maximumLength, name) {
+    const input = bytes(value, name);
+    if (input.byteLength > maximumLength) {
+      throw new TypeError(`${name} must not exceed ${maximumLength} bytes`);
+    }
+  }
+
+  #assertExpectedProfile(profile) {
+    for (const family of ["kem", "signature"]) {
+      if (!profile || typeof profile[family] !== "object" || profile[family] === null) {
+        throw new OQSWasmError(`WASM module is missing the ${family} profile`);
+      }
+      for (const [name, expected] of Object.entries(DEFAULT_PROFILE[family])) {
+        if (profile[family][name] !== expected) {
+          throw new OQSWasmError(`WASM ${family} profile does not match Noctweave`);
+        }
+      }
+    }
+  }
+
+  #allocate(length, label) {
+    if (!Number.isSafeInteger(length) || length <= 0) {
+      throw new OQSWasmError(`Invalid WASM allocation length for ${label}`);
+    }
+    const ptr = this.module._malloc(length);
+    if (!Number.isSafeInteger(ptr) || ptr <= 0) {
+      throw new OQSWasmError(`WASM allocation failed for ${label}`);
+    }
+    this.#assertHeapRange(ptr, length);
+    return ptr;
+  }
+
+  #assertHeapRange(ptr, length) {
+    const heapLength = this.#heapU8().byteLength;
+    if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(length) || ptr < 0 || length < 0 || ptr > heapLength - length) {
+      throw new OQSWasmError("WASM memory range is outside the exported heap");
     }
   }
 

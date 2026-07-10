@@ -1,17 +1,34 @@
+const MAX_STORAGE_KEY_BYTES = 256;
+const MAX_PLAINTEXT_RECORD_BYTES = 8 * 1024 * 1024;
+const MAX_ENCRYPTED_RECORD_BYTES = 12 * 1024 * 1024;
+const MIN_PASSPHRASE_CHARACTERS = 12;
+const MAX_PASSPHRASE_BYTES = 1024;
+
 export class MemoryNoctweaveStore {
   constructor(initialEntries = []) {
-    this.records = new Map(initialEntries);
+    this.records = new Map();
+    for (const [key, value] of initialEntries) {
+      validateStorageKey(key);
+      validateRecordSize(value);
+      this.records.set(key, cloneValue(value));
+    }
   }
 
   async get(key) {
-    return this.records.has(key) ? cloneValue(this.records.get(key)) : null;
+    validateStorageKey(key);
+    const value = this.records.has(key) ? cloneValue(this.records.get(key)) : null;
+    validateRecordSize(value);
+    return value;
   }
 
   async set(key, value) {
+    validateStorageKey(key);
+    validateRecordSize(value);
     this.records.set(key, cloneValue(value));
   }
 
   async delete(key) {
+    validateStorageKey(key);
     this.records.delete(key);
   }
 
@@ -22,6 +39,7 @@ export class MemoryNoctweaveStore {
 
 export class BrowserLocalStorageStore {
   constructor({ namespace = "noctweave", storage } = {}) {
+    validateStorageKey(namespace);
     this.namespace = namespace;
     this.storage = storage ?? globalThis.localStorage;
     if (!this.storage) {
@@ -30,15 +48,28 @@ export class BrowserLocalStorageStore {
   }
 
   async get(key) {
+    validateStorageKey(key);
     const raw = this.storage.getItem(this.storageKey(key));
-    return raw == null ? null : JSON.parse(raw);
+    if (raw == null) {
+      return null;
+    }
+    if (raw.length > MAX_ENCRYPTED_RECORD_BYTES) {
+      throw new Error("Stored record exceeds its size limit.");
+    }
+    return JSON.parse(raw);
   }
 
   async set(key, value) {
-    this.storage.setItem(this.storageKey(key), JSON.stringify(value));
+    validateStorageKey(key);
+    const encoded = JSON.stringify(value);
+    if (typeof encoded !== "string" || encoded.length > MAX_ENCRYPTED_RECORD_BYTES) {
+      throw new Error("Stored record exceeds its size limit.");
+    }
+    this.storage.setItem(this.storageKey(key), encoded);
   }
 
   async delete(key) {
+    validateStorageKey(key);
     this.storage.removeItem(this.storageKey(key));
   }
 
@@ -59,6 +90,11 @@ export class BrowserLocalStorageStore {
 
 export class IndexedDBNoctweaveStore {
   constructor({ databaseName = "noctweave", storeName = "records", version = 1, indexedDB } = {}) {
+    validateStorageKey(databaseName);
+    validateStorageKey(storeName);
+    if (!Number.isSafeInteger(version) || version < 1 || version > 1_000_000) {
+      throw new TypeError("IndexedDB version must be an integer between 1 and 1000000.");
+    }
     this.databaseName = databaseName;
     this.storeName = storeName;
     this.version = version;
@@ -70,14 +106,20 @@ export class IndexedDBNoctweaveStore {
   }
 
   async get(key) {
-    return this.transaction("readonly", (store) => requestToPromise(store.get(key)));
+    validateStorageKey(key);
+    const value = await this.transaction("readonly", (store) => requestToPromise(store.get(key)));
+    validateRecordSize(value);
+    return value;
   }
 
   async set(key, value) {
+    validateStorageKey(key);
+    validateRecordSize(value);
     await this.transaction("readwrite", (store) => requestToPromise(store.put(value, key)));
   }
 
   async delete(key) {
+    validateStorageKey(key);
     await this.transaction("readwrite", (store) => requestToPromise(store.delete(key)));
   }
 
@@ -161,40 +203,70 @@ export class EncryptedNoctweaveStore {
     if (!this.crypto?.subtle || typeof this.crypto.getRandomValues !== "function") {
       throw new Error("WebCrypto is required for encrypted Noctweave storage.");
     }
-    this.keyPromise = this.resolveKey(options);
+    validateEncryptedStoreKeyOptions(options);
+    this.keyOptions = options;
+    this.keyPromise = null;
   }
 
   async get(key) {
+    validateStorageKey(key);
     const envelope = await this.store.get(key);
     if (envelope == null) {
       return null;
     }
-    if (envelope.__noctweaveEncrypted !== 1) {
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
+        envelope.__noctweaveEncrypted !== 1 || envelope.version !== 1 ||
+        envelope.algorithm !== "AES-256-GCM") {
       throw new Error("Encrypted store refused to load plaintext state.");
     }
-    const cryptoKey = await this.keyPromise;
-    const plaintext = await this.crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: base64ToBytes(envelope.nonce),
-        additionalData: storageAAD(key)
-      },
-      cryptoKey,
-      base64ToBytes(envelope.ciphertext)
+    const nonce = base64ToBytesStrict(envelope.nonce, "storage nonce", 12, 12);
+    const ciphertext = base64ToBytesStrict(
+      envelope.ciphertext,
+      "storage ciphertext",
+      MAX_ENCRYPTED_RECORD_BYTES
     );
-    const plaintextBytes = new Uint8Array(plaintext);
+    if (ciphertext.byteLength < 16) {
+      throw new Error("Encrypted store record is malformed.");
+    }
+    const cryptoKey = await this.encryptionKey();
     try {
-      return JSON.parse(new TextDecoder().decode(plaintextBytes));
+      const plaintext = await this.crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: nonce,
+          additionalData: storageAAD(key)
+        },
+        cryptoKey,
+        ciphertext
+      );
+      const plaintextBytes = new Uint8Array(plaintext);
+      try {
+        if (plaintextBytes.byteLength > MAX_PLAINTEXT_RECORD_BYTES) {
+          throw new Error("Decrypted store record exceeds its size limit.");
+        }
+        return JSON.parse(new TextDecoder().decode(plaintextBytes));
+      } finally {
+        plaintextBytes.fill(0);
+      }
     } finally {
-      plaintextBytes.fill(0);
+      nonce.fill(0);
+      ciphertext.fill(0);
     }
   }
 
   async set(key, value) {
-    const cryptoKey = await this.keyPromise;
+    validateStorageKey(key);
+    const cryptoKey = await this.encryptionKey();
     const nonce = randomBytes(this.crypto, 12);
-    const plaintext = new TextEncoder().encode(JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== "string") {
+      throw new Error("Encrypted store value is not JSON serializable.");
+    }
+    const plaintext = new TextEncoder().encode(serialized);
     try {
+      if (plaintext.byteLength > MAX_PLAINTEXT_RECORD_BYTES) {
+        throw new Error("Encrypted store record exceeds its size limit.");
+      }
       const ciphertext = await this.crypto.subtle.encrypt(
         {
           name: "AES-GCM",
@@ -204,6 +276,9 @@ export class EncryptedNoctweaveStore {
         cryptoKey,
         plaintext
       );
+      if (ciphertext.byteLength > MAX_ENCRYPTED_RECORD_BYTES) {
+        throw new Error("Encrypted store record exceeds its size limit.");
+      }
       await this.store.set(key, {
         __noctweaveEncrypted: 1,
         version: 1,
@@ -213,10 +288,12 @@ export class EncryptedNoctweaveStore {
       });
     } finally {
       plaintext.fill(0);
+      nonce.fill(0);
     }
   }
 
   async delete(key) {
+    validateStorageKey(key);
     await this.store.delete(key);
   }
 
@@ -226,6 +303,11 @@ export class EncryptedNoctweaveStore {
       return;
     }
     throw new Error("Encrypted store backend does not implement clear().");
+  }
+
+  encryptionKey() {
+    this.keyPromise ??= this.resolveKey(this.keyOptions);
+    return this.keyPromise;
   }
 
   async resolveKey(options) {
@@ -244,9 +326,23 @@ export class EncryptedNoctweaveStore {
         raw.fill(0);
       }
     }
-    if (options.passphrase) {
-      const salt = bytesFromInput(options.salt ?? "noctweave-js-storage-v1");
-      const passphraseBytes = new TextEncoder().encode(String(options.passphrase));
+    if (options.passphrase !== undefined) {
+      const passphrase = String(options.passphrase);
+      validateStorePassphrase(passphrase);
+      if (options.salt === undefined) {
+        throw new Error("Encrypted store passphrase mode requires a unique persisted salt.");
+      }
+      const salt = copyBytesFromInput(options.salt);
+      if (salt.byteLength < 16) {
+        salt.fill(0);
+        throw new Error("Encrypted store passphrase salt must be at least 16 bytes.");
+      }
+      const iterations = Number(options.iterations ?? 210_000);
+      if (!Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > 10_000_000) {
+        salt.fill(0);
+        throw new Error("Encrypted store PBKDF2 iterations must be between 100000 and 10000000.");
+      }
+      const passphraseBytes = new TextEncoder().encode(passphrase);
       let baseKey;
       try {
         baseKey = await this.crypto.subtle.importKey(
@@ -259,21 +355,58 @@ export class EncryptedNoctweaveStore {
       } finally {
         passphraseBytes.fill(0);
       }
-      return this.crypto.subtle.deriveKey(
-        {
-          name: "PBKDF2",
-          salt,
-          iterations: Number(options.iterations ?? 210_000),
-          hash: "SHA-256"
-        },
-        baseKey,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["encrypt", "decrypt"]
-      );
+      try {
+        return await this.crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt,
+            iterations,
+            hash: "SHA-256"
+          },
+          baseKey,
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["encrypt", "decrypt"]
+        );
+      } finally {
+        salt.fill(0);
+      }
     }
     throw new Error("Encrypted store requires keyBytes, rawKey, key, or passphrase.");
   }
+}
+
+function validateEncryptedStoreKeyOptions(options) {
+  if (typeof globalThis.CryptoKey !== "undefined" && options.key instanceof globalThis.CryptoKey) {
+    return;
+  }
+  if (options.keyBytes || options.rawKey) {
+    const raw = copyBytesFromInput(options.keyBytes ?? options.rawKey);
+    const valid = raw.byteLength === 32;
+    raw.fill(0);
+    if (!valid) {
+      throw new Error("Encrypted store raw key must be 32 bytes.");
+    }
+    return;
+  }
+  if (options.passphrase !== undefined) {
+    validateStorePassphrase(String(options.passphrase));
+    if (options.salt === undefined) {
+      throw new Error("Encrypted store passphrase mode requires a unique persisted salt.");
+    }
+    const salt = copyBytesFromInput(options.salt);
+    const validSalt = salt.byteLength >= 16;
+    salt.fill(0);
+    if (!validSalt) {
+      throw new Error("Encrypted store passphrase salt must be at least 16 bytes.");
+    }
+    const iterations = Number(options.iterations ?? 210_000);
+    if (!Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > 10_000_000) {
+      throw new Error("Encrypted store PBKDF2 iterations must be between 100000 and 10000000.");
+    }
+    return;
+  }
+  throw new Error("Encrypted store requires keyBytes, rawKey, key, or passphrase.");
 }
 
 export class DatabaseNoctweaveStore {
@@ -287,14 +420,20 @@ export class DatabaseNoctweaveStore {
   }
 
   async get(key) {
-    return this.adapter.get(key);
+    validateStorageKey(key);
+    const value = await this.adapter.get(key);
+    validateRecordSize(value);
+    return value;
   }
 
   async set(key, value) {
+    validateStorageKey(key);
+    validateRecordSize(value);
     await this.adapter.set(key, value);
   }
 
   async delete(key) {
+    validateStorageKey(key);
     await this.adapter.delete(key);
   }
 
@@ -309,6 +448,12 @@ export class DatabaseNoctweaveStore {
 
 export class NoctweaveStateRepository {
   constructor(store, { key = "client-state" } = {}) {
+    for (const method of ["get", "set", "delete"]) {
+      if (typeof store?.[method] !== "function") {
+        throw new TypeError(`State repository store must implement ${method}(...).`);
+      }
+    }
+    validateStorageKey(key);
     this.store = store;
     this.key = key;
     this.queue = Promise.resolve();
@@ -363,6 +508,7 @@ function cloneValue(value) {
 }
 
 function storageAAD(key) {
+  validateStorageKey(key);
   return new TextEncoder().encode(`noctweave-storage:v1:${key}`);
 }
 
@@ -403,14 +549,58 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function base64ToBytes(value) {
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(value, "base64"));
+function base64ToBytesStrict(value, label, maximumBytes, exactBytes = null) {
+  if (typeof value !== "string" || value.length === 0 ||
+      value.length > Math.ceil(maximumBytes / 3) * 4 + 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error(`Invalid ${label}.`);
   }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  let bytes;
+  if (typeof Buffer !== "undefined") {
+    bytes = new Uint8Array(Buffer.from(value, "base64"));
+  } else {
+    const binary = atob(value);
+    bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+  }
+  if (bytes.byteLength > maximumBytes ||
+      (exactBytes !== null && bytes.byteLength !== exactBytes) ||
+      bytesToBase64(bytes) !== value) {
+    bytes.fill(0);
+    throw new Error(`Invalid ${label}.`);
   }
   return bytes;
+}
+
+function validateStorageKey(key) {
+  if (typeof key !== "string" || key.length === 0 ||
+      new TextEncoder().encode(key).byteLength > MAX_STORAGE_KEY_BYTES) {
+    throw new TypeError("Storage key must be a non-empty string no larger than 256 bytes.");
+  }
+}
+
+function validateRecordSize(value) {
+  if (value == null) {
+    return;
+  }
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    throw new TypeError("Stored record must be JSON serializable.");
+  }
+  if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > MAX_ENCRYPTED_RECORD_BYTES) {
+    throw new Error("Stored record exceeds its size limit.");
+  }
+}
+
+function validateStorePassphrase(passphrase) {
+  const byteLength = new TextEncoder().encode(passphrase).byteLength;
+  if (passphrase.length < MIN_PASSPHRASE_CHARACTERS || byteLength > MAX_PASSPHRASE_BYTES) {
+    throw new Error(
+      `Encrypted store passphrase must contain at least ${MIN_PASSPHRASE_CHARACTERS} characters and no more than ${MAX_PASSPHRASE_BYTES} UTF-8 bytes.`
+    );
+  }
 }

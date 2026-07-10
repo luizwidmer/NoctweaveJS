@@ -7,7 +7,28 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <main class="shell">
+  <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
+    <div class="vaultCard">
+      <div class="vaultMark" aria-hidden="true">◇</div>
+      <p class="eyebrow">Encrypted browser profile</p>
+      <h1 id="vaultTitle">Unlock Noctweave</h1>
+      <p id="vaultDescription">Private identity keys stay encrypted in this browser while the profile is locked.</p>
+      <label for="vaultPassphrase">Profile passphrase</label>
+      <input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+      <div id="vaultConfirmationRow">
+        <label for="vaultConfirmation">Repeat passphrase</label>
+        <input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024">
+      </div>
+      <p class="fieldHint" id="vaultHint">Use at least 12 characters. This passphrase cannot be recovered.</p>
+      <div class="vaultActions">
+        <button id="unlockVault" class="primaryWide">Create encrypted profile</button>
+        <button id="forgetVault" class="subtle danger" hidden>Forget local profile</button>
+      </div>
+      <p class="vaultError" id="vaultError" role="alert"></p>
+    </div>
+  </section>
+
+  <main class="shell" id="appShell" inert aria-hidden="true">
     <section class="hero">
       <div>
         <p class="eyebrow">NoctweaveJS</p>
@@ -39,6 +60,7 @@
           </dl>
           <div class="buttonRow">
             <button id="createIdentity">Create Inbox</button>
+            <button id="lockProfile" class="subtle">Lock</button>
             <button id="resetProfile" class="subtle danger">Reset</button>
           </div>
           <div class="buttonRow">
@@ -148,6 +170,25 @@
       <pre id="log"></pre>
     </section>
   </main>
+
+  <dialog id="secretDialog" class="secretDialog">
+    <form id="secretForm" method="dialog">
+      <p class="eyebrow">Encrypted transfer</p>
+      <h2 id="secretTitle">Protect profile</h2>
+      <p id="secretDescription" class="dialogDescription"></p>
+      <label for="secretPassphrase">Passphrase</label>
+      <input id="secretPassphrase" type="password" autocomplete="new-password" maxlength="1024">
+      <div id="secretConfirmationRow">
+        <label for="secretConfirmation">Repeat passphrase</label>
+        <input id="secretConfirmation" type="password" autocomplete="new-password" maxlength="1024">
+      </div>
+      <p id="secretError" class="vaultError" role="alert"></p>
+      <div class="dialogActions">
+        <button id="secretCancel" type="button" class="subtle">Cancel</button>
+        <button id="secretContinue" type="submit">Continue</button>
+      </div>
+    </form>
+  </dialog>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
