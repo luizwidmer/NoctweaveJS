@@ -3,6 +3,11 @@ export { relayRequests } from "./requests.js";
 export { NoctweaveRelayClient } from "./relay-client.js";
 export { NoctweaveWebClient } from "./client.js";
 export {
+  NoctweaveBrowserIdentityService,
+  parseBrowserRelayEndpoint,
+  validateBrowserDisplayName
+} from "./browser-identity.js";
+export {
   BrowserLocalStorageStore,
   DatabaseNoctweaveStore,
   EncryptedNoctweaveStore,

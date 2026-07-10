@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Noctyra JS Client</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <section class="startup" id="startup" aria-live="polite">
+    <div class="setupCard">
+      <header class="setupHeader">
+        <div class="brandMark">◇</div>
+        <div>
+          <span class="eyebrow">Noctyra for the web</span>
+          <h1 id="setupTitle">Private messaging starts here.</h1>
+        </div>
+      </header>
+
+      <div class="progress" id="setupProgress" aria-label="Setup progress">
+        <span class="active"></span><span></span><span></span><span></span>
+      </div>
+
+      <section class="setupStep active" data-step="welcome">
+        <p class="lead">Create a browser identity backed by ML-DSA-65 and ML-KEM-768, then choose an independent Noctweave relay.</p>
+        <div class="promiseGrid">
+          <article><strong>Encrypted locally</strong><span>Identity keys and client state remain encrypted at rest.</span></article>
+          <article><strong>Your relay</strong><span>No developer-operated central service is required.</span></article>
+          <article><strong>Portable identity</strong><span>Pair using a signed contact code after setup.</span></article>
+        </div>
+        <label class="consent"><input id="acceptNotice" type="checkbox"> <span>I understand that browser security depends on this device, browser profile, and installed extensions.</span></label>
+        <button class="primary next" data-next="storage" disabled>Continue</button>
+      </section>
+
+      <section class="setupStep" data-step="unlock">
+        <p class="lead">Unlock the encrypted Noctyra profile stored in this browser.</p>
+        <label for="unlockPassphrase">Profile passphrase</label>
+        <input id="unlockPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+        <p class="hint">The passphrase is never sent to a relay and cannot be recovered.</p>
+        <button id="unlockProfile" class="primary">Unlock profile</button>
+        <button id="resetLockedProfile" class="textButton danger">Reset this browser profile</button>
+      </section>
+
+      <section class="setupStep" data-step="storage">
+        <p class="lead">Protect local identity keys, contacts, sessions, and message history with a profile passphrase.</p>
+        <div class="fieldGrid">
+          <div><label for="storagePassphrase">Profile passphrase</label><input id="storagePassphrase" type="password" autocomplete="new-password" maxlength="1024"></div>
+          <div><label for="storageConfirmation">Repeat passphrase</label><input id="storageConfirmation" type="password" autocomplete="new-password" maxlength="1024"></div>
+        </div>
+        <div class="callout"><strong>Browser storage</strong><span>AES-256-GCM protects the profile. Clearing site data deletes it permanently unless you export it later.</span></div>
+        <button id="createStorage" class="primary">Create encrypted profile</button>
+      </section>
+
+      <section class="setupStep" data-step="relay">
+        <p class="lead">Enter a client-facing HTTP, HTTPS, WS, or WSS relay. Noctyra verifies the service before saving it.</p>
+        <label for="relayAddress">Relay URL</label>
+        <input id="relayAddress" type="url" inputmode="url" spellcheck="false" placeholder="https://relay.example.org">
+        <details>
+          <summary>Advanced relay access</summary>
+          <label for="relayPassword">Relay password</label>
+          <input id="relayPassword" type="password" autocomplete="off" maxlength="4096" placeholder="Optional">
+        </details>
+        <div class="relayResult" id="relayResult">The relay has not been checked.</div>
+        <button id="verifyRelay" class="primary">Verify relay</button>
+      </section>
+
+      <section class="setupStep" data-step="identity">
+        <p class="lead">Choose the name contacts will see in your signed pairing code. It does not need to be your legal name.</p>
+        <label for="displayName">Display name</label>
+        <input id="displayName" maxlength="128" autocomplete="nickname" placeholder="Your name or pseudonym">
+        <div class="callout"><strong>Identity creation</strong><span>The browser will generate signing, agreement, and inbox-access keys, then register only public material with your relay.</span></div>
+        <button id="createIdentity" class="primary">Create identity</button>
+      </section>
+
+      <p class="setupError" id="setupError" role="alert"></p>
+      <div class="busy" id="busy" hidden><span></span><span id="busyLabel">Working…</span></div>
+    </div>
+  </section>
+
+  <main class="app" id="app" hidden>
+    <aside class="rail">
+      <div class="brand"><div class="brandMark small">◇</div><div><strong>Noctyra</strong><span>JS Client</span></div></div>
+      <nav id="navigation">
+        <button data-view="chats" class="active"><span>◌</span> Chats</button>
+        <button data-view="contacts"><span>◎</span> Contacts</button>
+        <button data-view="code"><span>⌗</span> My Code</button>
+        <button data-view="relays"><span>⌁</span> Relays</button>
+        <button data-view="identity"><span>◇</span> Identity</button>
+        <button data-view="settings"><span>⚙</span> Settings</button>
+      </nav>
+      <div class="railStatus"><span class="onlineDot"></span><span id="railRelay">Relay verified</span></div>
+    </aside>
+
+    <section class="content">
+      <header class="topbar"><div><span class="eyebrow" id="viewEyebrow">Messages</span><h2 id="viewTitle">Chats</h2></div><div class="identityPill"><span class="onlineDot"></span><span id="headerIdentity"></span></div></header>
+
+      <section class="view active" data-view-panel="chats">
+        <div class="emptyState"><div class="emptyIcon">◌</div><h3>No conversations yet</h3><p>Share your contact code or import a contact to start an encrypted conversation.</p><button data-open-view="code">Open My Code</button></div>
+      </section>
+
+      <section class="view" data-view-panel="contacts">
+        <div class="sectionCard"><div class="cardHeader"><div><span class="eyebrow">Address book</span><h3>Contacts</h3></div><button disabled>Add Contact</button></div><p class="muted">Contact importing and the full conversation view are the next production-client slice. The protocol demo remains available separately for interoperability testing.</p></div>
+      </section>
+
+      <section class="view" data-view-panel="code">
+        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Pairing</span><h3>Your signed contact code</h3></div></div><p class="muted">This code contains public identity and inbox material. Private keys never leave the encrypted profile.</p><div class="hiddenCode" id="contactCode">Contact code hidden</div><div class="actionRow"><button id="revealCode">Reveal</button><button id="copyCode" class="primary">Copy Code</button></div></div>
+      </section>
+
+      <section class="view" data-view-panel="relays">
+        <div class="sectionCard"><div class="cardHeader"><div><span class="eyebrow">Connection</span><h3 id="relayName">Relay</h3></div><span class="badge good">Verified</span></div><dl class="details"><dt>Address</dt><dd id="savedRelayAddress"></dd><dt>Software</dt><dd id="relaySoftware"></dd><dt>Federation</dt><dd id="relayFederation"></dd><dt>Checked</dt><dd id="relayChecked"></dd></dl><button id="recheckRelay">Check Again</button></div>
+      </section>
+
+      <section class="view" data-view-panel="identity">
+        <div class="identityHero"><div class="identityGlyph">◇</div><div><span class="eyebrow">Active identity</span><h3 id="identityName"></h3><p id="identityInbox"></p></div><span class="badge good">Active</span></div>
+        <div class="metricGrid"><article><span>Signing fingerprint</span><strong id="identityFingerprint"></strong></article><article><span>Home relay</span><strong id="identityRelay"></strong></article><article><span>Cryptography</span><strong>ML-DSA-65 + ML-KEM-768</strong></article></div>
+      </section>
+
+      <section class="view" data-view-panel="settings">
+        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Security</span><h3>Browser profile</h3></div></div><button id="lockClient" class="wide">Lock Noctyra</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted">Reset permanently removes this browser profile, including private keys and local history.</p></div>
+      </section>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

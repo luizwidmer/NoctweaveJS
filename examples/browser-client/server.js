@@ -10,6 +10,9 @@ const port = Number(process.env.PORT ?? 5173);
 const maxBodyBytes = 1_000_000;
 const proxyTimeoutMs = 10_000;
 const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+const defaultClientDocument = process.env.NOCTWEAVE_CLIENT === "production"
+  ? "/client/index.html"
+  : "/examples/browser-client/index.html";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -37,7 +40,8 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`NoctweaveJS browser client: http://127.0.0.1:${port}/examples/browser-client/`);
+  const path = process.env.NOCTWEAVE_CLIENT === "production" ? "/client/" : "/examples/browser-client/";
+  console.log(`NoctweaveJS client: http://127.0.0.1:${port}${path}`);
 });
 
 async function proxyRelay(request, response) {
@@ -97,7 +101,7 @@ async function serveStatic(request, response) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   const decodedPath = decodeURIComponent(url.pathname);
   const pathname = decodedPath === "/"
-    ? "/examples/browser-client/index.html"
+    ? defaultClientDocument
     : decodedPath.endsWith("/")
       ? `${decodedPath}index.html`
       : decodedPath;
