@@ -1,8 +1,8 @@
 # NoctweaveJS
 
-NoctweaveJS is a small JavaScript client for simple web applications that need to talk to Noctweave relays and persist client-side state. It targets browsers, workers, and Node-backed web apps.
+NoctweaveJS is the JavaScript implementation and reference browser client for Noctweave. It includes relay transport, bounded storage adapters, browser-safe cryptography, post-quantum liboqs WASM bindings, and a working encrypted direct-messaging application. The library targets browsers, workers, and Node-backed web apps.
 
-This package covers relay transport, storage, browser-safe symmetric primitives, and an optional liboqs WASM adapter for Noctweave's post-quantum public-key operations. The WASM surface is intentionally narrow: ML-KEM-768 for KEM and ML-DSA-65 for signatures.
+The WASM surface is intentionally narrow: ML-KEM-768 for KEM and ML-DSA-65 for signatures. WebCrypto provides AES-256-GCM, HKDF, HMAC, hashing, and secure randomness.
 
 ## Install
 
@@ -72,11 +72,11 @@ For a quick live relay smoke test:
 npm run smoke:relay -- --relay http://127.0.0.1:9339
 ```
 
-This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips. It is a transport/mailbox/proof test; it does not yet create a full encrypted chat session visible inside the native app.
+This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips.
 
 ## NoctweaveJS Client
 
-The production-oriented browser client is separate from the protocol demo. Run it with:
+The repository includes a complete minimal direct-messaging client, separate from the lower-level protocol demo. Run it with:
 
 ```sh
 npm run dev:client
@@ -90,7 +90,28 @@ Open `http://127.0.0.1:5173/client/`. First run guides the user through:
 4. generating ML-DSA-65 signing and access keys plus an ML-KEM-768 agreement key;
 5. registering the inbox and entering the client shell.
 
-The client currently exposes identity, signed contact-code, relay, lock, and reset surfaces. Contacts and full direct-chat UX are intentionally the next client slice; use the browser demo for current end-to-end messaging interoperability tests.
+After setup, the client provides:
+
+- a verified contact book with optional local aliases and contact deletion;
+- signed contact-code reveal, copy, download, and file import;
+- durable one-to-one encrypted conversations with unread badges and search;
+- send retry state and safe skipped-message ratchet recovery;
+- manual and automatic inbox sync while the page is visible;
+- multiple verified relay records and live health checks;
+- encrypted profile export/import, lock, and local reset.
+
+Fetched envelopes are acknowledged only after successful verification,
+decryption, and local persistence. Failed or unknown envelopes remain available
+for a later safe retry.
+
+Test a real encrypted round trip against a running HTTP relay:
+
+```sh
+npm run smoke:client -- --relay http://127.0.0.1:9340
+```
+
+The smoke test creates two identities, verifies their pairing material, sends
+and decrypts in both directions, and acknowledges both messages.
 
 ## Browser Protocol Demo
 
@@ -102,7 +123,7 @@ npm run dev:browser-client
 
 Open `http://127.0.0.1:5173/examples/browser-client/`. The demo generates WASM ML-DSA/ML-KEM keys in the browser, registers a test inbox, pairs by copy/pasting contact codes, sends ML-KEM/AES-GCM encrypted messages, verifies ML-DSA envelope signatures, and fetches/decrypts messages from the relay. A local Node proxy is used only to avoid browser CORS restrictions while testing relays.
 
-The browser client includes a small address book, hidden-by-default contact code display, manual and automatic fetch controls, encrypted local profile storage, password-protected profile export/import, contact deletion, and a compact diagnostics log. It is still a development client and has not received an independent security audit.
+The protocol demo includes a compact address book, manual and automatic fetch controls, encrypted local profile storage, and diagnostics intended for interoperability work. The `client/` application should be used for normal browser-client evaluation. Neither surface has received an independent security audit.
 
 To test two browser clients on one machine, open:
 

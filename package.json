@@ -1,7 +1,7 @@
 {
   "name": "@noctweave/js-client",
   "version": "0.1.0",
-  "description": "JavaScript relay client and storage adapters for simple Noctweave web applications.",
+  "description": "Noctweave JavaScript protocol library, encrypted storage adapters, and working browser messaging client.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -20,6 +20,7 @@
     "build:oqs-wasm": "bash scripts/build-oqs-wasm.sh",
     "dev:client": "NOCTWEAVE_CLIENT=production node examples/browser-client/server.js",
     "dev:browser-client": "node examples/browser-client/server.js",
+    "smoke:client": "node scripts/client-chat-smoke.js",
     "smoke:relay": "node scripts/relay-smoke.js",
     "test": "node --test"
   },
