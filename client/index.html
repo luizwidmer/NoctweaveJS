@@ -86,7 +86,7 @@
     </aside>
 
     <section class="content">
-      <header class="topbar"><div><span class="eyebrow" id="viewEyebrow">Messages</span><h2 id="viewTitle">Chats</h2></div><div class="topActions"><button id="syncNow" class="iconButton" title="Fetch messages" aria-label="Fetch messages">↻</button><div class="identityPill"><span class="onlineDot"></span><span id="headerIdentity"></span></div></div></header>
+      <header class="topbar"><div class="topbarIdentity"><img class="mobileBrand" src="./assets/noctweave-mark.svg" alt=""><div><span class="eyebrow" id="viewEyebrow">Messages</span><h2 id="viewTitle">Chats</h2></div></div><div class="topActions"><button id="syncNow" class="iconButton" title="Fetch messages" aria-label="Fetch messages">↻</button><div class="identityPill"><span class="onlineDot"></span><span id="headerIdentity"></span></div></div></header>
 
       <section class="view active" data-view-panel="chats">
         <div class="messenger">
@@ -96,7 +96,7 @@
             <div id="noConversations" class="compactEmpty"><strong>No conversations</strong><span>Add a verified contact to begin.</span><button data-open-view="contacts">Add contact</button></div>
           </aside>
           <section class="chatPane" id="chatPane">
-            <div id="chatPlaceholder" class="emptyState"><div class="emptyIcon">◌</div><h3>Your conversations</h3><p>Select a contact, or add one using a signed Noctweave contact code.</p><button data-open-view="contacts">Open Contact Book</button></div>
+            <div id="chatPlaceholder" class="emptyState"><div class="emptyIcon"><img src="./assets/noctweave-mark.svg" alt=""></div><h3>Your conversations</h3><p>Select a contact, or add one using a signed Noctweave contact code.</p><button data-open-view="contacts">Open Contact Book</button></div>
             <div id="activeChat" class="activeChat" hidden>
               <header class="chatHeader"><button id="closeMobileChat" class="iconButton mobileChatBack" title="Back to chats" aria-label="Back to chats">‹</button><div><h3 id="chatContactName"></h3><span id="chatContactStatus"></span></div><button id="clearConversation" class="iconButton danger" title="Clear local history" aria-label="Clear local history">⌫</button></header>
               <div id="messageList" class="messageList" aria-live="polite"></div>

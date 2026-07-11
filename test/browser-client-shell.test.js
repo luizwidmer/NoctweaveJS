@@ -39,3 +39,9 @@ test("browser surfaces package the canonical Noctweave mark", async () => {
   assert.match(clientMark, /#5B9CFA/);
   assert.match(clientMark, /#3DD5C5/);
 });
+
+test("development server serves SVG branding with a non-sniffed image type", async () => {
+  const server = await readFile(new URL("../examples/browser-client/server.js", import.meta.url), "utf8");
+  assert.match(server, /"\.svg": "image\/svg\+xml"/);
+  assert.match(server, /"x-content-type-options": "nosniff"/);
+});
