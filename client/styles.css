@@ -26,7 +26,7 @@ button { color: var(--text); }
 .ambient { position: fixed; inset: 0; z-index: -2; background: radial-gradient(circle at 18% 12%, rgba(92, 68, 175, .38), transparent 34%), radial-gradient(circle at 88% 84%, rgba(34, 144, 148, .24), transparent 35%), linear-gradient(145deg, #171724, #10151c 70%); }
 .ambient::after { content: ""; position: absolute; inset: 0; opacity: .17; background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(to bottom, black, transparent); }
 
-button, .buttonLabel { min-height: 42px; padding: 0 17px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.045); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: .18s ease; text-decoration: none; }
+button, .buttonLabel { min-height: 42px; padding: 0 17px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.045); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: .18s ease; text-decoration: none; line-height: 1; }
 button:hover, .buttonLabel:hover { border-color: var(--line-bright); background: rgba(139,124,255,.1); transform: translateY(-1px); }
 button:active, .buttonLabel:active { transform: translateY(0); }
 button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
@@ -36,6 +36,7 @@ button.danger, .dangerButton { color: #ff9aa6; }
 button.dangerButton:hover { border-color: rgba(255,120,136,.4); background: rgba(255,120,136,.08); }
 .iconButton { width: 42px; padding: 0; border-radius: 50%; font-size: 20px; flex: 0 0 auto; }
 .wide { width: 100%; margin-top: 10px; }
+.buttonLabel { width: auto; margin: 0; color: var(--text); font-size: inherit; }
 .buttonLabel input { display: none; }
 
 input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 13px; padding: 12px 14px; color: var(--text); background: rgba(5,7,12,.42); outline: none; resize: vertical; }
