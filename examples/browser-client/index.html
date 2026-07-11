@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoctweaveJS Client</title>
+  <link rel="icon" href="./assets/noctweave-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
     <div class="vaultCard">
-      <div class="vaultMark" aria-hidden="true">◇</div>
+      <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
       <p class="eyebrow">Encrypted browser profile</p>
       <h1 id="vaultTitle">Unlock Noctweave</h1>
       <p id="vaultDescription">Private identity keys stay encrypted in this browser while the profile is locked.</p>
@@ -30,11 +31,11 @@
 
   <main class="shell" id="appShell" inert aria-hidden="true">
     <section class="hero">
-      <div>
+      <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
         <p class="eyebrow">NoctweaveJS</p>
         <h1>Browser Messenger</h1>
         <p>A dependency-light browser client for pairing, relaying, and decrypting Noctweave messages.</p>
-      </div>
+      </div></div>
       <div class="heroActions">
         <a class="profileLink" href="?profile=alice">Alice</a>
         <a class="profileLink" href="?profile=bob">Bob</a>

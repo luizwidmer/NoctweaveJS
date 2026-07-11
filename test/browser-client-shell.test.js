@@ -24,3 +24,18 @@ test("production browser client keeps secret-bearing state behind encrypted stor
   assert.match(script, /acknowledgeMessages/);
   assert.match(script, /await saveProfile\(\);\s*renderApplication\(\);\s*if \(acknowledged\.length/);
 });
+
+test("browser surfaces package the canonical Noctweave mark", async () => {
+  const [clientHTML, demoHTML, clientMark, demoMark] = await Promise.all([
+    readFile(new URL("../client/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../examples/browser-client/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../client/assets/noctweave-mark.svg", import.meta.url), "utf8"),
+    readFile(new URL("../examples/browser-client/assets/noctweave-mark.svg", import.meta.url), "utf8")
+  ]);
+  assert.match(clientHTML, /assets\/noctweave-mark\.svg/);
+  assert.match(demoHTML, /assets\/noctweave-mark\.svg/);
+  assert.equal(clientMark, demoMark);
+  assert.match(clientMark, /#7B61FF/);
+  assert.match(clientMark, /#5B9CFA/);
+  assert.match(clientMark, /#3DD5C5/);
+});
