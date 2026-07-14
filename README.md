@@ -145,6 +145,19 @@ operating system so native signing and packaging can be applied there. Local
 builds are intentionally unsigned; release builds must use the platform's code
 signing and notarization process before distribution.
 
+### Native build workflow
+
+`.github/workflows/noctweavejs-desktop-release.yml` builds the client on native
+macOS ARM64, Windows x64, and Ubuntu x64 runners. It runs only when manually
+dispatched or when a `v*` tag is pushed. Manual runs retain downloadable workflow
+artifacts for 14 days. Tagged runs additionally create or update a **draft**
+GitHub Release with SHA-256 manifests and GitHub provenance attestations.
+
+The workflow does not publish a release automatically and does not currently
+sign the applications. Configure Apple signing/notarization and Windows
+Authenticode credentials before treating these artifacts as distribution
+builds.
+
 ### Desktop boundary
 
 - The Electrobun package uses the operating system WebView and does not expose
