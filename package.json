@@ -25,6 +25,7 @@
     "desktop:dev": "electrobun dev",
     "desktop:watch": "electrobun dev --watch",
     "desktop:build": "electrobun build --env=stable",
+    "desktop:icons": "bun desktop/scripts/generate-icons.ts",
     "smoke:client": "node scripts/client-chat-smoke.js",
     "smoke:relay": "node scripts/relay-smoke.js",
     "typecheck:desktop": "tsc --noEmit",
@@ -45,6 +46,7 @@
     "@types/bun": "^1.3.14",
     "@types/three": "^0.185.1",
     "electrobun": "^1.18.1",
+    "png2icons": "^2.0.1",
     "typescript": "^7.0.2"
   }
 }

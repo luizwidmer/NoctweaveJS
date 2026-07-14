@@ -136,10 +136,26 @@ Create the distributable for the current operating system:
 bun run desktop:build
 ```
 
+The package includes the Noctweave app icon for macOS, Windows, and Linux.
+After changing `desktop/assets/app-icon.png`, regenerate native formats with
+`bun run desktop:icons` before building.
+
 Electrobun supports macOS, Windows, and Linux. Build each release on its target
 operating system so native signing and packaging can be applied there. Local
 builds are intentionally unsigned; release builds must use the platform's code
 signing and notarization process before distribution.
+
+### Desktop boundary
+
+- The Electrobun package uses the operating system WebView and does not expose
+  the profile to ordinary browser extensions.
+- HTTP/HTTPS relay requests cross a bounded native bridge; WS/WSS remains in the
+  WebView. Raw TCP is not enabled by this client.
+- Profile contents remain AES-256-GCM encrypted at rest. Plaintext necessarily
+  exists while the profile is unlocked and in use.
+- Install only signed releases from a trusted source. A compromised OS account,
+  modified binary, platform WebView, or JavaScript dependency can read unlocked
+  data. Local development builds are unsigned and are not distribution builds.
 
 ## Browser Protocol Demo
 
@@ -262,8 +278,12 @@ The native Swift core and the JS/WASM adapter use the same algorithm profile:
 
 ## Security Notes
 
+### Browser boundary
+
 - Relay responses and stored records are untrusted until your application verifies them.
 - Local browser storage is not secure against a compromised browser profile, extension, or OS account.
+- Clearing site data removes the profile; export an encrypted backup first if it
+  must be recoverable.
 - Raw storage adapters are plaintext. Use `EncryptedNoctweaveStore` for sensitive state and keep its key outside the wrapped adapter.
 - The WASM adapter validates key and ciphertext lengths before calling liboqs.
 - Relay requests reject redirects and omit ambient credentials to reduce cross-origin credential leakage.

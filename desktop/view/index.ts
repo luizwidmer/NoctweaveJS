@@ -4,6 +4,8 @@ import type {
   NoctweaveDesktopRPC
 } from "../rpc.js";
 
+document.documentElement.dataset.runtime = "desktop";
+
 declare global {
   var __noctweaveDesktopRelayFetch: ((request: DesktopRelayRequest) => Promise<Response>) | undefined;
   var __noctweaveDesktopWasmBinary: Uint8Array | undefined;

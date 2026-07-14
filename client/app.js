@@ -137,12 +137,6 @@ async function boot() {
       crypto: runtime.crypto,
       relayClientFactory: makeRelayClient
     });
-    if (typeof globalThis.__noctweaveDesktopRelayFetch === "function") {
-      const notice = document.querySelector("#runtimeSecurityNotice");
-      if (notice) {
-        notice.textContent = "I understand that desktop security depends on this device, operating-system account, and the integrity of this application.";
-      }
-    }
     if (localStorage.getItem(encryptedStorageKey) !== null || localStorage.getItem(saltStorageKey) !== null) showStep("unlock");
     else showStep("welcome");
   });
@@ -176,7 +170,7 @@ async function createEncryptedProfile() {
   const passphrase = elements.storagePassphrase.value;
   if (passphrase.length < 12) throw new Error("Use a profile passphrase containing at least 12 characters.");
   if (passphrase !== elements.storageConfirmation.value) throw new Error("Profile passphrases do not match.");
-  if (localStorage.getItem(encryptedStorageKey) !== null || localStorage.getItem(saltStorageKey) !== null) throw new Error("An encrypted profile already exists in this browser.");
+  if (localStorage.getItem(encryptedStorageKey) !== null || localStorage.getItem(saltStorageKey) !== null) throw new Error("An encrypted local profile already exists.");
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const repository = makeRepository(passphrase, salt);
   const profile = newProfileState();
@@ -197,10 +191,10 @@ async function createEncryptedProfile() {
 
 async function unlockProfile() {
   const encodedSalt = localStorage.getItem(saltStorageKey);
-  if (!encodedSalt || localStorage.getItem(encryptedStorageKey) === null) throw new Error("The encrypted browser profile is incomplete.");
+  if (!encodedSalt || localStorage.getItem(encryptedStorageKey) === null) throw new Error("The encrypted local profile is incomplete.");
   const salt = fromBase64(encodedSalt);
   try {
-    if (salt.byteLength !== 16) throw new Error("The encrypted browser profile is malformed.");
+    if (salt.byteLength !== 16) throw new Error("The encrypted local profile is malformed.");
     const repository = makeRepository(elements.unlockPassphrase.value, salt);
     let profile;
     try { profile = await repository.load(); } catch { throw new Error("The profile could not be unlocked. Check the passphrase."); }
@@ -791,7 +785,8 @@ function lockClient() {
 }
 
 async function resetInstallation() {
-  if (!confirm("Reset this browser installation? Private keys, sessions, contacts, and local history will be permanently deleted.")) return;
+  const runtimeName = document.documentElement.dataset.runtime === "desktop" ? "desktop application" : "browser installation";
+  if (!confirm(`Reset this ${runtimeName}? Private keys, sessions, contacts, and local history will be permanently deleted.`)) return;
   clearInterval(runtime.autoFetchTimer);
   if (runtime.repository) await runtime.repository.clear();
   localStorage.removeItem(saltStorageKey); localStorage.removeItem(encryptedStorageKey);
@@ -810,7 +805,7 @@ function showStep(step) {
   document.querySelectorAll(".setupStep").forEach((section) => section.classList.toggle("active", section.dataset.step === step));
   const effectiveIndex = step === "unlock" ? 0 : Math.max(0, steps.indexOf(step));
   [...elements.setupProgress.children].forEach((item, index) => item.classList.toggle("active", index <= effectiveIndex));
-  const titles = { welcome: "Private messaging starts here.", unlock: "Welcome back.", storage: "Protect this browser profile.", relay: "Choose where you connect.", identity: "Create your identity." };
+  const titles = { welcome: "Private messaging starts here.", unlock: "Welcome back.", storage: "Protect this local profile.", relay: "Choose where you connect.", identity: "Create your identity." };
   elements.setupTitle.textContent = titles[step]; elements.setupError.textContent = "";
 }
 

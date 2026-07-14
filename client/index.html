@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-runtime="browser">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,28 +15,32 @@
     <div class="setupCard">
       <header class="setupHeader">
         <div class="brandMark"><img src="./assets/noctweave-mark.svg" alt=""></div>
-        <div><span class="eyebrow">NoctweaveJS</span><h1 id="setupTitle">Private messaging starts here.</h1></div>
+        <div><span class="eyebrow">NoctweaveJS <span class="runtimeChip"><span data-runtime-only="browser">Browser</span><span data-runtime-only="desktop">Desktop</span></span></span><h1 id="setupTitle">Private messaging starts here.</h1></div>
       </header>
       <div class="progress" id="setupProgress" aria-label="Setup progress"><span class="active"></span><span></span><span></span><span></span></div>
 
       <section class="setupStep active" data-step="welcome">
-        <p class="lead">A complete, local-first Noctweave client for the browser. Your identity, contacts, sessions, and history stay inside an encrypted profile.</p>
+        <p class="lead" data-runtime-only="browser">A local-first Noctweave client that runs in your browser. Identity, contacts, sessions, and history stay inside an encrypted browser profile.</p>
+        <p class="lead" data-runtime-only="desktop">A local-first Noctweave desktop client powered by the operating system WebView. Identity, contacts, sessions, and history stay inside this app's encrypted profile.</p>
         <div class="promiseGrid">
           <article><strong>Post-quantum</strong><span>ML-DSA-65 identity and ML-KEM-768 session setup.</span></article>
           <article><strong>Independent</strong><span>Connect to an operator-run relay; no Noctweave account is required.</span></article>
           <article><strong>Portable</strong><span>Export an encrypted profile backup whenever you choose.</span></article>
         </div>
-        <label class="consent"><input id="acceptNotice" type="checkbox"> <span id="runtimeSecurityNotice">I understand that browser security depends on this device, browser profile, and installed extensions.</span></label>
+        <div class="runtimeNotice" data-runtime-only="browser"><strong>Browser boundary</strong><span>Extensions, injected scripts, or a compromised browser profile can observe data while this client is unlocked. Clearing site data deletes the local profile unless you export a backup.</span></div>
+        <div class="runtimeNotice" data-runtime-only="desktop"><strong>Desktop boundary</strong><span>The desktop package is isolated from browser extensions, but it cannot defend against a compromised operating-system account or modified application. Install only builds from a source you trust.</span></div>
+        <label class="consent"><input id="acceptNotice" type="checkbox"> <span id="runtimeSecurityNotice"><span data-runtime-only="browser">I understand the browser security and storage boundaries above.</span><span data-runtime-only="desktop">I understand the desktop application and operating-system boundaries above.</span></span></label>
         <button class="primary next" data-next="storage" disabled>Continue</button>
       </section>
 
       <section class="setupStep" data-step="unlock">
-        <p class="lead">Unlock the encrypted NoctweaveJS profile stored in this browser.</p>
+        <p class="lead" data-runtime-only="browser">Unlock the encrypted NoctweaveJS profile stored in this browser.</p>
+        <p class="lead" data-runtime-only="desktop">Unlock the encrypted NoctweaveJS profile stored by this desktop application.</p>
         <label for="unlockPassphrase">Profile passphrase</label>
         <input id="unlockPassphrase" type="password" autocomplete="current-password" maxlength="1024">
         <p class="hint">The passphrase is never sent to a relay and cannot be recovered.</p>
         <button id="unlockProfile" class="primary">Unlock profile</button>
-        <button id="resetLockedProfile" class="textButton danger">Reset this browser profile</button>
+        <button id="resetLockedProfile" class="textButton danger">Reset this local profile</button>
       </section>
 
       <section class="setupStep" data-step="storage">
@@ -45,7 +49,8 @@
           <div><label for="storagePassphrase">Profile passphrase</label><input id="storagePassphrase" type="password" autocomplete="new-password" maxlength="1024"></div>
           <div><label for="storageConfirmation">Repeat passphrase</label><input id="storageConfirmation" type="password" autocomplete="new-password" maxlength="1024"></div>
         </div>
-        <div class="callout"><strong>Encrypted browser storage</strong><span>AES-256-GCM protects the profile. Clearing site data permanently deletes it unless you export a backup.</span></div>
+        <div class="callout" data-runtime-only="browser"><strong>Encrypted browser storage</strong><span>AES-256-GCM protects the profile. Clearing site data permanently deletes it unless you export a backup.</span></div>
+        <div class="callout" data-runtime-only="desktop"><strong>Encrypted application storage</strong><span>AES-256-GCM protects the profile inside the app's WebView data container. Removing application data permanently deletes it unless you export a backup.</span></div>
         <button id="createStorage" class="primary">Create encrypted profile</button>
       </section>
 
@@ -143,7 +148,8 @@
         <div class="settingsGrid">
           <div class="sectionCard"><div class="cardHeader"><div><span class="eyebrow">Delivery</span><h3>Message sync</h3></div><label class="switch"><input id="autoFetch" type="checkbox"><span></span></label></div><p class="muted">Fetch encrypted inbox items every few seconds while this page is open and visible.</p><dl class="details"><dt>Last sync</dt><dd id="lastSync">Never</dd><dt>Stored messages</dt><dd id="storedMessages">0</dd></dl></div>
           <div class="sectionCard"><span class="eyebrow">Portability</span><h3>Encrypted profile backup</h3><p class="muted">The exported file includes private keys, contacts, ratchet state, and local history. It is encrypted with a separate passphrase.</p><div class="actionRow"><button id="exportProfile">Export</button><label class="buttonLabel">Import<input id="importProfile" type="file" accept=".json,.noctweave"></label></div></div>
-          <div class="sectionCard"><span class="eyebrow">Session</span><h3>Browser profile</h3><button id="lockClient" class="wide">Lock NoctweaveJS</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted">Reset permanently removes private keys and local history from this browser profile.</p></div>
+          <div class="sectionCard"><span class="eyebrow">Runtime</span><h3><span data-runtime-only="browser">Browser security boundary</span><span data-runtime-only="desktop">Desktop security boundary</span></h3><p class="muted" data-runtime-only="browser">The encrypted profile limits storage exposure, but unlocked data remains visible to the browser process. Audit extensions, keep the browser updated, and export a backup before clearing site data.</p><p class="muted" data-runtime-only="desktop">The system WebView avoids browser extensions and HTTP relay requests use a bounded native bridge. The app still trusts your operating-system account, the installed binary, and the platform WebView.</p><div class="runtimeWarning" data-runtime-only="browser"><strong>Warning</strong><span>A compromised extension, browser, JavaScript dependency, or OS can access plaintext while unlocked.</span></div><div class="runtimeWarning" data-runtime-only="desktop"><strong>Warning</strong><span>A compromised OS account or modified/unsigned build can access plaintext while unlocked. Verify release signatures before installation.</span></div></div>
+          <div class="sectionCard"><span class="eyebrow">Session</span><h3>Local profile</h3><button id="lockClient" class="wide">Lock NoctweaveJS</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted" data-runtime-only="browser">Reset permanently removes private keys and local history from this browser profile.</p><p class="muted" data-runtime-only="desktop">Reset permanently removes private keys and local history from this desktop application profile.</p></div>
         </div>
       </section>
     </section>

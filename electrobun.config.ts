@@ -31,10 +31,16 @@ export default {
       notarize: false
     },
     linux: {
-      bundleCEF: false
+      bundleCEF: false,
+      icon: "desktop/assets/app-icon.png"
     },
     win: {
-      bundleCEF: false
+      bundleCEF: false,
+      icon: "desktop/assets/app-icon.ico"
     }
+  },
+  scripts: {
+    postBuild: "desktop/scripts/install-mac-icon.ts",
+    postWrap: "desktop/scripts/install-mac-icon.ts"
   }
 } satisfies ElectrobunConfig;
