@@ -25,7 +25,6 @@
     "desktop:dev": "electrobun dev",
     "desktop:watch": "electrobun dev --watch",
     "desktop:build": "electrobun build --env=stable",
-    "desktop:checksums": "bun desktop/scripts/checksum-artifacts.ts",
     "desktop:icons": "bun desktop/scripts/generate-icons.ts",
     "smoke:client": "node scripts/client-chat-smoke.js",
     "smoke:relay": "node scripts/relay-smoke.js",

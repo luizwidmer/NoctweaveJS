@@ -122,41 +122,43 @@ code; only HTTP/HTTPS relay requests cross a bounded typed bridge to the Bun
 process so browser CORS does not interfere. WebSocket and WSS connections remain
 direct from the client view.
 
-Install dependencies and run a development build:
+Install dependencies and run the desktop client:
 
 ```sh
 cd NoctweaveJS
-bun install
+bun install --frozen-lockfile
 bun run desktop:dev
 ```
 
-Create the distributable for the current operating system:
+### Build a native client from source
+
+NoctweaveJS does not publish official desktop binaries. Build the client on the
+operating system and architecture where it will run; Electrobun packages the
+native target provided by the host machine.
+
+Install Git and Bun 1.3.14, clone this repository, then run:
 
 ```sh
+cd NoctweaveJS
+bun install --frozen-lockfile
+bun test
+bun run typecheck:desktop
+bun run desktop:icons
 bun run desktop:build
 ```
+
+The distributable is written to `NoctweaveJS/artifacts/`. Repeat this process on
+macOS, Windows, or Linux for each platform you need. Electrobun currently
+targets macOS 14+, Windows 11+, and Ubuntu 22.04+.
 
 The package includes the Noctweave app icon for macOS, Windows, and Linux.
 After changing `desktop/assets/app-icon.png`, regenerate native formats with
 `bun run desktop:icons` before building.
 
-Electrobun supports macOS, Windows, and Linux. Build each release on its target
-operating system so native signing and packaging can be applied there. Local
-builds are intentionally unsigned; release builds must use the platform's code
-signing and notarization process before distribution.
-
-### Native build workflow
-
-`.github/workflows/noctweavejs-desktop-release.yml` builds the client on native
-macOS ARM64, Windows x64, and Ubuntu x64 runners. It runs only when manually
-dispatched or when a `v*` tag is pushed. Manual runs retain downloadable workflow
-artifacts for 14 days. Tagged runs additionally create or update a **draft**
-GitHub Release with SHA-256 manifests and GitHub provenance attestations.
-
-The workflow does not publish a release automatically and does not currently
-sign the applications. Configure Apple signing/notarization and Windows
-Authenticode credentials before treating these artifacts as distribution
-builds.
+Local builds are intentionally unsigned. Sign and notarize redistributed builds
+with your own platform identity. You can record checksums with
+`shasum -a 256 artifacts/*` on macOS/Linux or
+`Get-FileHash .\artifacts\* -Algorithm SHA256` in Windows PowerShell.
 
 ### Desktop boundary
 
