@@ -129,12 +129,20 @@ function bindEvents() {
 
 async function boot() {
   await run("Loading post-quantum runtime", async () => {
-    runtime.pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
+    const wasmBinary = globalThis.__noctweaveDesktopWasmBinary;
+    const wasmOptions = wasmBinary instanceof Uint8Array ? { wasmBinary } : {};
+    runtime.pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory, wasmOptions);
     runtime.identityService = new NoctweaveBrowserIdentityService({
       pqc: runtime.pqc,
       crypto: runtime.crypto,
       relayClientFactory: makeRelayClient
     });
+    if (typeof globalThis.__noctweaveDesktopRelayFetch === "function") {
+      const notice = document.querySelector("#runtimeSecurityNotice");
+      if (notice) {
+        notice.textContent = "I understand that desktop security depends on this device, operating-system account, and the integrity of this application.";
+      }
+    }
     if (localStorage.getItem(encryptedStorageKey) !== null || localStorage.getItem(saltStorageKey) !== null) showStep("unlock");
     else showStep("welcome");
   });
@@ -149,6 +157,17 @@ function makeRelayClient(endpoint, options = {}) {
 function proxyFetch(endpoint) {
   return async (url, init) => {
     const path = new URL(url).pathname === "/health" ? "/proxy/health" : "/proxy/relay";
+    if (typeof globalThis.__noctweaveDesktopRelayFetch === "function") {
+      const body = init?.body;
+      if (body !== undefined && typeof body !== "string") {
+        throw new TypeError("Desktop relay requests require a text body.");
+      }
+      return globalThis.__noctweaveDesktopRelayFetch({
+        endpoint,
+        route: path === "/proxy/health" ? "health" : "relay",
+        body
+      });
+    }
     return fetch(path, { ...init, headers: { ...(init?.headers ?? {}), "x-relay-endpoint": endpoint } });
   };
 }

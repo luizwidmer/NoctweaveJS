@@ -26,7 +26,7 @@
           <article><strong>Independent</strong><span>Connect to an operator-run relay; no Noctweave account is required.</span></article>
           <article><strong>Portable</strong><span>Export an encrypted profile backup whenever you choose.</span></article>
         </div>
-        <label class="consent"><input id="acceptNotice" type="checkbox"> <span>I understand that browser security depends on this device, browser profile, and installed extensions.</span></label>
+        <label class="consent"><input id="acceptNotice" type="checkbox"> <span id="runtimeSecurityNotice">I understand that browser security depends on this device, browser profile, and installed extensions.</span></label>
         <button class="primary next" data-next="storage" disabled>Continue</button>
       </section>
 
@@ -151,6 +151,6 @@
 
   <dialog id="secretDialog"><form method="dialog" id="secretForm"><span class="eyebrow">Encrypted backup</span><h3 id="secretTitle">Profile passphrase</h3><p id="secretDescription" class="muted"></p><label for="secretPassphrase">Passphrase</label><input id="secretPassphrase" type="password" maxlength="1024"><div id="secretConfirmationRow"><label for="secretConfirmation">Repeat passphrase</label><input id="secretConfirmation" type="password" maxlength="1024"></div><p class="setupError" id="secretError"></p><div class="actionRow"><button value="cancel" id="secretCancel">Cancel</button><button value="default" class="primary" id="secretSubmit">Continue</button></div></form></dialog>
   <div class="toast" id="toast" hidden></div>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./index.js"></script>
 </body>
 </html>

@@ -113,6 +113,34 @@ npm run smoke:client -- --relay http://127.0.0.1:9340
 The smoke test creates two identities, verifies their pairing material, sends
 and decrypts in both directions, and acknowledges both messages.
 
+## Desktop Client
+
+The same client is packaged as a small Electrobun desktop application using the
+operating system WebView. Chromium/CEF is not bundled. The desktop shell keeps
+the existing encrypted profile, contact book, post-quantum WASM, and messaging
+code; only HTTP/HTTPS relay requests cross a bounded typed bridge to the Bun
+process so browser CORS does not interfere. WebSocket and WSS connections remain
+direct from the client view.
+
+Install dependencies and run a development build:
+
+```sh
+cd NoctweaveJS
+bun install
+bun run desktop:dev
+```
+
+Create the distributable for the current operating system:
+
+```sh
+bun run desktop:build
+```
+
+Electrobun supports macOS, Windows, and Linux. Build each release on its target
+operating system so native signing and packaging can be applied there. Local
+builds are intentionally unsigned; release builds must use the platform's code
+signing and notarization process before distribution.
+
 ## Browser Protocol Demo
 
 Run a local browser client:
