@@ -19,7 +19,8 @@ LIBOQS_DIR="$ROOT_DIR/NoctweaveCore/liboqs"
 BUILD_DIR="$JS_DIR/wasm/build"
 INSTALL_DIR="$BUILD_DIR/liboqs-install"
 DIST_DIR="$JS_DIR/wasm/dist"
-EXPECTED_LIBOQS_COMMIT="97f6b86b1b6d109cfd43cf276ae39c2e776aed80"
+source "$ROOT_DIR/scripts/liboqs-version.sh"
+EXPECTED_LIBOQS_COMMIT="$LIBOQS_COMMIT"
 EXPECTED_EMSCRIPTEN_VERSION="6.0.1"
 
 if [ ! -d "$LIBOQS_DIR/.git" ]; then
@@ -30,7 +31,7 @@ fi
 actual_liboqs_commit="$(git -C "$LIBOQS_DIR" rev-parse HEAD)"
 if [ "$actual_liboqs_commit" != "$EXPECTED_LIBOQS_COMMIT" ]; then
   echo "Refusing to build from unreviewed liboqs commit $actual_liboqs_commit." >&2
-  echo "Expected $EXPECTED_LIBOQS_COMMIT (liboqs 0.15.0)." >&2
+  echo "Expected $EXPECTED_LIBOQS_COMMIT (liboqs $LIBOQS_VERSION)." >&2
   exit 1
 fi
 
