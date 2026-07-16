@@ -243,6 +243,7 @@ test("direct-v4 preserves typed application content and fails closed for malform
     chunkCount: 2,
     chunkSize: 65_536
   };
+  const attachmentReplyTarget = swiftUUID();
   const attachment = await encryptNativeApplicationEnvelope({
     crypto,
     pqc,
@@ -254,13 +255,15 @@ test("direct-v4 preserves typed application content and fails closed for malform
       payload: canonicalJsonBytes(descriptor),
       fallbackText: "Image",
       disposition: "visible"
-    })
+    }),
+    relation: { kind: "reply", targetEventId: attachmentReplyTarget }
   });
   const decodedAttachment = await decryptNativeApplicationEnvelope({
     crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: attachment
   });
   assert.equal(decodedAttachment.projection.kind, "attachment");
   assert.deepEqual(decodedAttachment.projection.descriptor, descriptor);
+  assert.equal(decodedAttachment.event.relation.targetEventId, attachmentReplyTarget);
 
   const malformedText = await encryptNativeApplicationEnvelope({
     crypto,
@@ -301,6 +304,166 @@ test("direct-v4 preserves typed application content and fails closed for malform
     envelope: afterMalformed
   }), "valid after quarantined content");
   assert.equal(Object.keys(inbound.receiveChain.skippedMessageKeys).length, 1);
+});
+
+test("direct-v4 authenticates private relation targets, truthful tombstones, and silent receipts", async () => {
+  const { crypto, pqc } = await primitives();
+  const alice = await makeV4Identity({ crypto, pqc, displayName: "Relations Alice" });
+  const bob = await makeV4Identity({ crypto, pqc, displayName: "Relations Bob" });
+  const aliceContact = contactFromNativeOffer(alice.contactOffer);
+  const bobContact = contactFromNativeOffer(bob.contactOffer);
+  const outbound = await createNativeOutboundSession({ crypto, pqc, identity: alice, contact: bobContact });
+  const targetEventId = "11111111-2222-4333-8444-555555555555";
+
+  const reaction = await encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    identity: alice,
+    contact: bobContact,
+    conversation: outbound.conversation,
+    content: createEncodedContent({
+      type: standardContentTypes.reaction,
+      payload: canonicalJsonBytes({ value: "👍" }),
+      fallbackText: "Reacted 👍 to a message",
+      disposition: "visible"
+    }),
+    relation: { kind: "reaction", targetEventId },
+    kemCiphertext: outbound.kemCiphertext,
+    prekey: outbound.prekey
+  });
+  assert.equal(JSON.stringify(reaction).includes(targetEventId), false);
+  const inbound = await createNativeInboundSession({
+    crypto,
+    pqc,
+    identity: bob,
+    contact: aliceContact,
+    kemCiphertext: reaction.kemCiphertext,
+    prekey: reaction.prekey
+  });
+  const decodedReaction = await decryptNativeApplicationEnvelope({
+    crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: reaction
+  });
+  assert.equal(decodedReaction.event.relation.targetEventId, targetEventId);
+  assert.deepEqual(decodedReaction.projection, {
+    kind: "reaction",
+    value: "👍",
+    targetEventId,
+    disposition: "visible",
+    fallbackText: "Reacted 👍 to a message"
+  });
+
+  const replacement = await encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    identity: alice,
+    contact: bobContact,
+    conversation: outbound.conversation,
+    content: createEncodedContent({
+      type: standardContentTypes.text,
+      payload: new TextEncoder().encode("corrected"),
+      fallbackText: "corrected",
+      disposition: "visible"
+    }),
+    relation: { kind: "replacement", targetEventId }
+  });
+  const decodedReplacement = await decryptNativeApplicationEnvelope({
+    crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: replacement
+  });
+  assert.equal(decodedReplacement.projection.text, "corrected");
+  assert.equal(decodedReplacement.event.relation.kind, "replacement");
+
+  const tombstone = await encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    identity: alice,
+    contact: bobContact,
+    conversation: outbound.conversation,
+    content: createEncodedContent({
+      type: standardContentTypes.retraction,
+      payload: canonicalJsonBytes({ reason: "duplicate", scope: "received-copies-may-remain" }),
+      fallbackText: "Message retracted; received copies may remain",
+      disposition: "visible"
+    }),
+    relation: { kind: "retraction", targetEventId }
+  });
+  const decodedTombstone = await decryptNativeApplicationEnvelope({
+    crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: tombstone
+  });
+  assert.equal(decodedTombstone.projection.kind, "retraction");
+  assert.equal(decodedTombstone.projection.scope, "received-copies-may-remain");
+  assert.match(decodedTombstone.projection.fallbackText, /received copies may remain/);
+
+  for (const [type, expectedKind] of [
+    [standardContentTypes.deliveryReceipt, "deliveryReceipt"],
+    [standardContentTypes.readReceipt, "readReceipt"]
+  ]) {
+    const receipt = await encryptNativeApplicationEnvelope({
+      crypto,
+      pqc,
+      identity: alice,
+      contact: bobContact,
+      conversation: outbound.conversation,
+      eventKind: "receipt",
+      content: createEncodedContent({
+        type,
+        payload: canonicalJsonBytes({ targetEventId }),
+        disposition: "silent"
+      })
+    });
+    assert.equal(JSON.stringify(receipt).includes(targetEventId), false);
+    const decodedReceipt = await decryptNativeApplicationEnvelope({
+      crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: receipt
+    });
+    assert.equal(decodedReceipt.kind, "receipt");
+    assert.equal(decodedReceipt.projection.kind, expectedKind);
+    assert.equal(decodedReceipt.projection.targetEventId, targetEventId);
+    const compatibilityInbound = structuredClone(inbound);
+    const duplicateReceipt = await encryptNativeApplicationEnvelope({
+      crypto,
+      pqc,
+      identity: alice,
+      contact: bobContact,
+      conversation: outbound.conversation,
+      eventKind: "receipt",
+      content: createEncodedContent({
+        type,
+        payload: canonicalJsonBytes({ targetEventId }),
+        disposition: "silent"
+      })
+    });
+    assert.equal(await decryptNativeEnvelope({
+      crypto,
+      pqc,
+      identity: bob,
+      contact: aliceContact,
+      conversation: compatibilityInbound,
+      envelope: duplicateReceipt
+    }), null);
+    Object.assign(inbound, compatibilityInbound);
+  }
+
+  const malformed = await encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    identity: alice,
+    contact: bobContact,
+    conversation: outbound.conversation,
+    content: createEncodedContent({
+      type: standardContentTypes.reaction,
+      payload: new TextEncoder().encode('{ "value": "👍" }'),
+      fallbackText: "Reacted 👍 to a message",
+      disposition: "visible"
+    }),
+    relation: { kind: "reaction", targetEventId }
+  });
+  const beforeMalformed = structuredClone(inbound.receiveChain);
+  await assert.rejects(
+    decryptNativeApplicationEnvelope({
+      crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: malformed
+    }),
+    (error) => error?.reason === "unsupportedPayload"
+  );
+  assert.deepEqual(inbound.receiveChain, beforeMalformed);
 });
 
 test("aged endpoints reopen established sessions but cannot bootstrap a new session", async () => {
