@@ -7,6 +7,7 @@ import {
   buildRetireInboxRequest,
   buildSyncMailboxRequest,
   canonicalJson,
+  canonicalJsonBytes,
   contentTypeCanonicalName,
   createContentTypeId,
   createConversationEvent,
@@ -34,8 +35,13 @@ import {
   verifyMailboxConsumerProof
 } from "../src/index.js";
 import {
+  createDeliveryReceiptEncodedContent,
+  createReactionEncodedContent,
+  createReadReceiptEncodedContent,
+  createRetractionEncodedContent,
   directV4CipherSuite,
-  negotiateDirectV4Capabilities
+  negotiateDirectV4Capabilities,
+  retractionFallbackText
 } from "../src/architecture-v2.js";
 
 const ids = Object.freeze({
@@ -221,6 +227,120 @@ test("content and conversation events use immutable bounded Swift-compatible wir
   );
 });
 
+test("standard relations, reactions, truthful retractions, and receipts match Swift vectors", async () => {
+  const handle = await generateRelationshipInstallationHandle(ids);
+  const targetEventId = "11111111-2222-4333-8444-555555555555";
+  const base = {
+    id: ids.eventId,
+    clientTransactionId: ids.transactionId,
+    conversationId: "relationship:test",
+    authorInstallationHandle: handle,
+    createdAt: "2026-07-16T12:34:56Z"
+  };
+
+  for (const kind of ["reply", "replacement", "reference"]) {
+    const event = createConversationEvent({
+      ...base,
+      kind: "application",
+      content: createTextEncodedContent("revised text"),
+      relation: { kind, targetEventId }
+    });
+    assert.equal(event.relation.kind, kind);
+    assert.notEqual(event.id, event.relation.targetEventId);
+  }
+
+  const reaction = createReactionEncodedContent("👍");
+  assert.equal(reaction.payload, base64(canonicalJsonBytes({ value: "👍" })));
+  assert.equal(reaction.fallbackText, "Reacted 👍 to a message");
+  const reactionEvent = createConversationEvent({
+    ...base,
+    kind: "application",
+    content: reaction,
+    relation: { kind: "reaction", targetEventId }
+  });
+  assert.equal(reactionEvent.relation.targetEventId, targetEventId);
+
+  const retraction = createRetractionEncodedContent({ reason: "duplicate" });
+  assert.equal(retraction.payload, base64(canonicalJsonBytes({
+    reason: "duplicate",
+    scope: "received-copies-may-remain"
+  })));
+  assert.equal(retraction.fallbackText, retractionFallbackText);
+  createConversationEvent({
+    ...base,
+    kind: "application",
+    content: retraction,
+    relation: { kind: "retraction", targetEventId }
+  });
+
+  for (const content of [
+    createDeliveryReceiptEncodedContent(targetEventId),
+    createReadReceiptEncodedContent(targetEventId)
+  ]) {
+    assert.equal(content.payload, base64(canonicalJsonBytes({ targetEventId })));
+    const receipt = createConversationEvent({
+      ...base,
+      kind: "receipt",
+      content
+    });
+    assert.equal(receipt.content.disposition, "silent");
+    assert.equal(receipt.relation, undefined);
+  }
+});
+
+test("reserved relation and receipt semantics reject mismatch, self-reference, controls, and bad bounds", async () => {
+  const handle = await generateRelationshipInstallationHandle(ids);
+  const base = {
+    id: ids.eventId,
+    clientTransactionId: ids.transactionId,
+    conversationId: "relationship:test",
+    authorInstallationHandle: handle,
+    createdAt: "2026-07-16T12:34:56Z",
+    kind: "application"
+  };
+  const reaction = createReactionEncodedContent("👍");
+  assert.throws(() => createConversationEvent({ ...base, content: reaction }), /matching content/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    content: reaction,
+    relation: { kind: "reply", targetEventId: ids.transactionId }
+  }), /matching content/);
+  const retraction = createRetractionEncodedContent();
+  assert.throws(() => createConversationEvent({ ...base, content: retraction }), /matching content/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    content: retraction,
+    relation: { kind: "reference", targetEventId: ids.transactionId }
+  }), /matching content/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    content: createTextEncodedContent("spoof"),
+    relation: { kind: "retraction", targetEventId: ids.transactionId }
+  }), /matching content/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    content: createTextEncodedContent("spoof"),
+    relation: { kind: "reaction", targetEventId: ids.transactionId }
+  }), /matching content/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    content: createTextEncodedContent("self"),
+    relation: { kind: "replacement", targetEventId: ids.eventId }
+  }), /cannot target their own/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    kind: "application",
+    content: createReadReceiptEncodedContent(ids.transactionId)
+  }), /cannot carry control or receipt/);
+  assert.throws(() => createConversationEvent({
+    ...base,
+    createdAt: "2100-01-01T00:00:01Z",
+    content: createTextEncodedContent("future")
+  }), /time bounds/);
+  assert.throws(() => createReactionEncodedContent(`bad\u0000reaction`), /protocol bounds/);
+  assert.throws(() => createRetractionEncodedContent({ reason: `bad\u0000reason` }), /protocol bounds/);
+});
+
 test("unknown application types survive while unsupported control types fail closed", async () => {
   const handle = await generateRelationshipInstallationHandle(ids);
   const customType = createContentTypeId({ authority: "dev.example", name: "poll", major: 1, minor: 0 });
@@ -244,11 +364,26 @@ test("unknown application types survive while unsupported control types fail clo
     kind: "application",
     content
   });
-  const control = createConversationEvent({ ...application, kind: "control" });
+  const controlType = createContentTypeId({
+    authority: "org.noctweave.control",
+    name: "future-policy",
+    major: 1,
+    minor: 0
+  });
+  const control = createConversationEvent({
+    ...application,
+    kind: "control",
+    content: validateEncodedContent({
+      type: controlType,
+      parameters: {},
+      payload: "AQID",
+      disposition: "silent"
+    })
+  });
 
   assert.equal(application.content.fallbackText, "Unsupported poll");
   assert.equal(mayMutateControlState(control, [standardContentTypes.text]), false);
-  assert.equal(mayMutateControlState(control, [customType]), true);
+  assert.equal(mayMutateControlState(control, [controlType]), true);
 });
 
 test("opaque mailbox cursors are bounded and delivery state never regresses", async () => {

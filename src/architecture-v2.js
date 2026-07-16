@@ -3,11 +3,14 @@ import { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 
 const encoder = new TextEncoder();
 const controlCharacters = /\p{Cc}/u;
+const unsafeDisplayControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const extensionStatuses = new Set(["experimental", "provisional", "stable", "deprecated"]);
 const eventKinds = new Set(["application", "control", "receipt"]);
 const relationKinds = new Set(["reply", "replacement", "reaction", "retraction", "reference"]);
 const dispositions = new Set(["visible", "silent"]);
+const earliestConversationEventTime = 0;
+const latestConversationEventTime = 4_102_444_800_000;
 const mailboxConsumerStates = new Set(["active", "revoked"]);
 const mailboxProofOperations = new Set([
   "register-authority",
@@ -46,6 +49,8 @@ export const noctweaveArchitectureV2 = Object.freeze({
   maximumContentParameterBytes: 256,
   maximumContentPayloadBytes: 65_536,
   maximumFallbackBytes: 2_048,
+  maximumReactionBytes: 64,
+  maximumRetractionReasonBytes: 512,
   maximumRoutes: 8,
   maximumCursorBytes: 512,
   maximumIntentDependencies: 32,
@@ -977,8 +982,25 @@ export function contentTypeCanonicalName(value) {
 
 export const standardContentTypes = Object.freeze({
   text: createContentTypeId({ authority: "org.noctweave", name: "text", major: 1, minor: 0 }),
-  attachment: createContentTypeId({ authority: "org.noctweave", name: "attachment", major: 1, minor: 0 })
+  attachment: createContentTypeId({ authority: "org.noctweave", name: "attachment", major: 1, minor: 0 }),
+  reaction: createContentTypeId({ authority: "org.noctweave", name: "reaction", major: 1, minor: 0 }),
+  retraction: createContentTypeId({ authority: "org.noctweave", name: "retraction", major: 1, minor: 0 }),
+  deliveryReceipt: createContentTypeId({
+    authority: "org.noctweave.receipt",
+    name: "delivery",
+    major: 1,
+    minor: 0
+  }),
+  readReceipt: createContentTypeId({
+    authority: "org.noctweave.receipt",
+    name: "read",
+    major: 1,
+    minor: 0
+  })
 });
+
+export const retractionRetainedCopyScope = "received-copies-may-remain";
+export const retractionFallbackText = "Message retracted; received copies may remain";
 
 export function createEncodedContent({
   type,
@@ -1001,6 +1023,53 @@ export function createTextEncodedContent(value) {
   });
 }
 
+export function createReactionEncodedContent(value) {
+  const reaction = boundedDisplayString(value, "Reaction value", {
+    maximumBytes: noctweaveArchitectureV2.maximumReactionBytes,
+    trimmed: true
+  });
+  return createEncodedContent({
+    type: standardContentTypes.reaction,
+    payload: canonicalJsonBytes({ value: reaction }),
+    fallbackText: `Reacted ${reaction} to a message`,
+    disposition: "visible"
+  });
+}
+
+export function createRetractionEncodedContent({ reason } = {}) {
+  const payload = { scope: retractionRetainedCopyScope };
+  if (reason != null) {
+    payload.reason = boundedDisplayString(reason, "Retraction reason", {
+      maximumBytes: noctweaveArchitectureV2.maximumRetractionReasonBytes,
+      trimmed: true
+    });
+  }
+  return createEncodedContent({
+    type: standardContentTypes.retraction,
+    payload: canonicalJsonBytes(payload),
+    fallbackText: retractionFallbackText,
+    disposition: "visible"
+  });
+}
+
+export function createDeliveryReceiptEncodedContent(targetEventId) {
+  return createReceiptEncodedContent(standardContentTypes.deliveryReceipt, targetEventId);
+}
+
+export function createReadReceiptEncodedContent(targetEventId) {
+  return createReceiptEncodedContent(standardContentTypes.readReceipt, targetEventId);
+}
+
+function createReceiptEncodedContent(type, targetEventId) {
+  return createEncodedContent({
+    type,
+    payload: canonicalJsonBytes({
+      targetEventId: normalizeUUID(targetEventId, "Receipt targetEventId")
+    }),
+    disposition: "silent"
+  });
+}
+
 export function validateEncodedContent(value) {
   requireRecord(value, "Encoded content");
   const type = validateContentTypeId(value.type);
@@ -1018,7 +1087,8 @@ export function validateEncodedContent(value) {
     });
     parameters[key] = boundedString(rawValue, "Encoded content parameter value", {
       maximumBytes: noctweaveArchitectureV2.maximumContentParameterBytes,
-      empty: true
+      empty: true,
+      controls: false
     });
   }
   const payload = normalizePayload(value.payload);
@@ -1032,7 +1102,7 @@ export function validateEncodedContent(value) {
     disposition: value.disposition
   };
   if (value.fallbackText != null) {
-    result.fallbackText = boundedString(value.fallbackText, "Encoded content fallback", {
+    result.fallbackText = boundedDisplayString(value.fallbackText, "Encoded content fallback", {
       maximumBytes: noctweaveArchitectureV2.maximumFallbackBytes,
       empty: true
     });
@@ -1072,21 +1142,60 @@ export function validateConversationEvent(value) {
   if (!eventKinds.has(value.kind)) {
     throw new TypeError("Conversation event kind is invalid.");
   }
+  const id = normalizeUUID(value.id, "Conversation event id");
+  const createdAt = normalizeDate(value.createdAt, "Conversation event createdAt");
+  const createdAtTime = Date.parse(createdAt);
+  if (createdAtTime < earliestConversationEventTime || createdAtTime > latestConversationEventTime) {
+    throw new TypeError("Conversation event createdAt is outside its protocol time bounds.");
+  }
+  const content = validateEncodedContent(value.content);
   const result = {
     version: noctweaveArchitectureV2.version,
-    id: normalizeUUID(value.id, "Conversation event id"),
+    id,
     clientTransactionId: normalizeUUID(value.clientTransactionId, "Conversation event clientTransactionId"),
-    conversationId: boundedString(value.conversationId, "Conversation event conversationId", { maximumBytes: 256 }),
+    conversationId: boundedString(value.conversationId, "Conversation event conversationId", {
+      maximumBytes: 256,
+      controls: false
+    }),
     authorInstallationHandle: validateRelationshipInstallationHandle(value.authorInstallationHandle),
-    createdAt: normalizeDate(value.createdAt, "Conversation event createdAt"),
+    createdAt,
     kind: value.kind,
-    content: validateEncodedContent(value.content)
+    content
   };
   if (value.relation != null) {
     if (value.kind !== "application") {
       throw new TypeError("Only application events may contain a relation.");
     }
     result.relation = validateEventRelation(value.relation);
+    if (result.relation.targetEventId === id) {
+      throw new TypeError("Conversation event relations cannot target their own event.");
+    }
+  }
+  if (value.kind === "application") {
+    if (content.type.authority === "org.noctweave.control" ||
+        content.type.authority === "org.noctweave.receipt") {
+      throw new TypeError("Application events cannot carry control or receipt content.");
+    }
+    const canonicalType = contentTypeCanonicalName(content.type);
+    const reactionType = contentTypeCanonicalName(standardContentTypes.reaction);
+    const retractionType = contentTypeCanonicalName(standardContentTypes.retraction);
+    const relationKind = result.relation?.kind;
+    if ((canonicalType === reactionType && relationKind !== "reaction") ||
+        (canonicalType === retractionType && relationKind !== "retraction") ||
+        (canonicalType !== reactionType && relationKind === "reaction") ||
+        (canonicalType !== retractionType && relationKind === "retraction")) {
+      throw new TypeError("Reserved reaction and retraction relations require matching content.");
+    }
+  } else if (value.kind === "receipt") {
+    const canonicalType = contentTypeCanonicalName(content.type);
+    const knownReceipt = canonicalType === contentTypeCanonicalName(standardContentTypes.deliveryReceipt) ||
+      canonicalType === contentTypeCanonicalName(standardContentTypes.readReceipt);
+    if (!knownReceipt || content.disposition !== "silent") {
+      throw new TypeError("Receipt events require a known silent receipt content type.");
+    }
+  } else if (content.type.authority !== "org.noctweave.control" ||
+      content.disposition !== "silent") {
+    throw new TypeError("Control events require silent authenticated control content.");
   }
   return freezeRecord(result);
 }
@@ -1445,6 +1554,19 @@ function boundedString(value, label, {
       encoder.encode(value).byteLength > maximumBytes ||
       (trimmed && value.trim() !== value) ||
       (!controls && controlCharacters.test(value))) {
+    throw new TypeError(`${label} is outside its protocol bounds.`);
+  }
+  return value;
+}
+
+function boundedDisplayString(value, label, {
+  maximumBytes,
+  empty = false,
+  trimmed = false
+}) {
+  if (typeof value !== "string" || (!empty && value.length === 0) ||
+      encoder.encode(value).byteLength > maximumBytes ||
+      (trimmed && value.trim() !== value) || unsafeDisplayControls.test(value)) {
     throw new TypeError(`${label} is outside its protocol bounds.`);
   }
   return value;

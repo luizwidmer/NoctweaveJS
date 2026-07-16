@@ -34,6 +34,7 @@ import {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictUTF8Decoder = new TextDecoder("utf-8", { fatal: true });
+const unsafeDisplayControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const NPAD_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x01]);
 const NPAD_V2_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x02]);
 const NPAD_HEADER_BYTES = 9;
@@ -318,11 +319,16 @@ export async function encryptNativeApplicationEnvelope(options) {
   if (!isCertifiedNativeContact(options?.contact)) {
     throw new Error("Typed application envelopes require certified direct-v4 endpoints.");
   }
+  const eventKind = options.eventKind ?? "application";
+  if (eventKind !== "application" && eventKind !== "receipt") {
+    throw new Error("The extensible direct-v4 path accepts only application and receipt events.");
+  }
   return encryptNativeEnvelopePayload({
     ...options,
     text: null,
     content: validateEncodedContent(options.content),
-    relation: options.relation ?? null
+    relation: options.relation ?? null,
+    eventKind
   });
 }
 
@@ -335,6 +341,7 @@ async function encryptNativeEnvelopePayload({
   text,
   content,
   relation,
+  eventKind = "application",
   kemCiphertext = null,
   prekey = null,
   eventId = swiftUUID(),
@@ -374,7 +381,7 @@ async function encryptNativeEnvelopePayload({
       conversationId: conversation.id,
       authorInstallationHandle: conversation.endpointSession.localInstallationHandle,
       createdAt: canonicalSentAt,
-      kind: "application",
+      kind: eventKind,
       content: content ?? createTextEncodedContent(text),
       relation: relation ?? undefined
     })
@@ -480,7 +487,7 @@ export async function verifyNativeEnvelope({ crypto, pqc, contact, conversation,
 
 export async function decryptNativeApplicationEnvelope(options) {
   const decoded = await decryptNativeEnvelopePayload(options);
-  if (decoded.kind !== "application") {
+  if (decoded.kind !== "application" && decoded.kind !== "receipt") {
     throw new Error("Typed application decoding requires a direct-v4 envelope.");
   }
   return decoded;
@@ -543,7 +550,7 @@ async function decryptNativeEnvelopePayload({ crypto, pqc, identity, contact, co
           paddedBytes: plaintext.byteLength,
           negotiation
         });
-        decoded = { kind: "application", event, projection };
+        decoded = { kind: event.kind, event, projection };
       } else {
         decoded = { kind: "legacyText", text: decodePaddedText(plaintext) };
       }
@@ -1114,8 +1121,8 @@ function encodePaddedText(text, randomBytes) {
 
 function encodePaddedDirectV4Application(eventValue, randomBytes) {
   const event = validateConversationEvent(eventValue);
-  if (event.kind !== "application") {
-    throw new TypeError("Only application events use the extensible direct-v4 codec.");
+  if (event.kind !== "application" && event.kind !== "receipt") {
+    throw new TypeError("Only application and receipt events use the extensible direct-v4 codec.");
   }
   return encodePaddedBody({
     version: 2,
@@ -1178,7 +1185,8 @@ function decodePaddedDirectV4Application(data, envelope) {
   if (event.id !== direct?.eventId ||
       event.conversationId !== envelope.conversationId ||
       event.authorInstallationHandle.rawValue !== direct.senderInstallationHandle ||
-      event.createdAt !== envelope.sentAt || event.kind !== "application") {
+      event.createdAt !== envelope.sentAt ||
+      (event.kind !== "application" && event.kind !== "receipt")) {
     throw new Error("Direct-v4 wire payload does not match its authenticated context.");
   }
   return event;
@@ -1186,8 +1194,14 @@ function decodePaddedDirectV4Application(data, envelope) {
 
 function projectDirectV4Application(event) {
   const canonicalType = contentTypeCanonicalName(event.content.type);
+  if (event.kind === "receipt") {
+    return projectDirectV4Receipt(event, canonicalType);
+  }
+  if (event.kind !== "application") {
+    throw new Error("Direct-v4 controls cannot enter the extensible event projection.");
+  }
   if (canonicalType === contentTypeCanonicalName(standardContentTypes.text)) {
-    if (event.relation != null || event.content.disposition !== "visible" ||
+    if (!isTextOrAttachmentRelation(event.relation) || event.content.disposition !== "visible" ||
         Object.keys(event.content.parameters).length !== 0) {
       throw new Error("Known direct-v4 text content is malformed.");
     }
@@ -1206,23 +1220,13 @@ function projectDirectV4Application(event) {
     return Object.freeze({ kind: "text", text, disposition: "visible", fallbackText: text });
   }
   if (canonicalType === contentTypeCanonicalName(standardContentTypes.attachment)) {
-    if (event.relation != null || event.content.disposition !== "visible" ||
+    if (!isTextOrAttachmentRelation(event.relation) || event.content.disposition !== "visible" ||
         Object.keys(event.content.parameters).length !== 0) {
       throw new Error("Known direct-v4 attachment content is malformed.");
     }
-    const descriptorBytes = fromBase64(
-      event.content.payload,
-      "direct-v4 attachment descriptor",
-      MAX_PADDED_BYTES
+    const descriptor = validateNativeAttachmentDescriptor(
+      decodeCanonicalContentPayload(event.content, "direct-v4 attachment descriptor")
     );
-    let descriptor;
-    try {
-      descriptor = validateNativeAttachmentDescriptor(
-        JSON.parse(strictUTF8Decoder.decode(descriptorBytes))
-      );
-    } finally {
-      wipeBytes(descriptorBytes);
-    }
     const fallbackText = attachmentFallbackText(descriptor);
     if (event.content.fallbackText !== fallbackText) {
       throw new Error("Direct-v4 attachment fallback does not match its descriptor.");
@@ -1234,12 +1238,115 @@ function projectDirectV4Application(event) {
       fallbackText
     });
   }
+  if (canonicalType === contentTypeCanonicalName(standardContentTypes.reaction)) {
+    if (event.relation?.kind !== "reaction" || event.content.disposition !== "visible" ||
+        Object.keys(event.content.parameters).length !== 0) {
+      throw new Error("Known direct-v4 reaction content is malformed.");
+    }
+    const reaction = decodeCanonicalContentPayload(event.content, "direct-v4 reaction payload");
+    if (!reaction || typeof reaction !== "object" || Array.isArray(reaction) ||
+        Object.keys(reaction).join(",") !== "value" || typeof reaction.value !== "string" ||
+        reaction.value.length === 0 || reaction.value.trim() !== reaction.value ||
+        encoder.encode(reaction.value).byteLength > 64 || unsafeDisplayControls.test(reaction.value)) {
+      throw new Error("Known direct-v4 reaction payload is malformed.");
+    }
+    const fallbackText = `Reacted ${reaction.value} to a message`;
+    if (event.content.fallbackText !== fallbackText) {
+      throw new Error("Direct-v4 reaction fallback does not match its payload.");
+    }
+    return Object.freeze({
+      kind: "reaction",
+      value: reaction.value,
+      targetEventId: event.relation.targetEventId,
+      disposition: "visible",
+      fallbackText
+    });
+  }
+  if (canonicalType === contentTypeCanonicalName(standardContentTypes.retraction)) {
+    if (event.relation?.kind !== "retraction" || event.content.disposition !== "visible" ||
+        Object.keys(event.content.parameters).length !== 0) {
+      throw new Error("Known direct-v4 retraction content is malformed.");
+    }
+    const retraction = decodeCanonicalContentPayload(event.content, "direct-v4 retraction payload");
+    const keys = retraction && typeof retraction === "object" && !Array.isArray(retraction)
+      ? Object.keys(retraction).sort().join(",")
+      : "";
+    if ((keys !== "scope" && keys !== "reason,scope") ||
+        retraction.scope !== "received-copies-may-remain" ||
+        (retraction.reason != null &&
+          (typeof retraction.reason !== "string" || retraction.reason.length === 0 ||
+            retraction.reason.trim() !== retraction.reason ||
+            encoder.encode(retraction.reason).byteLength > 512 ||
+            unsafeDisplayControls.test(retraction.reason)))) {
+      throw new Error("Known direct-v4 retraction payload is malformed.");
+    }
+    const fallbackText = "Message retracted; received copies may remain";
+    if (event.content.fallbackText !== fallbackText) {
+      throw new Error("Direct-v4 retraction fallback is not truthful.");
+    }
+    return Object.freeze({
+      kind: "retraction",
+      reason: retraction.reason ?? null,
+      scope: retraction.scope,
+      targetEventId: event.relation.targetEventId,
+      disposition: "visible",
+      fallbackText
+    });
+  }
+  if (event.relation?.kind === "reaction" || event.relation?.kind === "retraction") {
+    throw new Error("Reserved relation semantics require their standard content type.");
+  }
   return Object.freeze({
     kind: "unsupported",
     type: event.content.type,
     disposition: event.content.disposition,
     fallbackText: event.content.fallbackText ?? `Unsupported message (${canonicalType})`
   });
+}
+
+function projectDirectV4Receipt(event, canonicalType) {
+  if (event.relation != null || event.content.disposition !== "silent" ||
+      event.content.fallbackText != null || Object.keys(event.content.parameters).length !== 0) {
+    throw new Error("Known direct-v4 receipt content is malformed.");
+  }
+  const delivery = contentTypeCanonicalName(standardContentTypes.deliveryReceipt);
+  const read = contentTypeCanonicalName(standardContentTypes.readReceipt);
+  if (canonicalType !== delivery && canonicalType !== read) {
+    throw new Error("Unknown receipt types fail closed.");
+  }
+  const receipt = decodeCanonicalContentPayload(event.content, "direct-v4 receipt payload");
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) ||
+      Object.keys(receipt).join(",") !== "targetEventId" ||
+      !isCanonicalSwiftUUID(receipt.targetEventId) || receipt.targetEventId === event.id) {
+    throw new Error("Known direct-v4 receipt payload is malformed.");
+  }
+  return Object.freeze({
+    kind: canonicalType === delivery ? "deliveryReceipt" : "readReceipt",
+    targetEventId: receipt.targetEventId,
+    disposition: "silent",
+    fallbackText: null
+  });
+}
+
+function isTextOrAttachmentRelation(relation) {
+  return relation == null || relation.kind === "reply" ||
+    relation.kind === "replacement" || relation.kind === "reference";
+}
+
+function decodeCanonicalContentPayload(content, label) {
+  const payload = fromBase64(content.payload, label, MAX_PADDED_BYTES);
+  let canonical;
+  try {
+    const value = JSON.parse(strictUTF8Decoder.decode(payload));
+    canonical = canonicalJsonBytes(value);
+    if (compareBytes(payload, canonical) !== 0) {
+      throw new Error(`${label} is not canonical JSON.`);
+    }
+    return value;
+  } finally {
+    wipeBytes(payload);
+    wipeBytes(canonical);
+  }
 }
 
 function validateNativeAttachmentDescriptor(value) {
