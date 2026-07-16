@@ -7,21 +7,25 @@ import {
   NoctweaveStateRepository,
   WebCryptoPrimitives,
   base64,
+  buildRetireInboxRequest,
   canonicalJsonBytes,
+  contactFromNativeOffer,
   createNativeInboundSession,
   createNativeOutboundSession,
   decodeNativeContactCode,
+  decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
-  decryptPortableProfile,
   encodeNativeContactCode,
-  encryptPortableProfile,
   encryptNativeTextEnvelope,
+  findNativeContactForEnvelope,
   makeNativeContactOffer,
   nativeConversationKey,
   parseRelayEndpoint,
+  prepareNativeDirectV4Identity,
   relayRequests,
   swiftISODate,
   swiftUUID,
+  validateRetireInboxRequest,
   verifyNativeContactOffer
 } from "../../src/index.js";
 
@@ -34,8 +38,6 @@ const vaultNamespace = `${legacyStorageKey}:vault`;
 const vaultSaltKey = `${vaultNamespace}:salt`;
 const vaultStateStorageKey = `${vaultNamespace}:state`;
 const vaultStateKey = "state";
-const maximumProfileFileBytes = 2 * 1024 * 1024;
-let pendingSecretRequest = null;
 
 const state = {
   crypto: new WebCryptoPrimitives(),
@@ -46,10 +48,13 @@ const state = {
   messages: [],
   seenEnvelopeIds: new Set(),
   selectedContactFingerprint: "",
+  pendingInboxRetirements: [],
+  identityDeletionPending: false,
   isContactCodeVisible: false,
   autoFetchEnabled: false,
   autoFetchTimer: null,
   isFetching: false,
+  sendingContacts: new Set(),
   repository: null
 };
 
@@ -72,8 +77,6 @@ const elements = {
   createIdentity: document.querySelector("#createIdentity"),
   lockProfile: document.querySelector("#lockProfile"),
   resetProfile: document.querySelector("#resetProfile"),
-  exportProfile: document.querySelector("#exportProfile"),
-  importProfile: document.querySelector("#importProfile"),
   identityDot: document.querySelector("#identityDot"),
   profile: document.querySelector("#profile"),
   inbox: document.querySelector("#inbox"),
@@ -95,16 +98,7 @@ const elements = {
   chatTitle: document.querySelector("#chatTitle"),
   chat: document.querySelector("#chat"),
   log: document.querySelector("#log"),
-  clearLog: document.querySelector("#clearLog"),
-  secretDialog: document.querySelector("#secretDialog"),
-  secretForm: document.querySelector("#secretForm"),
-  secretTitle: document.querySelector("#secretTitle"),
-  secretDescription: document.querySelector("#secretDescription"),
-  secretPassphrase: document.querySelector("#secretPassphrase"),
-  secretConfirmation: document.querySelector("#secretConfirmation"),
-  secretConfirmationRow: document.querySelector("#secretConfirmationRow"),
-  secretError: document.querySelector("#secretError"),
-  secretCancel: document.querySelector("#secretCancel")
+  clearLog: document.querySelector("#clearLog")
 };
 
 elements.unlockVault.addEventListener("click", unlockOrCreateVault);
@@ -118,9 +112,7 @@ elements.vaultPassphrase.addEventListener("keydown", (event) => {
 elements.connect.addEventListener("click", () => runAction("Checking relay", checkRelay));
 elements.createIdentity.addEventListener("click", () => runAction("Creating inbox", createIdentity));
 elements.lockProfile.addEventListener("click", lockProfile);
-elements.resetProfile.addEventListener("click", () => runAction("Resetting", resetProfile));
-elements.exportProfile.addEventListener("click", () => runAction("Exporting", exportProfile));
-elements.importProfile.addEventListener("change", () => runAction("Importing profile", importProfile));
+elements.resetProfile.addEventListener("click", () => runAction("Retiring identity", resetProfile));
 elements.relay.addEventListener("change", scheduleSave);
 elements.toggleCode.addEventListener("click", toggleContactCode);
 elements.copyCode.addEventListener("click", () => runAction("Copying", copyContactCode));
@@ -139,12 +131,6 @@ elements.message.addEventListener("keydown", (event) => {
     event.preventDefault();
     runAction("Sending", sendMessage);
   }
-});
-elements.secretForm.addEventListener("submit", submitSecretDialog);
-elements.secretCancel.addEventListener("click", cancelSecretDialog);
-elements.secretDialog.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  cancelSecretDialog();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && state.identity) {
@@ -193,6 +179,7 @@ async function unlockOrCreateVault() {
   elements.vaultError.textContent = "";
   elements.unlockVault.disabled = true;
   elements.unlockVault.textContent = mode === "unlock" ? "Unlocking…" : "Creating…";
+  let completedPendingDeletion = false;
   try {
     if (mode === "create") {
       if (passphrase.length < 12) {
@@ -203,7 +190,12 @@ async function unlockOrCreateVault() {
       }
       await createVault(passphrase);
     } else {
-      await openVault(passphrase);
+      completedPendingDeletion = await openVault(passphrase);
+    }
+    if (completedPendingDeletion) {
+      setStatus("Identity retired and deleted");
+      log("pending inbox retirement completed; local identity state deleted");
+      return;
     }
     elements.vaultPassphrase.value = "";
     elements.vaultConfirmation.value = "";
@@ -219,7 +211,11 @@ async function unlockOrCreateVault() {
     elements.vaultError.textContent = safeVaultError(error);
   } finally {
     elements.unlockVault.disabled = false;
-    elements.unlockVault.textContent = mode === "unlock" ? "Unlock profile" : "Create encrypted profile";
+    if (completedPendingDeletion) {
+      configureVaultGate();
+    } else {
+      elements.unlockVault.textContent = mode === "unlock" ? "Unlock profile" : "Create encrypted profile";
+    }
   }
 }
 
@@ -273,6 +269,21 @@ async function openVault(passphrase) {
     await validatePersistedState(persisted);
     state.repository = repository;
     applyPersistedState(persisted);
+    const interruptedMessages = state.messages.filter((message) =>
+      message.direction === "out" && message.status === "sending" && message.envelope
+    );
+    if (interruptedMessages.length > 0) {
+      for (const message of interruptedMessages) message.status = "failed";
+      await repository.save(snapshotState());
+    }
+    if (state.identityDeletionPending) {
+      if (state.pendingInboxRetirements.length > 0) {
+        await resumePendingInboxRetirements(repository);
+      }
+      await finishLocalReset(repository);
+      return true;
+    }
+    return false;
   } finally {
     salt.fill(0);
   }
@@ -308,6 +319,8 @@ function legacyStateForMigration() {
     seenEnvelopeIds: legacy.seenEnvelopeIds ?? [],
     relay: legacy.relay ?? elements.relay.value,
     selectedContactFingerprint: legacy.selectedContactFingerprint ?? "",
+    pendingInboxRetirements: [],
+    identityDeletionPending: false,
     autoFetchEnabled: Boolean(legacy.autoFetchEnabled)
   };
 }
@@ -320,7 +333,7 @@ function lockProfile() {
 }
 
 function forgetLocalVault() {
-  if (!confirm(`Forget ${profile}? This permanently deletes its local identity keys and message history.`)) {
+  if (!confirm(`Forget locked profile ${profile}? This deletes its local keys and history, but cannot retire its relay inbox while the access key is locked. Unlock first to retire and delete the identity generation completely.`)) {
     return;
   }
   stopAutoFetch();
@@ -345,8 +358,11 @@ function clearLiveState() {
   state.messages = [];
   state.seenEnvelopeIds = new Set();
   state.selectedContactFingerprint = "";
+  state.pendingInboxRetirements = [];
+  state.identityDeletionPending = false;
   state.isContactCodeVisible = false;
   state.autoFetchEnabled = false;
+  state.sendingContacts = new Set();
   state.repository = null;
 }
 
@@ -381,6 +397,8 @@ async function createIdentity() {
   const signingFingerprint = base64(await state.crypto.sha256(signing.publicKey));
   const relayEndpoint = relayEndpointForContactOffer(parseRelayEndpoint(elements.relay.value));
   const identity = {
+    architectureVersion: 2,
+    identityGenerationId: swiftUUID(),
     displayName: `JS ${profile}`,
     signing: serializeKeypair(signing),
     agreement: serializeKeypair(agreement),
@@ -389,19 +407,20 @@ async function createIdentity() {
     accessFingerprint,
     signingFingerprint
   };
+  await prepareNativeDirectV4Identity({ crypto: state.crypto, pqc: state.pqc, identity });
   const contactOffer = makeNativeContactOffer({ pqc: state.pqc, identity, relayEndpoint });
   const signedAt = swiftISODate();
   const nonce = swiftUUID();
   const registerRequest = relayRequests.registerInbox({
     inboxId,
     accessPublicKey: base64(access.publicKey),
-    contactOffer,
+    registrationVersion: 2,
     accessProof: actorProof({
       keypair: access,
       fingerprint: accessFingerprint,
       signedAt,
       nonce,
-      payload: registerProofPayload(contactOffer, inboxId, access.publicKey, signedAt, nonce)
+      payload: registerProofPayload(inboxId, access.publicKey, signedAt, nonce)
     })
   });
   const response = await relayClient().send(registerRequest);
@@ -451,50 +470,130 @@ async function sendMessage() {
   if (!text) {
     throw new Error("Type a message first.");
   }
-  const conversationKey = nativeConversationKey(contact);
-  let conversation = state.conversations[conversationKey];
-  let kemCiphertext = null;
-  if (!conversation) {
-    const created = await createNativeOutboundSession({
+  if (state.sendingContacts.has(contact.fingerprint)) {
+    throw new Error("The previous message for this relationship is still being prepared.");
+  }
+  state.sendingContacts.add(contact.fingerprint);
+  try {
+    const conversationKey = nativeConversationKey(contact);
+    const previousConversation = state.conversations[conversationKey] ?? null;
+    let conversation = previousConversation ? structuredClone(previousConversation) : null;
+    let kemCiphertext = null;
+    let prekey = null;
+    if (!conversation) {
+      const created = await createNativeOutboundSession({
+        crypto: state.crypto,
+        pqc: state.pqc,
+        identity: state.identity,
+        contact
+      });
+      conversation = created.conversation;
+      kemCiphertext = created.kemCiphertext;
+      prekey = created.prekey ?? null;
+    }
+    const sentAt = swiftISODate();
+    const eventId = swiftUUID();
+    const clientTransactionId = swiftUUID();
+    const envelope = await encryptNativeTextEnvelope({
       crypto: state.crypto,
       pqc: state.pqc,
       identity: state.identity,
-      contact
+      contact,
+      conversation,
+      text,
+      sentAt,
+      eventId,
+      clientTransactionId,
+      kemCiphertext,
+      prekey
     });
-    conversation = created.conversation;
-    kemCiphertext = created.kemCiphertext;
+    const message = {
+      id: envelope.authenticatedContext?.directV4?.eventId ?? eventId,
+      envelopeId: envelope.id,
+      clientTransactionId,
+      direction: "out",
+      contactFingerprint: contact.fingerprint,
+      text,
+      sentAt,
+      status: "sending",
+      envelope
+    };
     state.conversations[conversationKey] = conversation;
+    state.messages.push(message);
+
+    // Persist the advanced ratchet and exact ciphertext before attempting the
+    // network mutation. Retries must replay this envelope, never re-encrypt.
+    try {
+      await saveState();
+    } catch (error) {
+      state.messages.pop();
+      if (previousConversation) state.conversations[conversationKey] = previousConversation;
+      else delete state.conversations[conversationKey];
+      throw error;
+    }
+    elements.message.value = "";
+    renderMessageCount();
+    renderChat();
+    try {
+      await deliverStoredMessage(message, contact);
+      message.status = "sent";
+      delete message.envelope;
+      await saveState();
+      renderChat();
+      log(`sent to ${contact.displayName}`);
+    } catch (error) {
+      message.status = "failed";
+      await saveState();
+      renderChat();
+      throw error;
+    }
+  } finally {
+    state.sendingContacts.delete(contact.fingerprint);
   }
-  const sentAt = swiftISODate();
-  const envelope = await encryptNativeTextEnvelope({
-    crypto: state.crypto,
-    pqc: state.pqc,
-    identity: state.identity,
-    contact,
-    conversation,
-    text,
-    sentAt,
-    kemCiphertext
-  });
-  const response = await relayClient(contact.relay).send(relayRequests.deliver({
-    inboxId: contact.inboxId,
-    envelope
-  }));
-  if (response.type !== "delivered") {
-    throw new Error(`Deliver failed: ${JSON.stringify(response)}`);
+}
+
+async function retryMessage(messageId) {
+  ensureIdentity();
+  const message = state.messages.find((candidate) =>
+    candidate.id === messageId && candidate.direction === "out"
+  );
+  const contact = message && state.contacts.find((candidate) =>
+    candidate.fingerprint === message.contactFingerprint
+  );
+  if (!message?.envelope || !contact) {
+    throw new Error("The exact retry envelope is no longer available.");
   }
-  state.messages.push({
-    id: envelope.id,
-    direction: "out",
-    contactFingerprint: contact.fingerprint,
-    text,
-    sentAt
-  });
-  elements.message.value = "";
-  renderMessageCount();
+  if (state.sendingContacts.has(contact.fingerprint)) {
+    throw new Error("Another message for this relationship is still being delivered.");
+  }
+  state.sendingContacts.add(contact.fingerprint);
+  message.status = "sending";
   await saveState();
   renderChat();
-  log(`sent to ${contact.displayName}`);
+  try {
+    await deliverStoredMessage(message, contact);
+    message.status = "sent";
+    delete message.envelope;
+    await saveState();
+    renderChat();
+  } catch (error) {
+    message.status = "failed";
+    await saveState();
+    renderChat();
+    throw error;
+  } finally {
+    state.sendingContacts.delete(contact.fingerprint);
+  }
+}
+
+async function deliverStoredMessage(message, contact) {
+  const response = await relayClient(contact.relay).send(relayRequests.deliver({
+    inboxId: contact.inboxId,
+    envelope: message.envelope
+  }));
+  if (!["delivered", "ok"].includes(response?.type)) {
+    throw new Error("The relay did not accept the encrypted message.");
+  }
 }
 
 async function fetchMessages() {
@@ -531,17 +630,32 @@ async function fetchMessages() {
     }
     let decodedCount = 0;
     for (const envelope of response.messages ?? []) {
-      if (state.seenEnvelopeIds.has(envelope.id?.toLowerCase())) {
+      const normalizedEnvelopeId = envelope.id?.toLowerCase();
+      if (!normalizedEnvelopeId) throw new Error("The relay returned an envelope without an ID.");
+      if (state.seenEnvelopeIds.has(normalizedEnvelopeId)) {
         continue;
       }
-      state.seenEnvelopeIds.add(envelope.id?.toLowerCase());
-      const decoded = await decodeEnvelope(envelope);
-      if (decoded) {
-        state.messages.push(decoded);
-        decodedCount++;
+      const mutationSnapshot = {
+        conversations: state.conversations,
+        messages: state.messages,
+        seenEnvelopeIds: state.seenEnvelopeIds
+      };
+      state.conversations = { ...mutationSnapshot.conversations };
+      state.messages = [...mutationSnapshot.messages];
+      state.seenEnvelopeIds = new Set(mutationSnapshot.seenEnvelopeIds);
+      try {
+        const decoded = await decodeEnvelope(envelope);
+        if (decoded && !decoded.silent) state.messages.push(decoded);
+        state.seenEnvelopeIds.add(normalizedEnvelopeId);
+        await saveState();
+        if (decoded) decodedCount++;
+      } catch (error) {
+        state.conversations = mutationSnapshot.conversations;
+        state.messages = mutationSnapshot.messages;
+        state.seenEnvelopeIds = mutationSnapshot.seenEnvelopeIds;
+        throw error;
       }
     }
-    await saveState();
     renderChat();
     log(`fetch complete: ${decodedCount} new message(s)`);
   } finally {
@@ -590,70 +704,20 @@ async function deleteSelectedContact() {
   log(`deleted ${contact.displayName}`);
 }
 
-async function exportProfile() {
-  ensureIdentity();
-  const passphrase = await requestSecret({
-    title: "Protect profile export",
-    description: "Choose a separate passphrase for this file. It contains identity private keys and message state.",
-    confirmation: true
-  });
-  if (passphrase === null) {
-    return;
-  }
-  const packageData = await encryptPortableProfile({
-    ...snapshotState(),
-    exportedAt: new Date().toISOString(),
-    profile
-  }, passphrase);
-  const payload = JSON.stringify(packageData, null, 2);
-  const url = URL.createObjectURL(new Blob([payload], { type: "application/vnd.noctweave.profile+json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `noctweave-${profile}.noctweave.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-  log("encrypted profile exported");
-}
-
-async function importProfile() {
-  const [file] = elements.importProfile.files ?? [];
-  elements.importProfile.value = "";
-  if (!file) {
-    return;
-  }
-  if (file.size <= 0 || file.size > maximumProfileFileBytes) {
-    throw new Error("Encrypted profile file must be between 1 byte and 2 MB.");
-  }
-  let packageData;
-  try {
-    packageData = JSON.parse(await file.text());
-  } catch {
-    throw new Error("Encrypted profile file is not valid JSON.");
-  }
-  const passphrase = await requestSecret({
-    title: "Unlock profile export",
-    description: "Enter the passphrase used when this encrypted profile file was created.",
-    confirmation: false
-  });
-  if (passphrase === null) {
-    return;
-  }
-  const payload = await decryptPortableProfile(packageData, passphrase);
-  await validatePersistedState(payload);
-  applyPersistedState(payload);
-  await saveState();
-  renderAll();
-  log(`encrypted profile imported from ${file.name}`);
-}
-
 async function decodeEnvelope(envelope) {
-  const contact = state.contacts.find((candidate) => candidate.fingerprint === envelope.senderFingerprint);
+  const contact = await findNativeContactForEnvelope({
+    crypto: state.crypto,
+    identity: state.identity,
+    contacts: state.contacts,
+    envelope
+  });
   if (!contact) {
     log(`ignored unknown sender ${envelope.senderFingerprint}`);
     return null;
   }
   const conversationKey = nativeConversationKey(contact);
-  let conversation = state.conversations[conversationKey];
+  const storedConversation = state.conversations[conversationKey];
+  let conversation = storedConversation ? structuredClone(storedConversation) : null;
   if (!conversation) {
     if (!envelope.kemCiphertext) {
       log(`ignored ${contact.displayName}: no session has been established`);
@@ -664,23 +728,36 @@ async function decodeEnvelope(envelope) {
       pqc: state.pqc,
       identity: state.identity,
       contact,
-      kemCiphertext: envelope.kemCiphertext
+      kemCiphertext: envelope.kemCiphertext,
+      prekey: envelope.prekey ?? null
     });
-    state.conversations[conversationKey] = conversation;
   }
-  const text = await decryptNativeEnvelope({
+  const decryptOptions = {
     crypto: state.crypto,
     pqc: state.pqc,
     identity: state.identity,
     contact,
     conversation,
     envelope
-  });
+  };
+  let text;
+  let silent = false;
+  if (contact.version === 4) {
+    const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
+    silent = decoded.projection.disposition === "silent";
+    text = decoded.projection.kind === "text"
+      ? decoded.projection.text
+      : decoded.projection.fallbackText;
+  } else {
+    text = await decryptNativeEnvelope(decryptOptions);
+  }
+  state.conversations[conversationKey] = conversation;
   return {
-    id: envelope.id,
+    id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
     direction: "in",
     contactFingerprint: contact.fingerprint,
     text,
+    silent,
     sentAt: envelope.sentAt
   };
 }
@@ -711,25 +788,18 @@ function actorProof({ keypair, fingerprint, signedAt, nonce, payload }) {
   };
 }
 
-function registerProofPayload(contactOffer, inboxId, accessPublicKey, signedAt, nonce) {
+function registerProofPayload(inboxId, accessPublicKey, signedAt, nonce) {
   return {
     accessPublicKey: base64(accessPublicKey),
-    contactOffer,
     inboxId,
     nonce,
+    registrationVersion: 2,
     signedAt
   };
 }
 
 function contactFromOffer(offer) {
-  return {
-    displayName: offer.displayName,
-    inboxId: offer.inboxId,
-    relay: offer.relay,
-    fingerprint: offer.fingerprint,
-    signingPublicKey: offer.signingPublicKey,
-    agreementPublicKey: offer.agreementPublicKey
-  };
+  return contactFromNativeOffer(offer);
 }
 
 function selectedContact() {
@@ -747,10 +817,12 @@ function renderAll() {
   elements.inbox.textContent = state.identity?.inboxId ?? "Not created";
   elements.fingerprint.textContent = state.identity?.signingFingerprint ?? "Not created";
   elements.identityDot.classList.toggle("ready", Boolean(state.identity));
+  elements.resetProfile.textContent = state.identity
+    ? "Retire and Delete Identity"
+    : "Reset Empty Profile";
   renderContactCode();
   elements.copyCode.disabled = !state.identity;
   elements.toggleCode.disabled = !state.identity;
-  elements.exportProfile.disabled = !state.identity;
   elements.send.disabled = !state.identity || state.contacts.length === 0;
   elements.fetch.disabled = !state.identity;
   elements.autoFetch.disabled = !state.identity;
@@ -856,8 +928,20 @@ function renderChat() {
     bubble.className = `bubble ${message.direction}`;
     bubble.textContent = message.text;
     const meta = document.createElement("span");
-    meta.textContent = `${message.direction === "out" ? "Sent" : "Received"} ${formatDate(message.sentAt)}`;
+    const deliveryLabel = message.direction === "out"
+      ? ({ sending: "Sending", failed: "Failed", sent: "Sent" }[message.status] ?? "Sent")
+      : "Received";
+    meta.textContent = `${deliveryLabel} ${formatDate(message.sentAt)}`;
     bubble.append(meta);
+    if (message.direction === "out" && message.status === "failed" && message.envelope) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "Retry exact envelope";
+      retry.addEventListener("click", () => {
+        void runAction("Retrying", () => retryMessage(message.id));
+      });
+      bubble.append(retry);
+    }
     elements.chat.append(bubble);
   }
   elements.chat.scrollTop = elements.chat.scrollHeight;
@@ -910,6 +994,8 @@ function snapshotState() {
     seenEnvelopeIds: [...state.seenEnvelopeIds],
     relay: elements.relay.value,
     selectedContactFingerprint: state.selectedContactFingerprint,
+    pendingInboxRetirements: state.pendingInboxRetirements,
+    identityDeletionPending: state.identityDeletionPending,
     autoFetchEnabled: state.autoFetchEnabled
   };
 }
@@ -935,6 +1021,9 @@ function applyPersistedState(saved) {
   state.messages = saved.messages ?? [];
   state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds ?? []);
   state.selectedContactFingerprint = saved.selectedContactFingerprint ?? state.contacts[0]?.fingerprint ?? "";
+  state.pendingInboxRetirements = saved.pendingInboxRetirements ?? [];
+  state.identityDeletionPending = saved.identityDeletionPending === true ||
+    state.pendingInboxRetirements.length > 0;
   state.autoFetchEnabled = Boolean(saved.autoFetchEnabled);
   if (saved.relay) {
     elements.relay.value = saved.relay;
@@ -942,19 +1031,62 @@ function applyPersistedState(saved) {
 }
 
 async function resetProfile() {
-  if (!confirm(`Reset ${profile}? This permanently deletes its local identity keys and message history.`)) {
+  const prompt = state.identity
+    ? `Retire and delete ${profile}'s current identity generation? Its relay inbox will be retired before local identity keys, sessions, contacts, and message history are permanently deleted. No replacement identity will be created or linked.`
+    : `Reset ${profile}? This permanently deletes its empty local profile.`;
+  if (!confirm(prompt)) {
     return;
   }
   stopAutoFetch();
-  if (state.repository) {
-    await state.repository.clear();
+  if (!state.repository) {
+    throw new Error("Unlock the encrypted browser profile before resetting it.");
+  }
+  if (state.identity && !state.identityDeletionPending) {
+    const accessKey = deserializeKeypair(state.identity.access);
+    try {
+      const request = await buildRetireInboxRequest({
+        inboxId: state.identity.inboxId,
+        accessSigningKey: accessKey,
+        accessFingerprint: state.identity.accessFingerprint,
+        pqc: state.pqc,
+        crypto: state.crypto
+      });
+      const relayAddress = relayURLFromEndpoint(state.identity.contactOffer.relay);
+      state.pendingInboxRetirements = [{ relayAddress, request }];
+      state.identityDeletionPending = true;
+      // Persist the exact private-key-free proof before any network call or
+      // local key deletion. Exact retries are intentionally idempotent.
+      await saveState();
+    } finally {
+      accessKey.secretKey.fill(0);
+      accessKey.publicKey.fill(0);
+    }
+  }
+  if (state.identityDeletionPending && state.pendingInboxRetirements.length > 0) {
+    await resumePendingInboxRetirements(state.repository);
+  }
+  await finishLocalReset(state.repository);
+  configureVaultGate();
+  setStatus("Locked");
+}
+
+async function resumePendingInboxRetirements(repository) {
+  while (state.pendingInboxRetirements.length > 0) {
+    const pending = state.pendingInboxRetirements[0];
+    await relayClient(parseRelayEndpoint(pending.relayAddress)).retireInbox(pending.request);
+    state.pendingInboxRetirements.shift();
+    await repository.save(snapshotState());
+  }
+}
+
+async function finishLocalReset(repository) {
+  if (repository) {
+    await repository.clear();
   }
   localStorage.removeItem(vaultStateStorageKey);
   localStorage.removeItem(vaultSaltKey);
   localStorage.removeItem(legacyStorageKey);
   clearLiveState();
-  configureVaultGate();
-  setStatus("Locked");
 }
 
 async function validatePersistedState(saved) {
@@ -968,11 +1100,26 @@ async function validatePersistedState(saved) {
   if (!Array.isArray(saved.contacts) || saved.contacts.length > 256 ||
       !Array.isArray(saved.messages) || saved.messages.length > 10_000 ||
       !Array.isArray(saved.seenEnvelopeIds) || saved.seenEnvelopeIds.length > 20_000 ||
+      !Array.isArray(saved.pendingInboxRetirements) || saved.pendingInboxRetirements.length > 8 ||
+      (saved.identityDeletionPending != null && typeof saved.identityDeletionPending !== "boolean") ||
       !saved.conversations || typeof saved.conversations !== "object" || Array.isArray(saved.conversations) ||
       Object.keys(saved.conversations).length > 512) {
     throw new Error("Encrypted profile collections exceed supported limits.");
   }
   parseRelayEndpoint(String(saved.relay ?? ""));
+  const retirementRelays = new Set();
+  for (const item of saved.pendingInboxRetirements) {
+    if (!item || typeof item !== "object" || Array.isArray(item) ||
+        typeof item.relayAddress !== "string" || retirementRelays.has(item.relayAddress)) {
+      throw new Error("Encrypted profile contains an invalid inbox-retirement journal.");
+    }
+    parseRelayEndpoint(item.relayAddress);
+    validateRetireInboxRequest(item.request);
+    retirementRelays.add(item.relayAddress);
+  }
+  if (saved.pendingInboxRetirements.length > 0 && saved.identityDeletionPending === false) {
+    throw new Error("Encrypted profile contains an unbound inbox-retirement journal.");
+  }
 
   if (saved.identity !== null && saved.identity !== undefined) {
     validateBoundedString(saved.identity.displayName, "identity display name", 1, 128);
@@ -1025,6 +1172,23 @@ async function validatePersistedState(saved) {
     if (message.direction !== "in" && message.direction !== "out") {
       throw new Error("Encrypted profile contains an invalid message direction.");
     }
+    if (message.direction === "out" && message.status != null &&
+        !["sending", "sent", "failed"].includes(message.status)) {
+      throw new Error("Encrypted profile contains an invalid delivery state.");
+    }
+    if (message.envelope != null) {
+      if (message.direction !== "out" || !message.envelope ||
+          typeof message.envelope !== "object" || Array.isArray(message.envelope) ||
+          message.status === "sent") {
+        throw new Error("Encrypted profile contains an invalid retry envelope.");
+      }
+      validateBoundedString(message.envelopeId, "message envelope identifier", 1, 160);
+      validateBoundedString(message.clientTransactionId, "message transaction identifier", 1, 160);
+      if (message.envelope.id !== message.envelopeId ||
+          encoder.encode(JSON.stringify(message.envelope)).byteLength > 512 * 1024) {
+        throw new Error("Encrypted profile retry envelope is invalid.");
+      }
+    }
   }
   for (const id of saved.seenEnvelopeIds) {
     validateBoundedString(id, "seen envelope identifier", 1, 160);
@@ -1063,64 +1227,6 @@ function validateBoundedString(value, label, minimum, maximum) {
   if (typeof value !== "string" || value.length < minimum || value.length > maximum) {
     throw new Error(`Encrypted profile ${label} is invalid.`);
   }
-}
-
-function requestSecret({ title, description, confirmation }) {
-  if (pendingSecretRequest) {
-    throw new Error("Another encrypted profile operation is already open.");
-  }
-  elements.secretTitle.textContent = title;
-  elements.secretDescription.textContent = description;
-  elements.secretConfirmationRow.hidden = !confirmation;
-  elements.secretPassphrase.autocomplete = confirmation ? "new-password" : "current-password";
-  elements.secretPassphrase.value = "";
-  elements.secretConfirmation.value = "";
-  elements.secretError.textContent = "";
-  elements.secretDialog.showModal();
-  queueMicrotask(() => elements.secretPassphrase.focus());
-  return new Promise((resolve) => {
-    pendingSecretRequest = { resolve, confirmation };
-  });
-}
-
-function submitSecretDialog(event) {
-  event.preventDefault();
-  if (!pendingSecretRequest) {
-    elements.secretDialog.close();
-    return;
-  }
-  const passphrase = elements.secretPassphrase.value;
-  if (!passphrase) {
-    elements.secretError.textContent = "Enter the profile passphrase.";
-    return;
-  }
-  if (pendingSecretRequest.confirmation && passphrase.length < 12) {
-    elements.secretError.textContent = "Use at least 12 characters.";
-    return;
-  }
-  if (pendingSecretRequest.confirmation && passphrase !== elements.secretConfirmation.value) {
-    elements.secretError.textContent = "The passphrases do not match.";
-    return;
-  }
-  const { resolve } = pendingSecretRequest;
-  pendingSecretRequest = null;
-  elements.secretPassphrase.value = "";
-  elements.secretConfirmation.value = "";
-  elements.secretDialog.close();
-  resolve(passphrase);
-}
-
-function cancelSecretDialog() {
-  if (!pendingSecretRequest) {
-    elements.secretDialog.close();
-    return;
-  }
-  const { resolve } = pendingSecretRequest;
-  pendingSecretRequest = null;
-  elements.secretPassphrase.value = "";
-  elements.secretConfirmation.value = "";
-  elements.secretDialog.close();
-  resolve(null);
 }
 
 async function runAction(label, action) {

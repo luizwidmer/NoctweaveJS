@@ -12,6 +12,7 @@ import {
   makeNativeContactOffer,
   NoctweaveOQSWasmAdapter,
   verifyNativeContactOffer,
+  verifyNativeEnvelope,
   WebCryptoPrimitives,
   base64
 } from "../src/index.js";
@@ -67,6 +68,31 @@ test("native wire messages establish a session and decrypt replies", async () =>
     contact: contactFromOffer(aliceContact),
     kemCiphertext: first.kemCiphertext
   });
+  const receiveChainBeforeVerification = structuredClone(inbound.receiveChain);
+  await verifyNativeEnvelope({
+    crypto,
+    pqc,
+    contact: contactFromOffer(aliceContact),
+    conversation: inbound,
+    envelope: first
+  });
+  assert.deepEqual(inbound.receiveChain, receiveChainBeforeVerification);
+  const idTampered = structuredClone(first);
+  idTampered.id = "A0000000-0000-4000-8000-000000000001";
+  const receiveChainBeforeIdTamper = structuredClone(inbound.receiveChain);
+  await assert.rejects(
+    decryptNativeEnvelope({
+      crypto,
+      pqc,
+      identity: bob,
+      contact: contactFromOffer(aliceContact),
+      conversation: inbound,
+      envelope: idTampered
+    }),
+    /Invalid signature/
+  );
+  assert.deepEqual(inbound.receiveChain, receiveChainBeforeIdTamper);
+
   const corrupt = structuredClone(first);
   const corruptCiphertext = Buffer.from(corrupt.payload.ciphertext, "base64");
   corruptCiphertext[0] ^= 0xff;

@@ -3,11 +3,11 @@ import test from "node:test";
 import oqsFactory from "../wasm/dist/noctweave_oqs.js";
 import { envelopeSignableBytes, NoctweaveOQSWasmAdapter } from "../src/index.js";
 
-test("envelope signatures survive Swift optional omission on fetch", async () => {
+test("envelope signatures bind the id and survive Swift optional omission on fetch", async () => {
   const pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
   const signing = pqc.generateSigningKeypair();
   const envelope = {
-    id: "a2de6140-6980-496c-841b-3a01195b2175",
+    id: "A2DE6140-6980-496C-841B-3A01195B2175",
     conversationId: "noctweave-js:test",
     sessionId: "noctweave-js-v1",
     senderFingerprint: "sender",
@@ -27,7 +27,7 @@ test("envelope signatures survive Swift optional omission on fetch", async () =>
 
   const signature = pqc.sign(envelopeSignableBytes(envelope), signing.secretKey);
   const fetchedEnvelope = {
-    id: envelope.id.toUpperCase(),
+    id: envelope.id,
     conversationId: envelope.conversationId,
     sessionId: envelope.sessionId,
     senderFingerprint: envelope.senderFingerprint,
@@ -39,4 +39,9 @@ test("envelope signatures survive Swift optional omission on fetch", async () =>
   };
 
   assert.equal(pqc.verify(envelopeSignableBytes(fetchedEnvelope), signature, signing.publicKey), true);
+  const idTamperedEnvelope = {
+    ...fetchedEnvelope,
+    id: "B2DE6140-6980-496C-841B-3A01195B2175"
+  };
+  assert.equal(pqc.verify(envelopeSignableBytes(idTamperedEnvelope), signature, signing.publicKey), false);
 });

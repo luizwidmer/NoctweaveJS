@@ -9,6 +9,7 @@ export {
 export { NoctweaveWebClient } from "./client.js";
 export {
   NoctweaveBrowserIdentityService,
+  browserMailboxRouteKey,
   parseBrowserRelayEndpoint,
   validateBrowserDisplayName
 } from "./browser-identity.js";
@@ -20,24 +21,98 @@ export {
   MemoryNoctweaveStore,
   NoctweaveStateRepository
 } from "./storage.js";
-export {
-  decryptPortableProfile,
-  encryptPortableProfile,
-  portableProfileLimits
-} from "./profile-vault.js";
 export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
+export {
+  advanceDeliveryState,
+  buildCommitMailboxCursorRequest,
+  buildRegisterMailboxConsumerRequest,
+  buildRetireInboxRequest,
+  buildRevokeMailboxConsumerRequest,
+  buildSyncMailboxRequest,
+  contentTypeCanonicalName,
+  createContentTypeId,
+  createConversationEvent,
+  createDeliveryStateRecord,
+  createEncodedContent,
+  createMailboxCursor,
+  createMailboxConsumerId,
+  createMailboxConsumerProof,
+  createProtocolCapabilityManifest,
+  createRelationshipInstallationHandle,
+  createTextEncodedContent,
+  defaultActiveEndpointModules,
+  generateRelationshipInstallationHandle,
+  generateMailboxConsumerId,
+  inboxRetirementProofPayload,
+  mailboxConsumerProofPayload,
+  mayMutateControlState,
+  messageDeliveryStates,
+  negotiateProtocolCapabilities,
+  noctweaveArchitectureV2,
+  protocolKnownModuleCatalog,
+  protocolExtensionStatuses,
+  standardContentTypes,
+  validateContentTypeId,
+  validateConversationEvent,
+  validateDeliveryStateRecord,
+  validateEncodedContent,
+  validateMailboxCursor,
+  validateMailboxConsumerId,
+  validateMailboxConsumerRegistration,
+  validateMailboxSyncBatch,
+  validateMailboxSyncContinuity,
+  validateCommitMailboxCursorRequest,
+  validateRegisterMailboxConsumerRequest,
+  validateRetireInboxRequest,
+  validateRelayActorProof,
+  validateRevokeMailboxConsumerRequest,
+  validateSyncMailboxRequest,
+  verifyMailboxConsumerProof,
+  verifyInboxRetirementProof,
+  validateProtocolCapabilityManifest,
+  validateProtocolModuleCapability,
+  validateRelationshipInstallationHandle
+} from "./architecture-v2.js";
 export { NoctweaveOQSWasmAdapter, OQSWasmError } from "./crypto/oqs-wasm-adapter.js";
 export { NoctweaveCryptoSuite } from "./crypto/noctweave-crypto-suite.js";
 export { base64, canonicalJson, canonicalJsonBytes, swiftISODate, swiftUUID } from "./crypto/swift-canonical.js";
 export { envelopeSignableBytes, envelopeSignablePayload } from "./crypto/noctweave-wire.js";
 export {
+  NoctweaveRemoteEnvelopeError,
   createNativeInboundSession,
   createNativeOutboundSession,
   decodeNativeContactCode,
+  decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
   encodeNativeContactCode,
+  encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
+  findNativeContactForEnvelope,
   makeNativeContactOffer,
+  nativeAuthenticatedDataBytes,
   nativeConversationKey,
-  verifyNativeContactOffer
+  verifyNativeContactOffer,
+  verifyNativeEnvelope
 } from "./crypto/noctweave-native-message.js";
+export {
+  assertCertifiedEndpointPrekeyFresh,
+  assertContactEndpointActive,
+  certifiedEndpointAuthorizationDigest,
+  certifiedEndpointDigest,
+  contactFromNativeOffer,
+  createInstallationEndpointRevocationV4,
+  deriveNativeDirectV4Binding,
+  derivePairwiseInstallationBindingV4,
+  directV4ConversationId,
+  directV4EndpointSession,
+  inboxIdForAccessPublicKey,
+  isCertifiedNativeContact,
+  makeCertifiedNativeContactOffer,
+  makeDirectV4AuthenticatedContext,
+  nativeDirectV4,
+  prepareNativeDirectV4Identity,
+  renewNativeDirectV4PrekeyIfNeeded,
+  validateInboundDirectV4Context,
+  verifyCertifiedNativeContactOffer,
+  verifyInstallationEndpointRevocationV4
+} from "./crypto/direct-v4.js";

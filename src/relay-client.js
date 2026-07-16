@@ -1,5 +1,9 @@
 import { normalizeRelayEndpoint, relayEndpointURL } from "./endpoint.js";
 import { relayRequests } from "./requests.js";
+import {
+  validateMailboxConsumerRegistration,
+  validateMailboxSyncBatch
+} from "./architecture-v2.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
@@ -66,6 +70,55 @@ export class NoctweaveRelayClient {
 
   async info(options = {}) {
     return this.send(relayRequests.info(), options);
+  }
+
+  async retireInbox(request, options = {}) {
+    const response = await this.send(relayRequests.retireInbox(request), options);
+    if (response?.type !== "ok") {
+      throw new Error("Relay rejected inbox retirement.");
+    }
+    return response;
+  }
+
+  async registerMailboxConsumer(request, options = {}) {
+    const response = await this.send(relayRequests.registerMailboxConsumer(request), options);
+    const validated = validatedMailboxConsumerResponse(response, "registration");
+    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
+        validated.mailboxConsumer.consumerSigningPublicKey !== request.consumerSigningPublicKey ||
+        validated.mailboxConsumer.state !== "active") {
+      throw new Error("Relay returned a mismatched mailbox consumer registration response.");
+    }
+    return validated;
+  }
+
+  async syncMailbox(request, options = {}) {
+    const response = await this.send(relayRequests.syncMailbox(request), options);
+    if (response?.type !== "mailboxSync" || response.mailboxSync == null) {
+      throw new Error("Relay returned an incompatible mailbox sync response.");
+    }
+    return { ...response, mailboxSync: validateMailboxSyncBatch(response.mailboxSync) };
+  }
+
+  async commitMailboxCursor(request, options = {}) {
+    const response = await this.send(relayRequests.commitMailboxCursor(request), options);
+    const validated = validatedMailboxConsumerResponse(response, "cursor commit");
+    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
+        validated.mailboxConsumer.consumerSigningPublicKey !== request.consumerProof.publicSigningKey ||
+        validated.mailboxConsumer.state !== "active" ||
+        validated.mailboxConsumer.committedSequence !== request.sequence) {
+      throw new Error("Relay returned a mismatched mailbox cursor commit response.");
+    }
+    return validated;
+  }
+
+  async revokeMailboxConsumer(request, options = {}) {
+    const response = await this.send(relayRequests.revokeMailboxConsumer(request), options);
+    const validated = validatedMailboxConsumerResponse(response, "revocation");
+    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
+        validated.mailboxConsumer.state !== "revoked") {
+      throw new Error("Relay returned a mismatched mailbox consumer revocation response.");
+    }
+    return validated;
   }
 
   async send(request, options = {}) {
@@ -191,6 +244,16 @@ export class NoctweaveRelayClient {
     }
     return { ...request, authToken: this.authToken };
   }
+}
+
+function validatedMailboxConsumerResponse(response, operation) {
+  if (response?.type !== "mailboxConsumer" || response.mailboxConsumer == null) {
+    throw new Error(`Relay returned an incompatible mailbox consumer ${operation} response.`);
+  }
+  return {
+    ...response,
+    mailboxConsumer: validateMailboxConsumerRegistration(response.mailboxConsumer)
+  };
 }
 
 function decodeRelayResponse(text, requestType) {

@@ -1,46 +1,21 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { decryptPortableProfile, encryptPortableProfile } from "../src/index.js";
 
-test("portable profile encryption hides private state and round trips", async () => {
-  const source = {
-    identity: { secretKey: "do-not-store-in-plaintext" },
-    messages: [{ text: "private message" }]
-  };
-  const packageData = await encryptPortableProfile(source, "correct horse battery staple");
-  const serialized = JSON.stringify(packageData);
+import * as noctweave from "../src/index.js";
 
-  assert.equal(serialized.includes("do-not-store-in-plaintext"), false);
-  assert.equal(serialized.includes("private message"), false);
-  assert.deepEqual(
-    await decryptPortableProfile(packageData, "correct horse battery staple"),
-    source
-  );
-});
+test("public JS surfaces cannot clone a live protocol endpoint", async () => {
+  assert.equal("encryptPortableProfile" in noctweave, false);
+  assert.equal("decryptPortableProfile" in noctweave, false);
 
-test("portable profile decryption fails closed for wrong passwords and malformed metadata", async () => {
-  const packageData = await encryptPortableProfile({ value: "secret" }, "correct horse battery staple");
-
-  await assert.rejects(
-    () => decryptPortableProfile(packageData, "the wrong profile password"),
-    /could not be decrypted/
-  );
-  await assert.rejects(
-    () => decryptPortableProfile({ ...packageData, version: 99 }, "correct horse battery staple"),
-    /Unsupported encrypted profile format/
-  );
-  await assert.rejects(
-    () => decryptPortableProfile({
-      ...packageData,
-      encrypted: { ...packageData.encrypted, nonce: "AA==" }
-    }, "correct horse battery staple"),
-    /metadata is malformed/
-  );
-});
-
-test("portable profile creation requires a nontrivial passphrase", async () => {
-  await assert.rejects(
-    () => encryptPortableProfile({ value: "secret" }, "short"),
-    /at least 12 characters/
+  const [html, script] = await Promise.all([
+    readFile(new URL("../client/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../client/app.js", import.meta.url), "utf8")
+  ]);
+  assert.doesNotMatch(html, /id="(?:export|import)Profile"/);
+  assert.doesNotMatch(script, /(?:encrypt|decrypt)PortableProfile/);
+  assert.match(
+    html,
+    /Live identity keys, ratchets, routes, and cursors are never exported or cloned/
   );
 });

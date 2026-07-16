@@ -1,3 +1,11 @@
+import {
+  validateCommitMailboxCursorRequest,
+  validateRegisterMailboxConsumerRequest,
+  validateRetireInboxRequest,
+  validateRevokeMailboxConsumerRequest,
+  validateSyncMailboxRequest
+} from "./architecture-v2.js";
+
 export const relayRequests = {
   health(authToken) {
     return withAuth({ type: "health" }, authToken);
@@ -11,6 +19,13 @@ export const relayRequests = {
     return withAuth({ type: "registerInbox", registerInbox: request }, authToken);
   },
 
+  retireInbox(request, authToken) {
+    return withAuth({
+      type: "retireInbox",
+      retireInbox: validateRetireInboxRequest(request)
+    }, authToken);
+  },
+
   deliver(request, authToken) {
     return withAuth({ type: "deliver", deliver: request }, authToken);
   },
@@ -21,6 +36,34 @@ export const relayRequests = {
 
   acknowledgeMessages(request, authToken) {
     return withAuth({ type: "acknowledgeMessages", acknowledgeMessages: request }, authToken);
+  },
+
+  registerMailboxConsumer(request, authToken) {
+    return withAuth({
+      type: "registerMailboxConsumer",
+      registerMailboxConsumer: validateRegisterMailboxConsumerRequest(request)
+    }, authToken);
+  },
+
+  syncMailbox(request, authToken) {
+    return withAuth({
+      type: "syncMailbox",
+      syncMailbox: validateSyncMailboxRequest(request)
+    }, authToken);
+  },
+
+  commitMailboxCursor(request, authToken) {
+    return withAuth({
+      type: "commitMailboxCursor",
+      commitMailboxCursor: validateCommitMailboxCursorRequest(request)
+    }, authToken);
+  },
+
+  revokeMailboxConsumer(request, authToken) {
+    return withAuth({
+      type: "revokeMailboxConsumer",
+      revokeMailboxConsumer: validateRevokeMailboxConsumerRequest(request)
+    }, authToken);
   },
 
   uploadPrekeys(request, authToken) {

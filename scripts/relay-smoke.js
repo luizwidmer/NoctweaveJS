@@ -5,7 +5,6 @@ import {
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
   WebCryptoPrimitives,
-  parseRelayEndpoint,
   relayRequests
 } from "../src/index.js";
 
@@ -21,12 +20,9 @@ const client = new NoctweaveRelayClient(endpoint, {
   timeoutMs: Number(options.timeoutMs ?? 8000)
 });
 
-const signing = pqc.generateSigningKeypair();
-const agreement = pqc.generateKemKeypair();
 const access = pqc.generateSigningKeypair();
 const inboxId = options.inbox ?? bech32Encode("noctweave", await crypto.sha256(access.publicKey));
 const accessFingerprint = base64(await crypto.sha256(access.publicKey));
-const signingFingerprint = base64(await crypto.sha256(signing.publicKey));
 const messageText = options.text ?? `NoctweaveJS relay smoke ${swiftISODate()}`;
 const encodedMessage = new TextEncoder().encode(messageText);
 const ciphertext = await crypto.sha256(encodedMessage);
@@ -42,22 +38,6 @@ console.log(`Health: ${JSON.stringify(health)}`);
 const info = await client.info();
 console.log(`Info: ${info.relayInfo?.relayName ?? info.type ?? "unknown"}`);
 
-const relayEndpoint = relayEndpointForContactOffer(parseRelayEndpoint(endpoint));
-const unsignedContactOffer = {
-  agreementPublicKey: base64(agreement.publicKey),
-  displayName: options.displayName ?? "NoctweaveJS Smoke",
-  fingerprint: signingFingerprint,
-  inboxAccessPublicKey: base64(access.publicKey),
-  inboxId,
-  relay: relayEndpoint,
-  signingPublicKey: base64(signing.publicKey),
-  version: 3
-};
-const contactOffer = {
-  ...unsignedContactOffer,
-  signature: base64(pqc.sign(canonicalJsonBytes(unsignedContactOffer), signing.secretKey))
-};
-
 const registerSignedAt = swiftISODate();
 const registerNonce = swiftUUID();
 const registerProof = actorProof({
@@ -65,13 +45,13 @@ const registerProof = actorProof({
   fingerprint: accessFingerprint,
   signedAt: registerSignedAt,
   nonce: registerNonce,
-  payload: registerProofPayload(contactOffer, inboxId, access.publicKey, registerSignedAt, registerNonce)
+  payload: registerProofPayload(inboxId, access.publicKey, registerSignedAt, registerNonce)
 });
 
 const registerRequest = relayRequests.registerInbox({
   inboxId,
   accessPublicKey: base64(access.publicKey),
-  contactOffer,
+  registrationVersion: 2,
   accessProof: registerProof
 });
 
@@ -80,7 +60,7 @@ if (options.debugDir) {
   writeFileSync(`${options.debugDir}/register-request.json`, JSON.stringify(registerRequest, null, 2));
   writeFileSync(
     `${options.debugDir}/register-signable-js.json`,
-    canonicalJson(registerProofPayload(contactOffer, inboxId, access.publicKey, registerSignedAt, registerNonce))
+    canonicalJson(registerProofPayload(inboxId, access.publicKey, registerSignedAt, registerNonce))
   );
 }
 
@@ -181,21 +161,12 @@ function actorProof({ keypair, fingerprint, signedAt, nonce, payload }) {
   };
 }
 
-function relayEndpointForContactOffer(endpoint) {
-  return {
-    host: endpoint.host,
-    port: endpoint.port,
-    useTLS: Boolean(endpoint.useTLS),
-    transport: endpoint.transport ?? "http"
-  };
-}
-
-function registerProofPayload(contactOffer, inboxId, accessPublicKey, signedAt, nonce) {
+function registerProofPayload(inboxId, accessPublicKey, signedAt, nonce) {
   return {
     accessPublicKey: base64(accessPublicKey),
-    contactOffer,
     inboxId,
     nonce,
+    registrationVersion: 2,
     signedAt
   };
 }

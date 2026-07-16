@@ -27,23 +27,51 @@ npm run build:oqs-wasm
 ## Relay Client
 
 ```js
-import { NoctweaveRelayClient, relayRequests } from "@noctweave/js-client";
+import {
+  NoctweaveRelayClient,
+  buildSyncMailboxRequest
+} from "@noctweave/js-client";
 
 const relay = new NoctweaveRelayClient("https://relay.example");
 
 const health = await relay.health();
 const info = await relay.info();
 
-const response = await relay.send(
-  relayRequests.fetch({
-    inboxId: "nw1...",
-    routingToken: "nw1...",
-    maxCount: 20,
-    longPollTimeoutSeconds: 10,
-    accessProof: signedProof
-  })
-);
+const request = await buildSyncMailboxRequest({
+  inboxId: identity.inboxId,
+  consumerId: identity.localInstallation.mailboxRoutes[routeKey].consumerId,
+  cursor: identity.localInstallation.mailboxRoutes[routeKey].cursor,
+  maxCount: 20,
+  longPollTimeoutSeconds: 10,
+  // Decrypt this route-only credential from application storage. It is not
+  // the endpoint signing key.
+  consumerSigningKey: routeSigningKey,
+  pqc,
+  crypto: webCrypto
+});
+const response = await relay.syncMailbox(request);
 ```
+
+`localInstallation` is a pre-1.0 persisted-schema compatibility name for the
+current generation's local endpoint. It is not a durable device record and is
+never authorized outside that identity generation.
+
+Mailbox v2 uses an opaque route-scoped consumer ID and an independent
+route-only ML-DSA key. Registration requires both the inbox authority proof
+and route-key possession proof. Adding a later consumer also requires an
+active consumer sponsor proof; an all-revoked mailbox requires the explicit
+creation of a fresh inbox and identity generation rather than an account-style
+recovery flow. Use `buildRegisterMailboxConsumerRequest`,
+`buildCommitMailboxCursorRequest`, and `buildRevokeMailboxConsumerRequest` for
+the other authenticated operations. Once a mailbox has a v2 binding, clients
+must not fall back to destructive legacy fetch/acknowledgement calls.
+Consumer IDs and relay-issued cursors are canonical JSON strings on the wire,
+matching Swift `RawRepresentable` encoding; `{ rawValue: ... }` is not an
+accepted request, response, or proof-transcript shape.
+The browser identity flow requires the relay `info` response to advertise valid
+`nw.core:2` and `nw.mailbox:2` capabilities before it creates an inbox.
+Because JSON numbers cannot losslessly represent every Swift `UInt64`, the JS
+validators fail closed if a relay sequence exceeds `Number.MAX_SAFE_INTEGER`.
 
 Production applications can supply deployment policy without changing protocol
 invariants:
@@ -73,6 +101,62 @@ npm run smoke:relay -- --relay http://127.0.0.1:9339
 ```
 
 This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips.
+This low-level smoke script intentionally remains a legacy compatibility probe;
+the production `client/` uses mailbox v2 exclusively after binding.
+
+## Certified Direct-v4
+
+Fresh JavaScript identity generations and contacts use the same bounded
+certified direct-v4 profile as the Swift implementation. A v4 contact offer
+carries the current generation authority plus a signed endpoint-set checkpoint
+and one preferred certified endpoint. The endpoint owns independent ML-DSA signing,
+ML-KEM agreement, and signed-prekey material; active ratchet state is keyed by
+that endpoint rather than shared across the identity generation.
+
+The current signed contact code is reusable compatibility pairing material,
+not a one-time unlinkable rendezvous. It exposes the same identity generation,
+preferred endpoint authorization, inbox, and relay details to every recipient;
+recipients who compare codes can correlate that generation. Private keys never
+leave local encrypted storage, but that does not remove this public-metadata
+linkability.
+
+Each relationship derives different opaque endpoint handles and
+relationship-blinded certificate references. Those values, both manifest
+epochs, the logical event ID, and `nw.wire-payload.v2` are authenticated by the
+direct-v4 context. The envelope sender field is the pairwise sender handle, not
+a reusable endpoint or identity identifier. Application content is encoded as
+an immutable `WirePayloadV2` event in an NPAD-v2 frame. Standard text and
+attachment projections are strictly validated; unknown visible types preserve
+their authenticated event and use the encrypted fallback, while unknown silent
+types advance the ratchet without creating a chat bubble. The receiver verifies
+the certified endpoint, endpoint-signed prekey package, signed prekey,
+envelope signature, pairwise context, and payload before committing
+ratchet progress. Signed-prekey freshness gates only contact/new-session
+bootstrap. The stable generation-scoped endpoint authorization is separate
+from the short-lived package. `prepareNativeDirectV4Identity` renews the
+package during its two-day lead window without creating another endpoint or
+using account/recovery authority. Up to four prior private prekeys remain
+available only through their signed expiry for delayed bootstraps. Reopening
+an endpoint validates package-publication integrity, and an
+already established endpoint-bound ratchet is not destroyed by later prekey
+publication expiry.
+
+Persisted v2/v3 contacts remain available through an explicit NPAD-v1 legacy
+path. Direct-v4 never probes that decoder and never silently falls back to
+identity-key messaging. This first slice intentionally supports one preferred
+endpoint per contact. Endpoint manifests therefore advertise
+`maxActiveEndpoints: 1` even though local endpoint-set storage has a larger
+structural bound. Direct-v4 negotiates and transcript-binds `nw.core:2`,
+`nw.endpoints:2`, `nw.events:2`, and `nw.prekeys:2`; known optional modules are
+disabled unless explicitly added by a wired caller and do not affect the
+direct-v4 digest. Multi-endpoint fan-out and the closed JavaScript control-event
+application path remain later work; extensible application content cannot be
+used to invoke a security control.
+
+The deterministic Swift/JavaScript binding, authenticated-data, and signature
+transcript fixture is
+`../NoctweaveDocumentation/test_vectors/direct_v4_pairwise_binding.json`.
+The profile is pre-1.0 and has not received an external security audit.
 
 ## NoctweaveJS Client
 
@@ -87,22 +171,55 @@ Open `http://127.0.0.1:5173/client/`. First run guides the user through:
 1. acknowledging browser security boundaries;
 2. creating an AES-256-GCM encrypted local profile;
 3. verifying a client-facing HTTP/HTTPS/WS/WSS relay;
-4. generating ML-DSA-65 signing and access keys plus an ML-KEM-768 agreement key;
-5. registering the inbox and entering the client shell.
+4. generating a disposable identity generation plus independent ML-DSA-65/ML-KEM-768 endpoint keys;
+5. registering the inbox, generating a fresh ML-DSA mailbox credential for that relay/inbox route, binding its opaque consumer, and entering the client shell.
 
 After setup, the client provides:
 
 - a verified contact book with optional local aliases and contact deletion;
 - signed contact-code reveal, copy, download, and file import;
 - durable one-to-one encrypted conversations with unread badges and search;
-- send retry state and safe skipped-message ratchet recovery;
+- local echo backed by a durably stored logical event ID, client transaction
+  ID, and exact retry envelope; safe skipped-message ratchet recovery;
 - manual and automatic inbox sync while the page is visible;
 - multiple verified relay records and live health checks;
-- encrypted profile export/import, lock, and local reset.
+- encrypted local storage, lock, and destructive local reset; live endpoint
+  export/import is intentionally unavailable because it would clone active
+  keys, ratchets, routes, and cursors.
 
-Fetched envelopes are acknowledged only after successful verification,
-decryption, and local persistence. Failed or unknown envelopes remain available
-for a later safe retry.
+Sending and receiving are storage transactions around cloned ratchet state. A
+sender persists the advanced chain and exact signed ciphertext before relay
+submission; an interrupted retry replays that ciphertext without re-encryption.
+A receiver persists the decoded event and advanced receive chain before its
+mailbox cursor can move. A storage failure restores the in-memory candidate so
+the relay event remains retryable.
+
+Complete local identity deletion uses a separate durable
+`identityDeletionPending` lifecycle marker in addition to the exact inbox
+retirement requests. The marker remains set after the last relay accepts
+retirement, so a crash before local key deletion resumes by deleting the old
+generation instead of reopening it. This browser action retires and deletes a
+generation; it does not create a replacement and therefore is not an identity
+burn.
+
+Each endpoint's route cursor advances only after successful verification,
+decryption, and durable local persistence. Replay receipts scope logical event
+IDs to the authenticated relationship, so unrelated contacts cannot collide in
+a global event namespace. Cursor commits are journaled locally and retried
+without reverting to legacy acknowledgement. Envelopes interrupted
+by local state, storage, or crypto-runtime failure remain
+available for a later safe retry. Permanently invalid remote envelopes use a
+bounded plaintext-free dead-letter receipt so they cannot block later ordered
+events. Existing encrypted JS profiles are migrated in place by creating a
+fresh generation-bounded endpoint and, separately, a fresh route-specific
+consumer ID and signing key before relay binding is attempted. Active ratchet
+state is never copied between endpoints, and endpoint signing keys are never
+reused for fresh relay authentication. Each route also
+persists its numeric
+committed sequence beside the opaque cursor. The client rejects internal batch
+gaps and any first event or empty `nextSequence` that does not continue exactly
+from that durable sequence before it changes messages, ratchets, or cursor
+state.
 
 Test a real encrypted round trip against a running HTTP relay:
 
@@ -112,6 +229,8 @@ npm run smoke:client -- --relay http://127.0.0.1:9340
 
 The smoke test creates two identities, verifies their pairing material, sends
 and decrypts in both directions, and acknowledges both messages.
+It is retained as a bounded legacy-wire regression test rather than the mailbox
+v2 client reference.
 
 ## Desktop Client
 
@@ -190,6 +309,8 @@ To test two browser clients on one machine, open:
 - `http://127.0.0.1:5173/examples/browser-client/?profile=bob`
 
 Create an inbox in each profile, copy Alice's contact code into Bob and Bob's into Alice, then send from one profile and press `Fetch` on the other or enable `Auto-fetch`.
+This protocol demo exercises the legacy mailbox adapter. Use `client/` for the
+endpoint-scoped mailbox v2 flow.
 
 ## Storage Choices
 
@@ -297,8 +418,10 @@ The native Swift core and the JS/WASM adapter use the same algorithm profile:
 
 - Relay responses and stored records are untrusted until your application verifies them.
 - Local browser storage is not secure against a compromised browser profile, extension, or OS account.
-- Clearing site data removes the profile; export an encrypted backup first if it
-  must be recoverable.
+- Clearing site data permanently removes the live profile. Noctweave does not
+  export identity keys, active ratchets, route authority, or cursors as a
+  recoverable account backup. Only an explicitly created inert, read-only
+  history projection may be transferred.
 - Raw storage adapters are plaintext. Use `EncryptedNoctweaveStore` for sensitive state and keep its key outside the wrapped adapter.
 - The WASM adapter validates key and ciphertext lengths before calling liboqs.
 - Relay requests reject redirects and omit ambient credentials to reduce cross-origin credential leakage.

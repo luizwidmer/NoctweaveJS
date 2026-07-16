@@ -1,8 +1,41 @@
 import { base64, canonicalJsonBytes, swiftISODate, swiftUUID } from "./swift-canonical.js";
+import {
+  contentTypeCanonicalName,
+  createConversationEvent,
+  createTextEncodedContent,
+  standardContentTypes,
+  validateConversationEvent,
+  validateEncodedContent
+} from "../architecture-v2.js";
+
+export class NoctweaveRemoteEnvelopeError extends Error {
+  constructor(reason, message, options) {
+    super(message, options);
+    this.name = "NoctweaveRemoteEnvelopeError";
+    this.reason = reason;
+  }
+}
+import {
+  assertCertifiedEndpointPrekeyFresh,
+  assertContactEndpointActive,
+  contactFromNativeOffer,
+  deriveNativeDirectV4Binding,
+  directV4ConversationId,
+  directV4EndpointSession,
+  directV4SessionBindingBytes,
+  isCertifiedNativeContact,
+  makeCertifiedNativeContactOffer,
+  makeDirectV4AuthenticatedContext,
+  negotiateNativeDirectV4,
+  validateInboundDirectV4Context,
+  verifyCertifiedNativeContactOffer
+} from "./direct-v4.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const strictUTF8Decoder = new TextDecoder("utf-8", { fatal: true });
 const NPAD_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x01]);
+const NPAD_V2_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x02]);
 const NPAD_HEADER_BYTES = 9;
 const MIN_PADDED_BYTES = 512;
 const MAX_PADDED_BYTES = 65_536;
@@ -15,8 +48,76 @@ const ML_DSA_SECRET_KEY_BYTES = 4_032;
 const ML_DSA_SIGNATURE_BYTES = 3_309;
 const FINGERPRINT_BYTES = 32;
 const MAX_CONTACT_CODE_BYTES = 64 * 1024;
+const PREKEY_MAX_AGE_MS = 8 * 86_400_000;
+const PREKEY_FUTURE_SKEW_MS = 5 * 60_000;
 
-export async function createNativeOutboundSession({ crypto, pqc, identity, contact }) {
+export async function createNativeOutboundSession({ crypto, pqc, identity, contact, now = Date.now() }) {
+  assertNoDirectV4Fallback(contact);
+  if (isCertifiedNativeContact(contact)) {
+    await assertContactEndpointActive({ crypto, pqc, contact });
+    const peerEndpoint = contact.preferredInstallationEndpoint;
+    assertCertifiedEndpointPrekeyFresh({ endpoint: peerEndpoint, now });
+    const localEndpoint = identity.certifiedInstallationEndpoint;
+    const binding = await deriveNativeDirectV4Binding({ crypto, identity, contact });
+    const negotiation = await validateCurrentDirectV4Negotiation({
+      crypto,
+      identity,
+      contact,
+      binding
+    });
+    validateNegotiatedPrekeyFreshness(
+      peerEndpoint.prekeyBundle.signedPrekey,
+      negotiation,
+      now
+    );
+    const recipientKey = fromBase64(
+      peerEndpoint.prekeyBundle.signedPrekey.publicKey,
+      "contact signed prekey",
+      ML_KEM_PUBLIC_KEY_BYTES,
+      ML_KEM_PUBLIC_KEY_BYTES
+    );
+    const ownAgreementKey = fromBase64(
+      identity.localInstallation.agreement.publicKey,
+      "local installation agreement key",
+      ML_KEM_PUBLIC_KEY_BYTES,
+      ML_KEM_PUBLIC_KEY_BYTES
+    );
+    const encapsulated = pqc.encapsulate(recipientKey);
+    try {
+      const endpointSession = directV4EndpointSession({ contact, identity, binding });
+      const conversation = await conversationFromSharedSecret({
+        crypto,
+        sharedSecret: encapsulated.sharedSecret,
+        ownAgreementPublicKey: ownAgreementKey,
+        contactAgreementPublicKey: fromBase64(
+          peerEndpoint.agreementPublicKey,
+          "contact endpoint agreement key",
+          ML_KEM_PUBLIC_KEY_BYTES,
+          ML_KEM_PUBLIC_KEY_BYTES
+        ),
+        contactFingerprint: contact.fingerprint,
+        conversationId: await directV4ConversationId({
+          crypto,
+          localEndpoint,
+          peerEndpoint,
+          binding
+        }),
+        endpointSession
+      });
+      conversation.bootstrapPrekey = {
+        kind: "signed",
+        id: peerEndpoint.prekeyBundle.signedPrekey.id
+      };
+      return {
+        conversation,
+        kemCiphertext: encapsulated.ciphertext,
+        prekey: conversation.bootstrapPrekey
+      };
+    } finally {
+      wipeBytes(encapsulated.sharedSecret);
+      wipeBytes(ownAgreementKey);
+    }
+  }
   const recipientKey = fromBase64(
     contact.agreementPublicKey,
     "contact agreement key",
@@ -45,7 +146,88 @@ export async function createNativeOutboundSession({ crypto, pqc, identity, conta
   }
 }
 
-export async function createNativeInboundSession({ crypto, pqc, identity, contact, kemCiphertext }) {
+export async function createNativeInboundSession({
+  crypto,
+  pqc,
+  identity,
+  contact,
+  kemCiphertext,
+  prekey = null,
+  now = Date.now()
+}) {
+  assertNoDirectV4Fallback(contact);
+  if (isCertifiedNativeContact(contact)) {
+    await assertContactEndpointActive({ crypto, pqc, contact });
+    const local = identity.localInstallation;
+    const localEndpoint = identity.certifiedInstallationEndpoint;
+    const peerEndpoint = contact.preferredInstallationEndpoint;
+    if (prekey?.kind !== "signed") {
+      throw new Error("Direct-v4 bootstrap does not target the local signed prekey.");
+    }
+    const prekeyRecord = localSignedPrekeyForBootstrap({
+      pqc,
+      local,
+      prekeyId: prekey.id,
+      now
+    });
+    const prekeySecret = fromBase64(
+      prekeyRecord.privateKey,
+      "local installation signed prekey",
+      ML_KEM_SECRET_KEY_BYTES,
+      ML_KEM_SECRET_KEY_BYTES
+    );
+    let sharedSecret;
+    try {
+      sharedSecret = pqc.decapsulate(
+        fromBase64(
+          kemCiphertext,
+          "KEM ciphertext",
+          ML_KEM_CIPHERTEXT_BYTES,
+          ML_KEM_CIPHERTEXT_BYTES
+        ),
+        prekeySecret
+      );
+      const binding = await deriveNativeDirectV4Binding({ crypto, identity, contact });
+      const negotiation = await validateCurrentDirectV4Negotiation({
+        crypto,
+        identity,
+        contact,
+        binding
+      });
+      validateNegotiatedPrekeyFreshness(
+        prekeyRecord,
+        negotiation,
+        now
+      );
+      return await conversationFromSharedSecret({
+        crypto,
+        sharedSecret,
+        ownAgreementPublicKey: fromBase64(
+          local.agreement.publicKey,
+          "local installation agreement key",
+          ML_KEM_PUBLIC_KEY_BYTES,
+          ML_KEM_PUBLIC_KEY_BYTES
+        ),
+        contactAgreementPublicKey: fromBase64(
+          peerEndpoint.agreementPublicKey,
+          "contact endpoint agreement key",
+          ML_KEM_PUBLIC_KEY_BYTES,
+          ML_KEM_PUBLIC_KEY_BYTES
+        ),
+        contactFingerprint: contact.fingerprint,
+        conversationId: await directV4ConversationId({
+          crypto,
+          localEndpoint,
+          peerEndpoint,
+          binding
+        }),
+        endpointSession: directV4EndpointSession({ contact, identity, binding })
+      });
+    } finally {
+      wipeBytes(sharedSecret);
+      wipeBytes(prekeySecret);
+    }
+  }
   const ownAgreement = deserializeKeypair(identity.agreement, {
     publicKeyBytes: ML_KEM_PUBLIC_KEY_BYTES,
     secretKeyBytes: ML_KEM_SECRET_KEY_BYTES,
@@ -80,25 +262,142 @@ export async function createNativeInboundSession({ crypto, pqc, identity, contac
   }
 }
 
-export async function encryptNativeTextEnvelope({
+function localSignedPrekeyForBootstrap({ pqc, local, prekeyId, now }) {
+  const prekeys = local?.prekeys;
+  const current = prekeys?.signedPrekeyId === prekeyId
+    ? {
+        id: prekeys.signedPrekeyId,
+        publicKey: prekeys.signedPrekeyPublicKey,
+        privateKey: prekeys.signedPrekeyPrivateKey,
+        signature: prekeys.signedPrekeySignature,
+        issuedAt: prekeys.signedPrekeyIssuedAt,
+        expiresAt: prekeys.signedPrekeyExpiresAt
+      }
+    : null;
+  const record = current ?? prekeys?.retiredSignedPrekeys?.find(({ id }) => id === prekeyId);
+  const nowMs = typeof now === "number" ? now : new Date(now).getTime();
+  const issuedAtMs = Date.parse(record?.issuedAt);
+  const expiresAtMs = Date.parse(record?.expiresAt);
+  if (!record || !Number.isFinite(nowMs) || !Number.isFinite(issuedAtMs) ||
+      !Number.isFinite(expiresAtMs) || expiresAtMs <= issuedAtMs ||
+      expiresAtMs - issuedAtMs > PREKEY_MAX_AGE_MS || nowMs >= expiresAtMs ||
+      issuedAtMs > nowMs + PREKEY_FUTURE_SKEW_MS) {
+    throw new Error("Direct-v4 bootstrap targets an expired or unknown signed prekey.");
+  }
+  const signature = fromBase64(
+    record.signature,
+    "local signed prekey signature",
+    ML_DSA_SIGNATURE_BYTES,
+    ML_DSA_SIGNATURE_BYTES
+  );
+  const signingPublicKey = fromBase64(
+    local.signing.publicKey,
+    "local endpoint signing key",
+    ML_DSA_PUBLIC_KEY_BYTES,
+    ML_DSA_PUBLIC_KEY_BYTES
+  );
+  if (!pqc.verify(canonicalJsonBytes({
+    id: record.id,
+    publicKey: record.publicKey,
+    issuedAt: record.issuedAt,
+    expiresAt: record.expiresAt
+  }), signature, signingPublicKey)) {
+    throw new Error("Direct-v4 local signed prekey signature is invalid.");
+  }
+  return record;
+}
+
+export async function encryptNativeTextEnvelope(options) {
+  return encryptNativeEnvelopePayload({ ...options, content: null, relation: null });
+}
+
+// Encrypts one typed direct-v4 application event. Security-sensitive control
+// payloads intentionally use a separate closed path and are never accepted by
+// this extensible application API.
+export async function encryptNativeApplicationEnvelope(options) {
+  if (!isCertifiedNativeContact(options?.contact)) {
+    throw new Error("Typed application envelopes require certified direct-v4 endpoints.");
+  }
+  return encryptNativeEnvelopePayload({
+    ...options,
+    text: null,
+    content: validateEncodedContent(options.content),
+    relation: options.relation ?? null
+  });
+}
+
+async function encryptNativeEnvelopePayload({
   crypto,
   pqc,
   identity,
   contact,
   conversation,
   text,
+  content,
+  relation,
   kemCiphertext = null,
+  prekey = null,
+  eventId = swiftUUID(),
+  clientTransactionId = swiftUUID(),
   sentAt = swiftISODate()
 }) {
-  const ownSigning = deserializeKeypair(identity.signing, {
+  assertNoDirectV4Fallback(contact);
+  const directV4 = isCertifiedNativeContact(contact);
+  const negotiation = directV4
+    ? await validateCurrentDirectV4Negotiation({
+      crypto,
+      identity,
+      contact,
+      endpointSession: conversation.endpointSession
+    })
+    : null;
+  if (directV4) {
+    await assertContactEndpointActive({ crypto, pqc, contact });
+  }
+  const ownSigning = deserializeKeypair(
+    directV4 ? identity.localInstallation.signing : identity.signing,
+    {
     publicKeyBytes: ML_DSA_PUBLIC_KEY_BYTES,
     secretKeyBytes: ML_DSA_SECRET_KEY_BYTES,
-    label: "local signing keypair"
+    label: directV4 ? "local installation signing keypair" : "local signing keypair"
   });
   const candidateSendChain = cloneChain(conversation.sendChain);
   const prepared = await nextMessageKey(crypto, candidateSendChain);
-  const plaintext = encodePaddedText(text, (length) => crypto.randomBytes(length));
-  const aad = authenticatedData(conversation.id, conversation.sessionId);
+  const canonicalSentAt = swiftISODate(new Date(sentAt));
+  if (!directV4 && content != null) {
+    throw new Error("Typed application envelopes cannot downgrade to the legacy wire format.");
+  }
+  const applicationEvent = directV4
+    ? createConversationEvent({
+      id: eventId,
+      clientTransactionId,
+      conversationId: conversation.id,
+      authorInstallationHandle: conversation.endpointSession.localInstallationHandle,
+      createdAt: canonicalSentAt,
+      kind: "application",
+      content: content ?? createTextEncodedContent(text),
+      relation: relation ?? undefined
+    })
+    : null;
+  const plaintext = directV4
+    ? encodePaddedDirectV4Application(applicationEvent, (length) => crypto.randomBytes(length))
+    : encodePaddedText(text, (length) => crypto.randomBytes(length));
+  if (directV4) {
+    validateNegotiatedApplicationLimits({
+      event: applicationEvent,
+      paddedBytes: plaintext.byteLength,
+      negotiation
+    });
+  }
+  const authenticatedContext = directV4
+    ? makeDirectV4AuthenticatedContext({ eventId, endpointSession: conversation.endpointSession })
+    : null;
+  const aad = authenticatedData(
+    conversation.id,
+    conversation.sessionId,
+    authenticatedContext,
+    prepared.counter
+  );
   const nonce = crypto.randomBytes(12);
   try {
     const encrypted = await crypto.aesGcmEncrypt({
@@ -111,8 +410,10 @@ export async function encryptNativeTextEnvelope({
       id: swiftUUID(),
       conversationId: conversation.id,
       sessionId: conversation.sessionId,
-      senderFingerprint: identity.signingFingerprint,
-      sentAt,
+      senderFingerprint: directV4
+        ? conversation.endpointSession.localInstallationHandle.rawValue
+        : identity.signingFingerprint,
+      sentAt: canonicalSentAt,
       messageCounter: prepared.counter,
       payload: {
         nonce: base64(nonce),
@@ -121,8 +422,15 @@ export async function encryptNativeTextEnvelope({
       },
       signature: ""
     };
+    if (authenticatedContext) {
+      envelope.authenticatedContext = authenticatedContext;
+    }
     if (kemCiphertext) {
       envelope.kemCiphertext = base64(kemCiphertext);
+      const bootstrapPrekey = prekey ?? conversation.bootstrapPrekey;
+      if (directV4 && bootstrapPrekey) {
+        envelope.prekey = bootstrapPrekey;
+      }
     }
     const signature = pqc.sign(canonicalEnvelopeBytes(envelope), ownSigning.secretKey);
     if (!(signature instanceof Uint8Array) || signature.byteLength !== ML_DSA_SIGNATURE_BYTES) {
@@ -138,8 +446,13 @@ export async function encryptNativeTextEnvelope({
   }
 }
 
-export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, conversation, envelope }) {
+export async function verifyNativeEnvelope({ crypto, pqc, contact, conversation, envelope }) {
+  assertNoDirectV4Fallback(contact);
   await validateNativeEnvelope({ crypto, contact, conversation, envelope });
+  const directV4 = isCertifiedNativeContact(contact);
+  if (directV4) {
+    await assertContactEndpointActive({ crypto, pqc, contact });
+  }
   const signature = fromBase64(
     envelope.signature,
     "envelope signature",
@@ -147,8 +460,8 @@ export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, co
     ML_DSA_SIGNATURE_BYTES
   );
   const signingPublicKey = fromBase64(
-    contact.signingPublicKey,
-    "contact signing key",
+    directV4 ? contact.preferredInstallationEndpoint.signingPublicKey : contact.signingPublicKey,
+    directV4 ? "contact installation signing key" : "contact signing key",
     ML_DSA_PUBLIC_KEY_BYTES,
     ML_DSA_PUBLIC_KEY_BYTES
   );
@@ -158,8 +471,49 @@ export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, co
     signingPublicKey
   );
   if (!valid) {
-    throw new Error(`Invalid signature from ${contact.displayName}`);
+    throw new NoctweaveRemoteEnvelopeError(
+      "invalidAttribution",
+      `Invalid signature from ${contact.displayName}`
+    );
   }
+}
+
+export async function decryptNativeApplicationEnvelope(options) {
+  const decoded = await decryptNativeEnvelopePayload(options);
+  if (decoded.kind !== "application") {
+    throw new Error("Typed application decoding requires a direct-v4 envelope.");
+  }
+  return decoded;
+}
+
+// Compatibility projection for text-oriented callers. Unknown visible
+// application content becomes its authenticated fallback; silent content is
+// returned as `null` and must not create a chat bubble.
+export async function decryptNativeEnvelope(options) {
+  const decoded = await decryptNativeEnvelopePayload(options);
+  if (decoded.kind === "legacyText") {
+    return decoded.text;
+  }
+  if (decoded.projection.kind === "text") {
+    return decoded.projection.text;
+  }
+  return decoded.projection.disposition === "visible"
+    ? decoded.projection.fallbackText
+    : null;
+}
+
+async function decryptNativeEnvelopePayload({ crypto, pqc, identity, contact, conversation, envelope }) {
+  assertNoDirectV4Fallback(contact);
+  const negotiation = isCertifiedNativeContact(contact)
+    ? await validateCurrentDirectV4Negotiation({
+      crypto,
+      identity,
+      contact,
+      endpointSession: conversation.endpointSession
+    })
+    : null;
+  await verifyNativeEnvelope({ crypto, pqc, contact, conversation, envelope });
+  const directV4 = isCertifiedNativeContact(contact);
   const candidateReceiveChain = cloneChain(conversation.receiveChain);
   const key = await receiveMessageKey(crypto, candidateReceiveChain, Number(envelope.messageCounter));
   const ciphertext = concatBytes(
@@ -172,11 +526,36 @@ export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, co
       key,
       nonce: fromBase64(envelope.payload.nonce, "envelope nonce", 12, 12),
       ciphertext,
-      additionalData: authenticatedData(conversation.id, conversation.sessionId)
+      additionalData: authenticatedData(
+        conversation.id,
+        conversation.sessionId,
+        envelope.authenticatedContext ?? null,
+        Number(envelope.messageCounter)
+      )
     });
-    const text = decodePaddedText(plaintext);
+    let decoded;
+    try {
+      if (directV4) {
+        const event = decodePaddedDirectV4Application(plaintext, envelope);
+        const projection = projectDirectV4Application(event);
+        validateNegotiatedApplicationLimits({
+          event,
+          paddedBytes: plaintext.byteLength,
+          negotiation
+        });
+        decoded = { kind: "application", event, projection };
+      } else {
+        decoded = { kind: "legacyText", text: decodePaddedText(plaintext) };
+      }
+    } catch (error) {
+      throw new NoctweaveRemoteEnvelopeError(
+        "unsupportedPayload",
+        "The authenticated envelope contains an unsupported payload.",
+        { cause: error }
+      );
+    }
     commitChain(conversation.receiveChain, candidateReceiveChain);
-    return text;
+    return decoded;
   } finally {
     wipeBytes(key);
     wipeBytes(plaintext);
@@ -184,6 +563,10 @@ export async function decryptNativeEnvelope({ crypto, pqc, identity, contact, co
 }
 
 export async function verifyNativeContactOffer({ crypto, pqc, offer }) {
+  if (offer?.version === 4) {
+    await verifyCertifiedNativeContactOffer({ crypto, pqc, offer });
+    return;
+  }
   validateContactOfferStructure(offer);
   const unsigned = unsignedContactOffer(offer);
   const signingPublicKey = fromBase64(
@@ -211,6 +594,9 @@ export async function verifyNativeContactOffer({ crypto, pqc, offer }) {
 }
 
 export function makeNativeContactOffer({ pqc, identity, relayEndpoint }) {
+  if (identity?.certifiedInstallationEndpoint != null) {
+    return makeCertifiedNativeContactOffer({ pqc, identity, relayEndpoint });
+  }
   const unsigned = {
     agreementPublicKey: identity.agreement.publicKey,
     displayName: identity.displayName,
@@ -257,12 +643,36 @@ export function decodeNativeContactCode(code) {
 }
 
 export function nativeConversationKey(contact) {
+  if (isCertifiedNativeContact(contact)) {
+    const endpoint = contact.preferredInstallationEndpoint;
+    return `direct-v4:${contact.fingerprint}:${endpoint.installationId}:${endpoint.manifestEpoch}`;
+  }
   return contact.fingerprint;
+}
+
+export async function findNativeContactForEnvelope({ crypto, identity, contacts, envelope }) {
+  if (!Array.isArray(contacts)) {
+    throw new TypeError("Contacts must be an array.");
+  }
+  if (envelope?.authenticatedContext?.purpose !== "directV4") {
+    return contacts.find((contact) => contact.fingerprint === envelope?.senderFingerprint) ?? null;
+  }
+  for (const contact of contacts) {
+    if (!isCertifiedNativeContact(contact)) continue;
+    const binding = await deriveNativeDirectV4Binding({ crypto, identity, contact });
+    if (binding.peerInstallationHandle.rawValue === envelope.senderFingerprint &&
+        binding.localInstallationHandle.rawValue ===
+          envelope.authenticatedContext.directV4?.recipientInstallationHandle) {
+      return contact;
+    }
+  }
+  return null;
 }
 
 export function canonicalEnvelopeBytes(envelope) {
   const signable = {
     conversationId: envelope.conversationId,
+    id: envelope.id,
     messageCounter: envelope.messageCounter,
     payload: envelope.payload,
     senderFingerprint: envelope.senderFingerprint,
@@ -274,6 +684,20 @@ export function canonicalEnvelopeBytes(envelope) {
     }
   }
   return canonicalJsonBytes(signable);
+}
+
+export function nativeAuthenticatedDataBytes({
+  conversationId,
+  sessionId,
+  authenticatedContext = null,
+  messageCounter = 0
+}) {
+  return authenticatedData(
+    conversationId,
+    sessionId,
+    authenticatedContext,
+    messageCounter
+  );
 }
 
 function unsignedContactOffer(offer) {
@@ -303,6 +727,7 @@ async function validateNativeEnvelope({ crypto, contact, conversation, envelope 
     throw new Error("Envelope session does not match this conversation.");
   }
   if (!isBoundedString(envelope.conversationId, 256) ||
+      !isCanonicalSwiftUUID(envelope.id) ||
       !isBoundedString(envelope.sessionId, 128) ||
       !isBoundedString(envelope.senderFingerprint, 128) ||
       !isBoundedString(envelope.sentAt, 64) ||
@@ -311,15 +736,29 @@ async function validateNativeEnvelope({ crypto, contact, conversation, envelope 
       envelope.messageCounter < 0) {
     throw new Error("Envelope metadata is invalid.");
   }
-  const contactSigningKey = fromBase64(
-    contact.signingPublicKey,
-    "contact signing key",
-    ML_DSA_PUBLIC_KEY_BYTES,
-    ML_DSA_PUBLIC_KEY_BYTES
-  );
-  const expectedFingerprint = base64(await crypto.sha256(contactSigningKey));
-  if (contact.fingerprint !== expectedFingerprint || envelope.senderFingerprint !== expectedFingerprint) {
-    throw new Error("Envelope sender identity does not match the contact signing key.");
+  if (isCertifiedNativeContact(contact)) {
+    validateInboundDirectV4Context({
+      context: envelope.authenticatedContext,
+      endpointSession: conversation.endpointSession
+    });
+    if (envelope.senderFingerprint !== conversation.endpointSession.peerInstallationHandle.rawValue) {
+      throw new Error("Envelope sender does not match the pairwise installation handle.");
+    }
+    if (envelope.kemCiphertext != null &&
+        (envelope.prekey?.kind !== "signed" || !isCanonicalSwiftUUID(envelope.prekey?.id))) {
+      throw new Error("Direct-v4 bootstrap prekey reference is invalid.");
+    }
+  } else {
+    const contactSigningKey = fromBase64(
+      contact.signingPublicKey,
+      "contact signing key",
+      ML_DSA_PUBLIC_KEY_BYTES,
+      ML_DSA_PUBLIC_KEY_BYTES
+    );
+    const expectedFingerprint = base64(await crypto.sha256(contactSigningKey));
+    if (contact.fingerprint !== expectedFingerprint || envelope.senderFingerprint !== expectedFingerprint) {
+      throw new Error("Envelope sender identity does not match the contact signing key.");
+    }
   }
   const signature = fromBase64(
     envelope.signature,
@@ -363,23 +802,127 @@ async function validateNativeEnvelope({ crypto, contact, conversation, envelope 
 
 function validateContactOfferStructure(offer) {
   if (!offer || typeof offer !== "object" || Array.isArray(offer) ||
-      offer.version !== 3 ||
+      ![2, 3, 4].includes(offer.version) ||
       !isBoundedString(offer.displayName, 256) ||
       !isBoundedString(offer.inboxId, 256) ||
       !isBoundedString(offer.fingerprint, 128) ||
       !offer.relay || typeof offer.relay !== "object") {
     throw new Error("Contact offer is malformed.");
   }
+  if (offer.version === 4) {
+    if (!isCanonicalSwiftUUID(offer.identityGenerationId) ||
+        offer.installationCheckpoint == null || offer.preferredInstallationEndpoint == null) {
+      throw new Error("Certified contact offer is malformed.");
+    }
+  } else if ((offer.version === 2 && offer.inboxAccessPublicKey != null) ||
+      (offer.version === 3 && offer.inboxAccessPublicKey == null) ||
+      offer.identityGenerationId != null || offer.installationCheckpoint != null ||
+      offer.preferredInstallationEndpoint != null) {
+    throw new Error("Legacy contact offer version is inconsistent with its fields.");
+  }
   const fields = [
     [offer.fingerprint, "contact fingerprint", FINGERPRINT_BYTES],
     [offer.signingPublicKey, "contact signing key", ML_DSA_PUBLIC_KEY_BYTES],
     [offer.agreementPublicKey, "contact agreement key", ML_KEM_PUBLIC_KEY_BYTES],
-    [offer.inboxAccessPublicKey, "contact inbox access key", ML_DSA_PUBLIC_KEY_BYTES],
     [offer.signature, "contact signature", ML_DSA_SIGNATURE_BYTES]
   ];
+  if (offer.inboxAccessPublicKey != null) {
+    fields.push([offer.inboxAccessPublicKey, "contact inbox access key", ML_DSA_PUBLIC_KEY_BYTES]);
+  }
   for (const [value, label, length] of fields) {
     const decoded = fromBase64(value, label, length, length);
     wipeBytes(decoded);
+  }
+}
+
+function assertNoDirectV4Fallback(contact) {
+  const carriesDirectV4State = contact?.version === 4 ||
+    contact?.identityGenerationId != null ||
+    contact?.installationCheckpoint != null ||
+    contact?.preferredInstallationEndpoint != null;
+  if (carriesDirectV4State && !isCertifiedNativeContact(contact)) {
+    throw new Error("Certified direct-v4 endpoint capabilities are required; legacy fallback is forbidden.");
+  }
+}
+
+async function validateCurrentDirectV4Negotiation({
+  crypto,
+  identity,
+  contact,
+  binding = null,
+  endpointSession = null
+}) {
+  const localEndpoint = identity?.certifiedInstallationEndpoint;
+  const peerEndpoint = contact?.preferredInstallationEndpoint;
+  if (!localEndpoint || !peerEndpoint) {
+    throw new Error("Certified direct-v4 endpoints are required for negotiation.");
+  }
+  const negotiated = await negotiateNativeDirectV4({ crypto, localEndpoint, peerEndpoint });
+  const transcript = endpointSession ?? binding;
+  if (!transcript || transcript.cipherSuite !== negotiated.manifest.cipherSuite ||
+      transcript.negotiatedCapabilitiesDigest !== negotiated.digest) {
+    throw new Error("Direct-v4 capability transcript does not match the endpoint session.");
+  }
+  return negotiated.manifest;
+}
+
+function negotiatedLimit(negotiation, moduleName, limitName) {
+  const value = negotiation?.modules?.find(({ module }) => module === moduleName)
+    ?.limits?.[limitName];
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Direct-v4 negotiated limit ${moduleName}.${limitName} is missing.`);
+  }
+  return value;
+}
+
+function validateNegotiatedPrekeyFreshness(prekey, negotiation, now) {
+  const nowMs = typeof now === "number" ? now : new Date(now).getTime();
+  const issuedAtMs = Date.parse(prekey?.issuedAt);
+  const expiresAtMs = Date.parse(prekey?.expiresAt);
+  const maximumAgeMs = negotiatedLimit(
+    negotiation,
+    "nw.prekeys",
+    "maxPrekeyAgeSeconds"
+  ) * 1_000;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(issuedAtMs) ||
+      !Number.isFinite(expiresAtMs) || nowMs >= expiresAtMs ||
+      issuedAtMs < nowMs - maximumAgeMs || issuedAtMs > nowMs + 5 * 60_000) {
+    throw new Error("Direct-v4 signed prekey violates the negotiated freshness limit.");
+  }
+}
+
+function validateNegotiatedApplicationLimits({ event, paddedBytes, negotiation }) {
+  const content = validateEncodedContent(event.content);
+  const payload = fromBase64(
+    content.payload,
+    "direct-v4 application payload",
+    negotiatedLimit(negotiation, "nw.events", "maxContentPayloadBytes")
+  );
+  try {
+    const maxParameterBytes = negotiatedLimit(
+      negotiation,
+      "nw.events",
+      "maxContentParameterBytes"
+    );
+    if (paddedBytes > negotiatedLimit(negotiation, "nw.core", "maxCiphertextBytes") ||
+        Object.keys(content.parameters).length > negotiatedLimit(
+          negotiation,
+          "nw.events",
+          "maxContentParameters"
+        ) ||
+        (content.fallbackText != null &&
+          encoder.encode(content.fallbackText).byteLength > negotiatedLimit(
+            negotiation,
+            "nw.events",
+            "maxFallbackBytes"
+          )) ||
+        Object.entries(content.parameters).some(([key, value]) =>
+          encoder.encode(key).byteLength > maxParameterBytes ||
+          encoder.encode(value).byteLength > maxParameterBytes)) {
+      throw new Error("Direct-v4 message exceeds its negotiated capability limits.");
+    }
+  } finally {
+    wipeBytes(payload);
   }
 }
 
@@ -425,17 +968,28 @@ function isBoundedString(value, maximumBytes) {
   return typeof value === "string" && value.length > 0 && encoder.encode(value).byteLength <= maximumBytes;
 }
 
+function isCanonicalSwiftUUID(value) {
+  return typeof value === "string" &&
+    /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(value);
+}
+
 async function conversationFromSharedSecret({
   crypto,
   sharedSecret,
   ownAgreementPublicKey,
   contactAgreementPublicKey,
-  contactFingerprint
+  contactFingerprint,
+  conversationId = null,
+  endpointSession = null
 }) {
+  const directBinding = endpointSession ? directV4SessionBindingBytes(endpointSession) : null;
+  const rootInfo = directBinding
+    ? concatBytes(encoder.encode("ROOT"), directBinding)
+    : encoder.encode("ROOT");
   const rootKey = await crypto.hkdfSha256({
     ikm: sharedSecret,
     salt: "NOCTWEAVE-ROOT",
-    info: "ROOT",
+    info: rootInfo,
     length: 32
   });
   const [sendLabel, receiveLabel] = labelsForAgreement(ownAgreementPublicKey, contactAgreementPublicKey);
@@ -454,10 +1008,16 @@ async function conversationFromSharedSecret({
   let sessionMaterial;
   let sessionHash;
   try {
-    sessionMaterial = concatBytes(encoder.encode("NOCTWEAVE-SESSION"), sharedSecret);
+    sessionMaterial = directBinding
+      ? concatBytes(encoder.encode("NOCTWEAVE-SESSION"), directBinding, rootKey)
+      : concatBytes(encoder.encode("NOCTWEAVE-SESSION"), sharedSecret);
     sessionHash = await crypto.sha256(sessionMaterial);
-    return {
-      id: await conversationIdForAgreement(crypto, ownAgreementPublicKey, contactAgreementPublicKey),
+    const conversation = {
+      id: conversationId ?? await conversationIdForAgreement(
+        crypto,
+        ownAgreementPublicKey,
+        contactAgreementPublicKey
+      ),
       contactFingerprint,
       sessionId: base64(sessionHash),
       rootKey: base64(rootKey),
@@ -465,12 +1025,18 @@ async function conversationFromSharedSecret({
       sendChain: serializeChain(sendKey),
       receiveChain: serializeChain(receiveKey)
     };
+    if (endpointSession) {
+      conversation.endpointSession = endpointSession;
+    }
+    return conversation;
   } finally {
     wipeBytes(rootKey);
     wipeBytes(sendKey);
     wipeBytes(receiveKey);
     wipeBytes(sessionMaterial);
     wipeBytes(sessionHash);
+    wipeBytes(rootInfo);
+    wipeBytes(directBinding);
   }
 }
 
@@ -526,7 +1092,16 @@ async function receiveMessageKey(crypto, chain, targetCounter) {
   return prepared.key;
 }
 
-function authenticatedData(conversationId, sessionId) {
+function authenticatedData(conversationId, sessionId, context = null, messageCounter = 0) {
+  if (context?.purpose === "directV4") {
+    return canonicalJsonBytes({
+      version: 4,
+      conversationId,
+      sessionId,
+      messageCounter,
+      context
+    });
+  }
   return canonicalJsonBytes({ conversationId, sessionId, version: 1 });
 }
 
@@ -534,7 +1109,23 @@ function encodePaddedText(text, randomBytes) {
   if (typeof text !== "string") {
     throw new TypeError("Message text must be a string.");
   }
-  const bodyData = canonicalJsonBytes({ text, type: "text" });
+  return encodePaddedBody({ text, type: "text" }, NPAD_MAGIC, randomBytes);
+}
+
+function encodePaddedDirectV4Application(eventValue, randomBytes) {
+  const event = validateConversationEvent(eventValue);
+  if (event.kind !== "application") {
+    throw new TypeError("Only application events use the extensible direct-v4 codec.");
+  }
+  return encodePaddedBody({
+    version: 2,
+    kind: "application",
+    application: event
+  }, NPAD_V2_MAGIC, randomBytes);
+}
+
+function encodePaddedBody(body, magic, randomBytes) {
+  const bodyData = canonicalJsonBytes(body);
   let padding;
   try {
     const paddedSize = paddedSizeFor(bodyData.byteLength);
@@ -543,8 +1134,8 @@ function encodePaddedText(text, randomBytes) {
     }
     const paddingCount = paddedSize - NPAD_HEADER_BYTES - bodyData.byteLength;
     const output = new Uint8Array(paddedSize);
-    output.set(NPAD_MAGIC, 0);
-    output.set(uint32BE(bodyData.byteLength), NPAD_MAGIC.byteLength);
+    output.set(magic, 0);
+    output.set(uint32BE(bodyData.byteLength), magic.byteLength);
     output.set(bodyData, NPAD_HEADER_BYTES);
     if (paddingCount > 0) {
       padding = randomBytes(paddingCount);
@@ -575,6 +1166,120 @@ function decodePaddedText(data) {
     throw new Error(`Unsupported native message body: ${body.type ?? "unknown"}`);
   }
   return body.text;
+}
+
+function decodePaddedDirectV4Application(data, envelope) {
+  const body = decodePaddedBody(data, NPAD_V2_MAGIC);
+  if (body?.version !== 2 || body.kind !== "application" || body.control != null) {
+    throw new Error("Direct-v4 control and application payloads are separated.");
+  }
+  const event = validateConversationEvent(body.application);
+  const direct = envelope.authenticatedContext?.directV4;
+  if (event.id !== direct?.eventId ||
+      event.conversationId !== envelope.conversationId ||
+      event.authorInstallationHandle.rawValue !== direct.senderInstallationHandle ||
+      event.createdAt !== envelope.sentAt || event.kind !== "application") {
+    throw new Error("Direct-v4 wire payload does not match its authenticated context.");
+  }
+  return event;
+}
+
+function projectDirectV4Application(event) {
+  const canonicalType = contentTypeCanonicalName(event.content.type);
+  if (canonicalType === contentTypeCanonicalName(standardContentTypes.text)) {
+    if (event.relation != null || event.content.disposition !== "visible" ||
+        Object.keys(event.content.parameters).length !== 0) {
+      throw new Error("Known direct-v4 text content is malformed.");
+    }
+    const textBytes = fromBase64(event.content.payload, "direct-v4 text payload", MAX_PADDED_BYTES);
+    let text;
+    try {
+      text = strictUTF8Decoder.decode(textBytes);
+    } catch {
+      throw new Error("Direct-v4 text payload is not valid UTF-8.");
+    } finally {
+      wipeBytes(textBytes);
+    }
+    if (event.content.fallbackText !== text) {
+      throw new Error("Direct-v4 text fallback does not match its payload.");
+    }
+    return Object.freeze({ kind: "text", text, disposition: "visible", fallbackText: text });
+  }
+  if (canonicalType === contentTypeCanonicalName(standardContentTypes.attachment)) {
+    if (event.relation != null || event.content.disposition !== "visible" ||
+        Object.keys(event.content.parameters).length !== 0) {
+      throw new Error("Known direct-v4 attachment content is malformed.");
+    }
+    const descriptorBytes = fromBase64(
+      event.content.payload,
+      "direct-v4 attachment descriptor",
+      MAX_PADDED_BYTES
+    );
+    let descriptor;
+    try {
+      descriptor = validateNativeAttachmentDescriptor(
+        JSON.parse(strictUTF8Decoder.decode(descriptorBytes))
+      );
+    } finally {
+      wipeBytes(descriptorBytes);
+    }
+    const fallbackText = attachmentFallbackText(descriptor);
+    if (event.content.fallbackText !== fallbackText) {
+      throw new Error("Direct-v4 attachment fallback does not match its descriptor.");
+    }
+    return Object.freeze({
+      kind: "attachment",
+      descriptor,
+      disposition: "visible",
+      fallbackText
+    });
+  }
+  return Object.freeze({
+    kind: "unsupported",
+    type: event.content.type,
+    disposition: event.content.disposition,
+    fallbackText: event.content.fallbackText ?? `Unsupported message (${canonicalType})`
+  });
+}
+
+function validateNativeAttachmentDescriptor(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.fileName != null ||
+      !isCanonicalSwiftUUID(value.id) || typeof value.mimeType !== "string" ||
+      value.mimeType.length === 0 || encoder.encode(value.mimeType).byteLength > 128 ||
+      !/^[\x20-\x3a\x3c-\x7e]+$/u.test(value.mimeType) ||
+      !Number.isSafeInteger(value.byteCount) || value.byteCount <= 0 ||
+      value.byteCount > 8 * 1024 * 1024 || !Number.isSafeInteger(value.chunkSize) ||
+      value.chunkSize <= 0 || value.chunkSize > 64 * 1024 ||
+      !Number.isSafeInteger(value.chunkCount) || value.chunkCount <= 0 || value.chunkCount > 128 ||
+      Math.ceil(value.byteCount / value.chunkSize) !== value.chunkCount ||
+      (value.relayTTLSeconds != null &&
+        (!Number.isSafeInteger(value.relayTTLSeconds) || value.relayTTLSeconds <= 0))) {
+    throw new Error("Direct-v4 attachment descriptor is invalid.");
+  }
+  const digest = fromBase64(value.sha256, "attachment SHA-256", 32, 32);
+  wipeBytes(digest);
+  return Object.freeze({ ...value });
+}
+
+function attachmentFallbackText(descriptor) {
+  const mimeType = descriptor.mimeType.toLowerCase();
+  if (mimeType.startsWith("audio/")) return "Voice message";
+  if (mimeType.startsWith("image/")) return "Image";
+  return "Attachment";
+}
+
+function decodePaddedBody(data, magic) {
+  if (!(data instanceof Uint8Array) || data.byteLength < MIN_PADDED_BYTES ||
+      data.byteLength > MAX_PADDED_BYTES || (data.byteLength & (data.byteLength - 1)) !== 0 ||
+      !startsWith(data, magic)) {
+    throw new Error("Message padding frame is invalid.");
+  }
+  const length = readUint32BE(data.subarray(magic.byteLength, NPAD_HEADER_BYTES));
+  if (length <= 0 || length > data.byteLength - NPAD_HEADER_BYTES ||
+      paddedSizeFor(length) !== data.byteLength) {
+    throw new Error("Message padding frame length is invalid.");
+  }
+  return JSON.parse(decoder.decode(data.subarray(NPAD_HEADER_BYTES, NPAD_HEADER_BYTES + length)));
 }
 
 async function conversationIdForAgreement(crypto, ourKey, theirKey) {

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NoctweaveRelayClient,
+  NoctweaveWebClient,
+  MemoryNoctweaveStore,
+  base64,
   normalizeRelayClientPolicy,
   relayClientPolicyLimits,
   relayRequests
@@ -54,6 +57,147 @@ test("relay client supports raw request helpers", async () => {
 
   assert.equal(response.type, "messages");
   assert.deepEqual(response.messages, []);
+});
+
+test("relay client exposes authenticated inbox retirement", async () => {
+  const calls = [];
+  const publicSigningKey = base64(new Uint8Array(1_952).fill(0x5a));
+  const request = {
+    inboxId: testInboxId,
+    accessProof: actorProof(publicSigningKey, 0x5b)
+  };
+  const fetch = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ type: "ok" }));
+  };
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+
+  assert.deepEqual(await client.retireInbox(request), { type: "ok" });
+  assert.deepEqual(calls, [{ type: "retireInbox", retireInbox: request }]);
+});
+
+test("relay client exposes validated mailbox-v2 consumer methods", async () => {
+  const calls = [];
+  const consumerId = base64(new Uint8Array(32).fill(0x61));
+  const publicSigningKey = base64(new Uint8Array(1_952).fill(0x62));
+  const proof = actorProof(publicSigningKey, 0x63);
+  const fetch = async (_url, init) => {
+    const request = JSON.parse(init.body);
+    calls.push(request);
+    if (["registerMailboxConsumer", "commitMailboxCursor", "revokeMailboxConsumer"].includes(request.type)) {
+      const revoked = request.type === "revokeMailboxConsumer";
+      return new Response(JSON.stringify({
+        type: "mailboxConsumer",
+        mailboxConsumer: {
+          consumerId,
+          consumerSigningPublicKey: publicSigningKey,
+          state: revoked ? "revoked" : "active",
+          committedSequence: request.commitMailboxCursor?.sequence ?? 0,
+          registeredAt: "2026-07-16T12:34:56Z",
+          ...(revoked ? { revokedAt: "2026-07-16T12:35:00Z" } : {})
+        }
+      }));
+    }
+    return new Response(JSON.stringify({
+      type: "mailboxSync",
+      mailboxSync: {
+        events: [],
+        nextCursor: "opaque:0",
+        nextSequence: 0,
+        highWatermark: 0,
+        retentionFloor: 0,
+        hasMore: false
+      }
+    }));
+  };
+  const client = new NoctweaveRelayClient("https://relay.example", { fetch });
+  const registration = {
+    inboxId: testInboxId,
+    consumerId,
+    consumerSigningPublicKey: publicSigningKey,
+    authorityProof: proof,
+    consumerProof: proof
+  };
+
+  assert.equal((await client.registerMailboxConsumer(registration)).mailboxConsumer.state, "active");
+  const synced = await client.syncMailbox({
+    inboxId: testInboxId,
+    consumerId,
+    maxCount: 100,
+    consumerProof: proof
+  });
+  assert.equal(synced.mailboxSync.nextSequence, 0);
+  await client.commitMailboxCursor({
+    inboxId: testInboxId,
+    consumerId,
+    cursor: synced.mailboxSync.nextCursor,
+    sequence: 0,
+    consumerProof: proof
+  });
+  await client.revokeMailboxConsumer({
+    inboxId: testInboxId,
+    consumerId,
+    authorityProof: proof
+  });
+  assert.deepEqual(calls.map(({ type }) => type), [
+    "registerMailboxConsumer",
+    "syncMailbox",
+    "commitMailboxCursor",
+    "revokeMailboxConsumer"
+  ]);
+});
+
+test("web client cannot silently return to legacy fetch after a v2 binding", async () => {
+  const consumerId = base64(new Uint8Array(32).fill(0x71));
+  const publicSigningKey = base64(new Uint8Array(1_952).fill(0x72));
+  const proof = actorProof(publicSigningKey, 0x73);
+  const fetch = async () => new Response(JSON.stringify({
+    type: "mailboxConsumer",
+    mailboxConsumer: {
+      consumerId,
+      consumerSigningPublicKey: publicSigningKey,
+      state: "active",
+      committedSequence: 0,
+      registeredAt: "2026-07-16T12:34:56Z"
+    }
+  }));
+  const store = new MemoryNoctweaveStore();
+  const web = new NoctweaveWebClient({
+    relay: "https://relay.example",
+    store,
+    fetch
+  });
+  await web.registerMailboxConsumer({
+    inboxId: testInboxId,
+    consumerId,
+    consumerSigningPublicKey: publicSigningKey,
+    authorityProof: proof,
+    consumerProof: proof
+  });
+
+  await assert.rejects(
+    () => web.fetchInbox({ inboxId: testInboxId, maxCount: 1 }),
+    /Legacy fetch is disabled/
+  );
+  await assert.rejects(
+    () => web.acknowledgeInbox({ inboxId: testInboxId, messageIds: [] }),
+    /Legacy acknowledgement is disabled/
+  );
+  await web.saveState({
+    identity: {
+      inboxId: testInboxId,
+      localInstallation: { mailboxRoutes: { home: { mode: "v2" } } }
+    }
+  });
+  const restarted = new NoctweaveWebClient({
+    relay: "https://relay.example",
+    store,
+    fetch
+  });
+  await assert.rejects(
+    () => restarted.fetchInbox({ inboxId: testInboxId, maxCount: 1 }),
+    /Legacy fetch is disabled/
+  );
 });
 
 test("tcp endpoint fails explicitly in web client", async () => {
@@ -202,3 +346,15 @@ test("relay policy cannot exceed absolute allocation ceilings", () => {
   );
   assert.throws(() => normalizeRelayClientPolicy({ defaultTCPPort: 0 }), /default TCP port/);
 });
+
+const testInboxId = "noctweave1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpskx0f2v";
+
+function actorProof(publicSigningKey, signatureSeed) {
+  return {
+    fingerprint: base64(new Uint8Array(32).fill(0x64)),
+    publicSigningKey,
+    signedAt: "2026-07-16T12:34:56Z",
+    nonce: "11111111-1111-4111-8111-111111111111",
+    signature: base64(new Uint8Array(3_309).fill(signatureSeed))
+  };
+}

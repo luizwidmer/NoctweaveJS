@@ -25,9 +25,9 @@
         <div class="promiseGrid">
           <article><strong>Post-quantum</strong><span>ML-DSA-65 identity and ML-KEM-768 session setup.</span></article>
           <article><strong>Independent</strong><span>Connect to an operator-run relay; no Noctweave account is required.</span></article>
-          <article><strong>Portable</strong><span>Export an encrypted profile backup whenever you choose.</span></article>
+          <article><strong>Ephemeral</strong><span>No account or cross-generation device identity exists; this endpoint ends with its current identity generation.</span></article>
         </div>
-        <div class="runtimeNotice" data-runtime-only="browser"><strong>Browser boundary</strong><span>Extensions, injected scripts, or a compromised browser profile can observe data while this client is unlocked. Clearing site data deletes the local profile unless you export a backup.</span></div>
+        <div class="runtimeNotice" data-runtime-only="browser"><strong>Browser boundary</strong><span>Extensions, injected scripts, or a compromised browser profile can observe data while this client is unlocked. Clearing site data permanently deletes this local endpoint and its history.</span></div>
         <div class="runtimeNotice" data-runtime-only="desktop"><strong>Desktop boundary</strong><span>The desktop package is isolated from browser extensions, but it cannot defend against a compromised operating-system account or modified application. Install only builds from a source you trust.</span></div>
         <label class="consent"><input id="acceptNotice" type="checkbox"> <span id="runtimeSecurityNotice"><span data-runtime-only="browser">I understand the browser security and storage boundaries above.</span><span data-runtime-only="desktop">I understand the desktop application and operating-system boundaries above.</span></span></label>
         <button class="primary next" data-next="storage" disabled>Continue</button>
@@ -49,8 +49,8 @@
           <div><label for="storagePassphrase">Profile passphrase</label><input id="storagePassphrase" type="password" autocomplete="new-password" maxlength="1024"></div>
           <div><label for="storageConfirmation">Repeat passphrase</label><input id="storageConfirmation" type="password" autocomplete="new-password" maxlength="1024"></div>
         </div>
-        <div class="callout" data-runtime-only="browser"><strong>Encrypted browser storage</strong><span>AES-256-GCM protects the profile. Clearing site data permanently deletes it unless you export a backup.</span></div>
-        <div class="callout" data-runtime-only="desktop"><strong>Encrypted application storage</strong><span>AES-256-GCM protects the profile inside the app's WebView data container. Removing application data permanently deletes it unless you export a backup.</span></div>
+        <div class="callout" data-runtime-only="browser"><strong>Encrypted browser storage</strong><span>AES-256-GCM protects the profile. Clearing site data permanently deletes the live identity state. No live-key backup is created.</span></div>
+        <div class="callout" data-runtime-only="desktop"><strong>Encrypted application storage</strong><span>AES-256-GCM protects the profile inside the app's WebView data container. Removing application data permanently deletes the live identity state. No live-key backup is created.</span></div>
         <button id="createStorage" class="primary">Create encrypted profile</button>
       </section>
 
@@ -121,7 +121,7 @@
           </div>
           <div class="sectionCard addContactCard" id="addContactCard" hidden>
             <div class="cardHeader"><div><span class="eyebrow">Pairing</span><h3>Import contact code</h3></div><button id="hideAddContact" class="iconButton" aria-label="Close">×</button></div>
-            <p class="muted">Codes contain public identity, inbox, and relay details. Their ML-DSA signature is verified before the contact is saved.</p>
+            <p class="muted">Codes contain public identity, endpoint, inbox, and relay details. Their ML-DSA signature is verified before the contact is saved. Reusing one code lets its recipients correlate the same identity generation; it is not a one-time unlinkable rendezvous.</p>
             <label for="contactAlias">Local alias <span class="optional">optional</span></label><input id="contactAlias" maxlength="128" placeholder="How this contact appears to you">
             <label for="importContactCode">Signed contact code</label><textarea id="importContactCode" rows="7" spellcheck="false" placeholder="Paste contact code"></textarea>
             <div class="actionRow"><button id="importContact" class="primary">Verify and Add</button><label class="buttonLabel">Choose Contact File<input id="contactFile" type="file" accept=".txt,.noctweave-contact"></label></div>
@@ -130,7 +130,7 @@
       </section>
 
       <section class="view" data-view-panel="code">
-        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Pairing</span><h3>Your signed contact code</h3></div></div><p class="muted">Share this public code with a contact. Private keys never leave the encrypted profile.</p><div class="hiddenCode" id="contactCode">Contact code hidden</div><div class="actionRow"><button id="revealCode">Reveal</button><button id="copyCode" class="primary">Copy Code</button><button id="downloadCode">Download</button></div></div>
+        <div class="sectionCard narrow"><div class="cardHeader"><div><span class="eyebrow">Pairing</span><h3>Your signed contact code</h3></div></div><p class="muted">Share this public code only with intended contacts. Reusing it exposes the same identity generation and relay details to every recipient, so recipients can correlate it. Private keys never leave the encrypted profile.</p><div class="hiddenCode" id="contactCode">Contact code hidden</div><div class="actionRow"><button id="revealCode">Reveal</button><button id="copyCode" class="primary">Copy Code</button><button id="downloadCode">Download</button></div></div>
       </section>
 
       <section class="view" data-view-panel="relays">
@@ -140,22 +140,21 @@
 
       <section class="view" data-view-panel="identity">
         <div class="identityHero"><div class="identityGlyph">◇</div><div><span class="eyebrow">Active identity</span><h3 id="identityName"></h3><p id="identityInbox"></p></div><span class="badge good">Active</span></div>
-        <div class="metricGrid"><article><span>Signing fingerprint</span><strong id="identityFingerprint"></strong></article><article><span>Home relay</span><strong id="identityRelay"></strong></article><article><span>Cryptography</span><strong>ML-DSA-65 + ML-KEM-768</strong></article></div>
-        <div class="sectionCard"><span class="eyebrow">Security boundary</span><h3>What this identity protects</h3><p class="muted">The signing key authenticates your contact code and envelopes. ML-KEM establishes session roots. The inbox-access key authorizes fetch and acknowledgement without exposing message plaintext to the relay.</p></div>
+        <div class="metricGrid"><article><span>Signing fingerprint</span><strong id="identityFingerprint"></strong></article><article><span>Current relay route</span><strong id="identityRelay"></strong></article><article><span>Cryptography</span><strong>ML-DSA-65 + ML-KEM-768</strong></article></div>
+        <div class="sectionCard"><span class="eyebrow">Security boundary</span><h3>What this identity protects</h3><p class="muted">The identity-generation key authenticates contact material. Endpoint keys authenticate encrypted sessions. A separate key for each relay/inbox route authorizes ordered sync and cursor commits; the inbox-access key is limited to route registration, removal, and full inbox retirement.</p></div>
       </section>
 
       <section class="view" data-view-panel="settings">
         <div class="settingsGrid">
           <div class="sectionCard"><div class="cardHeader"><div><span class="eyebrow">Delivery</span><h3>Message sync</h3></div><label class="switch"><input id="autoFetch" type="checkbox"><span></span></label></div><p class="muted">Fetch encrypted inbox items every few seconds while this page is open and visible.</p><dl class="details"><dt>Last sync</dt><dd id="lastSync">Never</dd><dt>Stored messages</dt><dd id="storedMessages">0</dd></dl></div>
-          <div class="sectionCard"><span class="eyebrow">Portability</span><h3>Encrypted profile backup</h3><p class="muted">The exported file includes private keys, contacts, ratchet state, and local history. It is encrypted with a separate passphrase.</p><div class="actionRow"><button id="exportProfile">Export</button><label class="buttonLabel">Import<input id="importProfile" type="file" accept=".json,.noctweave"></label></div></div>
-          <div class="sectionCard"><span class="eyebrow">Runtime</span><h3><span data-runtime-only="browser">Browser security boundary</span><span data-runtime-only="desktop">Desktop security boundary</span></h3><p class="muted" data-runtime-only="browser">The encrypted profile limits storage exposure, but unlocked data remains visible to the browser process. Audit extensions, keep the browser updated, and export a backup before clearing site data.</p><p class="muted" data-runtime-only="desktop">The system WebView avoids browser extensions and HTTP relay requests use a bounded native bridge. The app still trusts your operating-system account, the installed binary, and the platform WebView.</p><div class="runtimeWarning" data-runtime-only="browser"><strong>Warning</strong><span>A compromised extension, browser, JavaScript dependency, or OS can access plaintext while unlocked.</span></div><div class="runtimeWarning" data-runtime-only="desktop"><strong>Warning</strong><span>A compromised OS account or modified/unsigned build can access plaintext while unlocked. Verify release signatures before installation.</span></div></div>
-          <div class="sectionCard"><span class="eyebrow">Session</span><h3>Local profile</h3><button id="lockClient" class="wide">Lock NoctweaveJS</button><button id="resetClient" class="wide dangerButton">Reset local installation</button><p class="muted" data-runtime-only="browser">Reset permanently removes private keys and local history from this browser profile.</p><p class="muted" data-runtime-only="desktop">Reset permanently removes private keys and local history from this desktop application profile.</p></div>
+          <div class="sectionCard"><span class="eyebrow">Portability</span><h3>History, not live keys</h3><p class="muted">Live identity keys, ratchets, routes, and cursors are never exported or cloned. A future archive flow may transfer an inert, read-only history projection without authorizing another endpoint.</p></div>
+          <div class="sectionCard"><span class="eyebrow">Runtime</span><h3><span data-runtime-only="browser">Browser security boundary</span><span data-runtime-only="desktop">Desktop security boundary</span></h3><p class="muted" data-runtime-only="browser">Encrypted local storage limits at-rest exposure, but unlocked data remains visible to the browser process. Audit extensions and keep the browser updated.</p><p class="muted" data-runtime-only="desktop">The system WebView avoids browser extensions and HTTP relay requests use a bounded native bridge. The app still trusts your operating-system account, the installed binary, and the platform WebView.</p><div class="runtimeWarning" data-runtime-only="browser"><strong>Warning</strong><span>A compromised extension, browser, JavaScript dependency, or OS can access plaintext while unlocked.</span></div><div class="runtimeWarning" data-runtime-only="desktop"><strong>Warning</strong><span>A compromised OS account or modified/unsigned build can access plaintext while unlocked. Verify release signatures before installation.</span></div></div>
+          <div class="sectionCard"><span class="eyebrow">Identity lifecycle</span><h3>Current generation</h3><button id="lockClient" class="wide">Lock NoctweaveJS</button><button id="resetClient" class="wide dangerButton">Retire and delete identity generation</button><p class="muted">This retires every known inbox route and deletes the current generation's private state. It does not create or link a replacement identity.</p></div>
         </div>
       </section>
     </section>
   </main>
 
-  <dialog id="secretDialog"><form method="dialog" id="secretForm"><span class="eyebrow">Encrypted backup</span><h3 id="secretTitle">Profile passphrase</h3><p id="secretDescription" class="muted"></p><label for="secretPassphrase">Passphrase</label><input id="secretPassphrase" type="password" maxlength="1024"><div id="secretConfirmationRow"><label for="secretConfirmation">Repeat passphrase</label><input id="secretConfirmation" type="password" maxlength="1024"></div><p class="setupError" id="secretError"></p><div class="actionRow"><button value="cancel" id="secretCancel">Cancel</button><button value="default" class="primary" id="secretSubmit">Continue</button></div></form></dialog>
   <div class="toast" id="toast" hidden></div>
   <script type="module" src="./index.js"></script>
 </body>

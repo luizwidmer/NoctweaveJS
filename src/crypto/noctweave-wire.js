@@ -3,6 +3,7 @@ import { canonicalJsonBytes } from "./swift-canonical.js";
 export function envelopeSignablePayload(envelope) {
   const signable = {
     conversationId: envelope.conversationId,
+    id: envelope.id,
     messageCounter: envelope.messageCounter,
     payload: envelope.payload,
     senderFingerprint: envelope.senderFingerprint,

@@ -62,15 +62,9 @@
           <div class="buttonRow">
             <button id="createIdentity">Create Inbox</button>
             <button id="lockProfile" class="subtle">Lock</button>
-            <button id="resetProfile" class="subtle danger">Reset</button>
+            <button id="resetProfile" class="subtle danger">Reset Empty Profile</button>
           </div>
-          <div class="buttonRow">
-            <button id="exportProfile" class="subtle">Export</button>
-            <label class="fileButton">
-              Import
-              <input id="importProfile" type="file" accept="application/json">
-            </label>
-          </div>
+          <p class="info">Live endpoint keys, ratchets, routes, and cursors cannot be exported or cloned.</p>
         </section>
 
         <section class="panel compact">
@@ -102,6 +96,7 @@
             <button id="toggleCode" class="iconButton" type="button" aria-label="Reveal contact code">Show</button>
           </div>
           <textarea id="contactCode" rows="5" readonly placeholder="Create an inbox first."></textarea>
+          <p class="info">This reusable compatibility code exposes the same identity generation, endpoint authorization, inbox, and relay details to each recipient. It is not a one-time unlinkable rendezvous.</p>
           <div class="buttonRow">
             <button id="copyCode">Copy Code</button>
           </div>
@@ -172,24 +167,6 @@
     </section>
   </main>
 
-  <dialog id="secretDialog" class="secretDialog">
-    <form id="secretForm" method="dialog">
-      <p class="eyebrow">Encrypted transfer</p>
-      <h2 id="secretTitle">Protect profile</h2>
-      <p id="secretDescription" class="dialogDescription"></p>
-      <label for="secretPassphrase">Passphrase</label>
-      <input id="secretPassphrase" type="password" autocomplete="new-password" maxlength="1024">
-      <div id="secretConfirmationRow">
-        <label for="secretConfirmation">Repeat passphrase</label>
-        <input id="secretConfirmation" type="password" autocomplete="new-password" maxlength="1024">
-      </div>
-      <p id="secretError" class="vaultError" role="alert"></p>
-      <div class="dialogActions">
-        <button id="secretCancel" type="button" class="subtle">Cancel</button>
-        <button id="secretContinue" type="submit">Continue</button>
-      </div>
-    </form>
-  </dialog>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

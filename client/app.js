@@ -3,26 +3,35 @@ import {
   BrowserLocalStorageStore,
   EncryptedNoctweaveStore,
   NoctweaveBrowserIdentityService,
+  NoctweaveRemoteEnvelopeError,
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
   NoctweaveStateRepository,
   WebCryptoPrimitives,
   base64,
   canonicalJsonBytes,
+  browserMailboxRouteKey,
+  buildCommitMailboxCursorRequest,
+  buildRetireInboxRequest,
+  buildSyncMailboxRequest,
+  contactFromNativeOffer,
   createNativeInboundSession,
   createNativeOutboundSession,
   decodeNativeContactCode,
+  decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
-  decryptPortableProfile,
   encodeNativeContactCode,
   encryptNativeTextEnvelope,
-  encryptPortableProfile,
+  findNativeContactForEnvelope,
   nativeConversationKey,
   parseBrowserRelayEndpoint,
   relayRequests,
   swiftISODate,
   swiftUUID,
-  verifyNativeContactOffer
+  validateMailboxSyncContinuity,
+  validateRetireInboxRequest,
+  verifyNativeContactOffer,
+  verifyNativeEnvelope
 } from "../src/index.js";
 
 const profileName = new URL(location.href).searchParams.get("profile") || "default";
@@ -31,7 +40,6 @@ const saltStorageKey = `${namespace}:salt`;
 const encryptedStorageKey = `${namespace}:vault:profile`;
 const stateKey = "profile";
 const steps = ["welcome", "storage", "relay", "identity"];
-const maximumProfileFileBytes = 2 * 1024 * 1024;
 const autoFetchIntervalMs = 5_000;
 
 const runtime = {
@@ -46,8 +54,7 @@ const runtime = {
   codeVisible: false,
   autoFetchTimer: null,
   syncing: false,
-  sendingContacts: new Set(),
-  pendingSecret: null
+  sendingContacts: new Set()
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -65,9 +72,7 @@ const elements = {
   contactSearch: $("#contactSearch"), contactList: $("#contactList"), noContacts: $("#noContacts"), addContactCard: $("#addContactCard"),
   contactAlias: $("#contactAlias"), importContactCode: $("#importContactCode"), relayList: $("#relayList"), addRelayCard: $("#addRelayCard"),
   newRelayAddress: $("#newRelayAddress"), newRelayPassword: $("#newRelayPassword"), autoFetch: $("#autoFetch"),
-  lastSync: $("#lastSync"), storedMessages: $("#storedMessages"), secretDialog: $("#secretDialog"), secretForm: $("#secretForm"),
-  secretTitle: $("#secretTitle"), secretDescription: $("#secretDescription"), secretPassphrase: $("#secretPassphrase"),
-  secretConfirmation: $("#secretConfirmation"), secretConfirmationRow: $("#secretConfirmationRow"), secretError: $("#secretError")
+  lastSync: $("#lastSync"), storedMessages: $("#storedMessages")
 };
 
 bindEvents();
@@ -80,11 +85,11 @@ function bindEvents() {
   $("[data-step='welcome'] .next").addEventListener("click", () => showStep("storage"));
   $("#createStorage").addEventListener("click", () => run("Creating encrypted profile", createEncryptedProfile));
   $("#unlockProfile").addEventListener("click", () => run("Unlocking profile", unlockProfile));
-  $("#resetLockedProfile").addEventListener("click", resetInstallation);
+  $("#resetLockedProfile").addEventListener("click", resetLockedProfile);
   $("#verifyRelay").addEventListener("click", () => run("Verifying relay", verifyRelay));
   $("#createIdentity").addEventListener("click", () => run("Creating post-quantum identity", createIdentity));
   $("#lockClient").addEventListener("click", lockClient);
-  $("#resetClient").addEventListener("click", resetInstallation);
+  $("#resetClient").addEventListener("click", () => run("Retiring old inbox routes", retireAndDeleteIdentity));
   $("#syncNow").addEventListener("click", () => run("Fetching messages", syncMessages));
   $("#revealCode").addEventListener("click", toggleCode);
   $("#copyCode").addEventListener("click", copyCode);
@@ -98,8 +103,6 @@ function bindEvents() {
   $("#addRelay").addEventListener("click", () => run("Checking relay", addRelay));
   $("#clearConversation").addEventListener("click", clearConversation);
   $("#closeMobileChat").addEventListener("click", closeMobileChat);
-  $("#exportProfile").addEventListener("click", () => run("Exporting encrypted profile", exportProfile));
-  $("#importProfile").addEventListener("change", () => run("Importing encrypted profile", importProfile));
   elements.autoFetch.addEventListener("change", updateAutoFetch);
   elements.chatSearch.addEventListener("input", renderConversationList);
   elements.contactSearch.addEventListener("input", renderContacts);
@@ -119,9 +122,6 @@ function bindEvents() {
   elements.unlockPassphrase.addEventListener("keydown", (event) => {
     if (event.key === "Enter") run("Unlocking profile", unlockProfile);
   });
-  elements.secretForm.addEventListener("submit", submitSecretDialog);
-  $("#secretCancel").addEventListener("click", cancelSecretDialog);
-  elements.secretDialog.addEventListener("cancel", (event) => { event.preventDefault(); cancelSecretDialog(); });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && runtime.profile?.identity) run("Fetching messages", syncMessages, { quiet: true });
   });
@@ -200,6 +200,30 @@ async function unlockProfile() {
     try { profile = await repository.load(); } catch { throw new Error("The profile could not be unlocked. Check the passphrase."); }
     profile = migrateProfile(profile);
     validateProfile(profile);
+    if (profile.identityDeletionPending) {
+      if (profile.pendingInboxRetirements.length > 0) {
+        await resumePendingInboxRetirements(profile, repository);
+      }
+      await finishLocalReset(repository);
+      notify("Old inbox routes retired; local identity state deleted");
+      return;
+    }
+    for (const message of profile.messages) {
+      if (message.direction === "out" && message.status === "sending" && message.envelope) {
+        message.status = "failed";
+      }
+    }
+    if (profile.identity && profile.relay?.address) {
+      profile.identity = await runtime.identityService.migrateAndRegisterIdentity({
+        identity: profile.identity,
+        relay: profile.relay.address,
+        authToken: profile.relay.authToken,
+        persist: async (identity) => {
+          profile.identity = identity;
+          await repository.save(profile);
+        }
+      });
+    }
     runtime.repository = repository;
     runtime.profile = profile;
     await saveProfile();
@@ -217,7 +241,8 @@ function makeRepository(passphrase, salt) {
 function newProfileState() {
   return {
     version: 2, onboardingComplete: false, identity: null, relay: null, relays: [], contacts: [],
-    conversations: {}, messages: [], seenEnvelopeIds: [], selectedContactFingerprint: "",
+    conversations: {}, messages: [], seenEnvelopeIds: [], seenEnvelopeReceipts: {}, selectedContactFingerprint: "",
+    quarantinedTransportEnvelopes: [], pendingInboxRetirements: [], identityDeletionPending: false,
     settings: { autoFetch: true }, lastSyncAt: null
   };
 }
@@ -234,7 +259,16 @@ function migrateProfile(profile) {
       preferred: relay?.id === relayId(item.address)
     }));
     if (relay && !relays.some((item) => item.id === relay.id)) relays.unshift(relay);
-    return { ...newProfileState(), ...profile, relay, relays, settings: { autoFetch: true, ...(profile.settings ?? {}) } };
+    return {
+      ...newProfileState(), ...profile, relay, relays,
+      messages: migrateMessages(profile.messages),
+      seenEnvelopeReceipts: migrateEnvelopeReceipts(profile.seenEnvelopeReceipts ?? {}),
+      quarantinedTransportEnvelopes: profile.quarantinedTransportEnvelopes ?? [],
+      pendingInboxRetirements: profile.pendingInboxRetirements ?? [],
+      identityDeletionPending: profile.identityDeletionPending === true ||
+        (profile.pendingInboxRetirements?.length ?? 0) > 0,
+      settings: { autoFetch: true, ...(profile.settings ?? {}) }
+    };
   }
   if (profile.version !== 1) throw new Error("The encrypted browser profile has an unsupported format.");
   const homeRelay = profile.relay?.address
@@ -242,18 +276,128 @@ function migrateProfile(profile) {
     : null;
   return {
     ...newProfileState(), ...profile, version: 2, relay: homeRelay,
+    messages: migrateMessages(profile.messages),
     relays: homeRelay ? [homeRelay] : [],
-    seenEnvelopeIds: [], settings: { autoFetch: true }, lastSyncAt: null
+    seenEnvelopeIds: [], seenEnvelopeReceipts: {}, quarantinedTransportEnvelopes: [],
+    pendingInboxRetirements: [], identityDeletionPending: false,
+    settings: { autoFetch: true }, lastSyncAt: null
   };
+}
+
+function migrateMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((message) => {
+    if (message?.direction !== "out" || !message.envelope || typeof message.envelope !== "object") {
+      return message;
+    }
+    const envelopeId = message.envelope.id ?? message.envelopeId;
+    const eventId = message.envelope.authenticatedContext?.directV4?.eventId ?? message.id ?? envelopeId;
+    return {
+      ...message,
+      id: eventId,
+      envelopeId,
+      clientTransactionId: message.clientTransactionId ?? eventId,
+      status: message.status ?? "failed"
+    };
+  });
+}
+
+function envelopeReceiptKey(sourceScope, logicalId) {
+  return `${sourceScope}|${logicalId}`;
+}
+
+function migrateEnvelopeReceipts(receipts) {
+  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) return receipts;
+  return Object.fromEntries(Object.entries(receipts).map(([key, receipt]) => {
+    if (receipt?.sourceScope != null && receipt?.logicalId != null) return [key, receipt];
+    return [key, { ...receipt, sourceScope: null, logicalId: key }];
+  }));
 }
 
 function validateProfile(profile) {
   if (!profile || profile.version !== 2 || !Array.isArray(profile.contacts) || !Array.isArray(profile.messages) ||
-      !Array.isArray(profile.relays) || !Array.isArray(profile.seenEnvelopeIds) || !profile.conversations || typeof profile.conversations !== "object") {
+      !Array.isArray(profile.relays) || !Array.isArray(profile.seenEnvelopeIds) ||
+      !Array.isArray(profile.quarantinedTransportEnvelopes) ||
+      !Array.isArray(profile.pendingInboxRetirements) ||
+      typeof profile.identityDeletionPending !== "boolean" ||
+      !profile.seenEnvelopeReceipts || typeof profile.seenEnvelopeReceipts !== "object" ||
+      Array.isArray(profile.seenEnvelopeReceipts) || !profile.conversations || typeof profile.conversations !== "object") {
     throw new Error("The encrypted browser profile has an unsupported format.");
   }
-  if (profile.contacts.length > 512 || profile.messages.length > 20_000 || profile.relays.length > 32 || profile.seenEnvelopeIds.length > 40_000) {
+  if (profile.contacts.length > 512 || profile.messages.length > 20_000 || profile.relays.length > 32 ||
+      profile.seenEnvelopeIds.length > 40_000 || Object.keys(profile.seenEnvelopeReceipts).length > 40_000 ||
+      profile.quarantinedTransportEnvelopes.length > 512 || profile.pendingInboxRetirements.length > 32) {
     throw new Error("The encrypted browser profile exceeds supported collection limits.");
+  }
+  const messageIds = new Set();
+  for (const message of profile.messages) {
+    const scopedMessageId = `${message?.contactFingerprint ?? ""}|${message?.direction ?? ""}|${message?.id ?? ""}`;
+    if (!message || typeof message !== "object" || Array.isArray(message) ||
+        typeof message.id !== "string" || message.id.length < 1 || message.id.length > 160 ||
+        messageIds.has(scopedMessageId) || typeof message.contactFingerprint !== "string" ||
+        message.contactFingerprint.length < 1 || message.contactFingerprint.length > 160 ||
+        typeof message.text !== "string" || message.text.length > 32_768 ||
+        !Number.isFinite(Date.parse(message.sentAt)) ||
+        !["in", "out"].includes(message.direction) ||
+        (message.direction === "out" && message.status != null &&
+          !["sending", "sent", "failed"].includes(message.status))) {
+      throw new Error("The encrypted browser profile contains an invalid message record.");
+    }
+    if (message.envelope != null) {
+      if (message.direction !== "out" || !message.envelope ||
+          typeof message.envelope !== "object" || Array.isArray(message.envelope) ||
+          message.status === "sent" || typeof message.envelopeId !== "string" ||
+          message.envelopeId.length < 1 || message.envelopeId.length > 160 ||
+          typeof message.clientTransactionId !== "string" ||
+          message.clientTransactionId.length < 1 || message.clientTransactionId.length > 160 ||
+          message.envelope.id !== message.envelopeId ||
+          JSON.stringify(message.envelope).length > 512 * 1024) {
+        throw new Error("The encrypted browser profile contains an invalid retry envelope.");
+      }
+    }
+    messageIds.add(scopedMessageId);
+  }
+  const receiptEnvelopeIds = new Set();
+  for (const [key, receipt] of Object.entries(profile.seenEnvelopeReceipts)) {
+    const logicalId = receipt?.logicalId;
+    const sourceScope = receipt?.sourceScope;
+    const legacyUnscoped = sourceScope === null;
+    if (!/^[0-9a-f-]{36}$/u.test(logicalId) ||
+        (!legacyUnscoped && (typeof sourceScope !== "string" || sourceScope.length < 1 ||
+          sourceScope.length > 160 || key !== envelopeReceiptKey(sourceScope, logicalId))) ||
+        (legacyUnscoped && key !== logicalId) || !receipt || typeof receipt !== "object" ||
+        !/^[0-9a-f-]{36}$/u.test(receipt.envelopeId) ||
+        typeof receipt.digest !== "string" || receipt.digest.length !== 44 ||
+        receiptEnvelopeIds.has(receipt.envelopeId)) {
+      throw new Error("The encrypted browser profile contains an invalid envelope receipt.");
+    }
+    receiptEnvelopeIds.add(receipt.envelopeId);
+  }
+  const quarantinePositions = new Set();
+  for (const item of profile.quarantinedTransportEnvelopes) {
+    const position = `${item?.streamDigest ?? ""}:${item?.sequence ?? ""}`;
+    if (!item || typeof item !== "object" || typeof item.streamDigest !== "string" ||
+        item.streamDigest.length !== 44 || !Number.isSafeInteger(item.sequence) || item.sequence < 1 ||
+        !/^[0-9a-f-]{36}$/u.test(item.envelopeId) ||
+        typeof item.envelopeDigest !== "string" || item.envelopeDigest.length !== 44 ||
+        !["unknownSender", "invalidAttribution", "replayConflict", "unsupportedPayload"].includes(item.reason) ||
+        !Number.isFinite(Date.parse(item.quarantinedAt)) || quarantinePositions.has(position)) {
+      throw new Error("The encrypted browser profile contains an invalid transport quarantine receipt.");
+    }
+    quarantinePositions.add(position);
+  }
+  const retirementRelays = new Set();
+  for (const item of profile.pendingInboxRetirements) {
+    if (!item || typeof item !== "object" || Array.isArray(item) ||
+        typeof item.relayAddress !== "string" || retirementRelays.has(item.relayAddress)) {
+      throw new Error("The encrypted browser profile contains an invalid inbox-retirement journal.");
+    }
+    parseBrowserRelayEndpoint(item.relayAddress);
+    validateRetireInboxRequest(item.request);
+    retirementRelays.add(item.relayAddress);
+  }
+  if (profile.pendingInboxRetirements.length > 0 && !profile.identityDeletionPending) {
+    throw new Error("The encrypted browser profile contains an unbound inbox-retirement journal.");
   }
 }
 
@@ -323,7 +467,7 @@ async function checkRelay(id) {
 async function deleteRelay(id) {
   const relay = runtime.profile.relays.find((item) => item.id === id);
   if (!relay || relay.preferred || runtime.profile.relay?.id === id) {
-    notify("The active identity’s home relay cannot be removed.", true);
+    notify("The active identity generation’s current relay route cannot be removed.", true);
     return;
   }
   runtime.profile.relays = runtime.profile.relays.filter((item) => item.id !== id);
@@ -386,23 +530,47 @@ async function sendMessage() {
   runtime.sendingContacts.add(contact.fingerprint);
   try {
     const conversationKey = nativeConversationKey(contact);
-    let conversation = runtime.profile.conversations[conversationKey];
+    const previousConversation = runtime.profile.conversations[conversationKey] ?? null;
+    let conversation = previousConversation ? structuredClone(previousConversation) : null;
     let kemCiphertext = null;
+    let prekey = null;
     if (!conversation) {
       const created = await createNativeOutboundSession({ crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact });
       conversation = created.conversation;
       kemCiphertext = created.kemCiphertext;
-      runtime.profile.conversations[conversationKey] = conversation;
+      prekey = created.prekey ?? null;
     }
     const sentAt = swiftISODate();
+    const eventId = swiftUUID();
+    const clientTransactionId = swiftUUID();
     const envelope = await encryptNativeTextEnvelope({
-      crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact, conversation, text, sentAt, kemCiphertext
+      crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity,
+      contact, conversation, text, sentAt, eventId, clientTransactionId,
+      kemCiphertext, prekey
     });
-    const message = { id: envelope.id, direction: "out", contactFingerprint: contact.fingerprint, text, sentAt, status: "sending", envelope };
+    const message = {
+      id: envelope.authenticatedContext?.directV4?.eventId ?? eventId,
+      envelopeId: envelope.id,
+      clientTransactionId,
+      direction: "out",
+      contactFingerprint: contact.fingerprint,
+      text,
+      sentAt,
+      status: "sending",
+      envelope
+    };
+    runtime.profile.conversations[conversationKey] = conversation;
     runtime.profile.messages.push(message);
+    try {
+      await saveProfile();
+    } catch (error) {
+      runtime.profile.messages.pop();
+      if (previousConversation) runtime.profile.conversations[conversationKey] = previousConversation;
+      else delete runtime.profile.conversations[conversationKey];
+      throw error;
+    }
     elements.messageInput.value = "";
     resizeComposer();
-    await saveProfile();
     renderChat();
     try {
       await deliverStoredMessage(message, contact);
@@ -453,84 +621,300 @@ async function deliverStoredMessage(message, contact) {
 async function syncMessages() {
   if (runtime.syncing || !runtime.profile?.identity) return;
   runtime.syncing = true;
-  let accessKey = null;
+  let consumerKey = null;
   $("#syncNow").classList.add("spinning");
   try {
     const identity = runtime.profile.identity;
+    const localInstallation = identity.localInstallation;
+    if (identity.architectureVersion !== 2 || !localInstallation) {
+      throw new Error("Mailbox v2 local-endpoint migration is required before synchronization.");
+    }
+    const relay = runtime.profile.relay;
+    const routeKey = browserMailboxRouteKey(relay.address, identity.inboxId);
+    const route = localInstallation.mailboxRoutes?.[routeKey];
+    if (route?.mode !== "v2" || route.registration?.state !== "active") {
+      throw new Error("Mailbox v2 registration is not active; legacy fetch is disabled.");
+    }
+    consumerKey = deserializeKeypair(route.signing);
+    const client = makeRelayClient(relay.address, { authToken: relay.authToken });
+    if (route.pendingCommit) {
+      await commitMailboxCursor(client, identity, route, consumerKey);
+    }
     const maxCount = 100;
-    const signedAt = swiftISODate();
-    const nonce = swiftUUID();
-    accessKey = deserializeKeypair(identity.access);
-    const response = await makeRelayClient(runtime.profile.relay.address, { authToken: runtime.profile.relay.authToken }).send(relayRequests.fetch({
+    const request = await buildSyncMailboxRequest({
       inboxId: identity.inboxId,
-      routingToken: null,
+      consumerId: route.consumerId,
+      cursor: route.cursor,
       maxCount,
-      longPollTimeoutSeconds: null,
-      accessProof: actorProof(accessKey, identity.accessFingerprint, { inboxId: identity.inboxId, maxCount, nonce, signedAt }, signedAt, nonce)
-    }));
-    if (response?.type !== "messages") throw new Error("The relay returned an incompatible inbox response.");
-    const acknowledged = [];
+      consumerSigningKey: consumerKey,
+      consumerFingerprint: route.signingFingerprint,
+      pqc: runtime.pqc,
+      crypto: runtime.crypto
+    });
+    const response = await client.syncMailbox(request);
+    const batch = validateMailboxSyncContinuity(
+      response.mailboxSync,
+      route.committedSequence
+    );
+    const envelopeReceiptOwners = new Map(
+      Object.entries(runtime.profile.seenEnvelopeReceipts).map(([receiptKey, receipt]) => [
+        receipt.envelopeId,
+        receiptKey
+      ])
+    );
     let received = 0;
-    for (const envelope of response.messages ?? []) {
+    for (const event of batch.events) {
+      const envelope = event.envelope;
       const normalizedId = String(envelope.id ?? "").toLowerCase();
-      if (!normalizedId) continue;
-      if (runtime.profile.seenEnvelopeIds.includes(normalizedId)) { acknowledged.push(envelope.id); continue; }
+      if (!normalizedId) throw new Error("The relay returned an envelope without an ID.");
+      const logicalId = String(
+        envelope.authenticatedContext?.directV4?.eventId ?? envelope.id ?? ""
+      ).toLowerCase();
+      if (!logicalId) throw new Error("The relay returned an envelope without a logical event ID.");
+      const sourceScope = String(envelope.senderFingerprint ?? "");
+      if (sourceScope.length < 1 || sourceScope.length > 160) {
+        throw new Error("The relay returned an envelope without a bounded relationship source.");
+      }
+      const receiptKey = envelopeReceiptKey(sourceScope, logicalId);
+      const digest = base64(await runtime.crypto.sha256(canonicalJsonBytes(envelope)));
+      const priorReceipt = runtime.profile.seenEnvelopeReceipts[receiptKey]
+        ?? runtime.profile.seenEnvelopeReceipts[logicalId];
+      if (priorReceipt) {
+        if (priorReceipt.envelopeId !== normalizedId || priorReceipt.digest !== digest) {
+          await verifyEnvelopeAttribution(envelope);
+          await recordTransportQuarantine(event, digest, "replayConflict", routeKey);
+        }
+        continue;
+      }
+      const priorLogicalOwner = envelopeReceiptOwners.get(normalizedId);
+      if (priorLogicalOwner && priorLogicalOwner !== receiptKey) {
+        await verifyEnvelopeAttribution(envelope);
+        await recordTransportQuarantine(event, digest, "replayConflict", routeKey);
+        continue;
+      }
       try {
+        const mutationSnapshot = {
+          conversations: runtime.profile.conversations,
+          messages: runtime.profile.messages,
+          seenEnvelopeReceipts: runtime.profile.seenEnvelopeReceipts,
+          seenEnvelopeIds: runtime.profile.seenEnvelopeIds
+        };
+        runtime.profile.conversations = { ...mutationSnapshot.conversations };
+        runtime.profile.messages = [...mutationSnapshot.messages];
+        runtime.profile.seenEnvelopeReceipts = { ...mutationSnapshot.seenEnvelopeReceipts };
+        runtime.profile.seenEnvelopeIds = [...mutationSnapshot.seenEnvelopeIds];
         const decoded = await decodeEnvelope(envelope);
-        if (!decoded) continue;
-        runtime.profile.messages.push(decoded);
+        if (!decoded) {
+          throw new NoctweaveRemoteEnvelopeError(
+            "unknownSender",
+            "The envelope cannot be attributed to a verified contact."
+          );
+        }
+        if (!decoded.silent) runtime.profile.messages.push(decoded);
+        runtime.profile.seenEnvelopeReceipts[receiptKey] = {
+          sourceScope,
+          logicalId,
+          envelopeId: normalizedId,
+          digest
+        };
+        envelopeReceiptOwners.set(normalizedId, logicalId);
         runtime.profile.seenEnvelopeIds.push(normalizedId);
-        if (runtime.profile.seenEnvelopeIds.length > 40_000) runtime.profile.seenEnvelopeIds.splice(0, 5_000);
-        acknowledged.push(envelope.id);
+        if (runtime.profile.seenEnvelopeIds.length > 40_000) {
+          runtime.profile.seenEnvelopeIds.splice(0, 5_000);
+        }
+        const receiptIds = Object.keys(runtime.profile.seenEnvelopeReceipts);
+        if (receiptIds.length > 40_000) {
+          for (const id of receiptIds.slice(0, 5_000)) {
+            envelopeReceiptOwners.delete(runtime.profile.seenEnvelopeReceipts[id].envelopeId);
+            delete runtime.profile.seenEnvelopeReceipts[id];
+          }
+        }
         received += 1;
+        // Persist every ratchet transition and decoded event before allowing the
+        // local endpoint cursor to advance over the containing batch.
+        try {
+          await saveProfile();
+        } catch (error) {
+          runtime.profile.conversations = mutationSnapshot.conversations;
+          runtime.profile.messages = mutationSnapshot.messages;
+          runtime.profile.seenEnvelopeReceipts = mutationSnapshot.seenEnvelopeReceipts;
+          runtime.profile.seenEnvelopeIds = mutationSnapshot.seenEnvelopeIds;
+          envelopeReceiptOwners.clear();
+          for (const [ownerId, receipt] of Object.entries(runtime.profile.seenEnvelopeReceipts)) {
+            envelopeReceiptOwners.set(receipt.envelopeId, ownerId);
+          }
+          throw error;
+        }
       } catch (error) {
+        if (error instanceof NoctweaveRemoteEnvelopeError) {
+          await recordTransportQuarantine(event, digest, error.reason, routeKey);
+          console.warn("Noctweave envelope quarantined:", safeError(error));
+          continue;
+        }
         console.warn("Noctweave envelope retained for retry:", safeError(error));
+        throw error;
       }
     }
+    route.cursor = batch.nextCursor;
+    route.pendingCommit = {
+      cursor: batch.nextCursor,
+      sequence: batch.nextSequence,
+      preparedAt: swiftISODate()
+    };
     runtime.profile.lastSyncAt = new Date().toISOString();
     await saveProfile();
+    await commitMailboxCursor(client, identity, route, consumerKey);
     renderApplication();
-    if (acknowledged.length > 0) await acknowledgeMessages(acknowledged, accessKey);
     if (received > 0) notify(`${received} new encrypted message${received === 1 ? "" : "s"}`);
   } finally {
-    accessKey?.secretKey?.fill(0);
-    accessKey?.publicKey?.fill(0);
+    consumerKey?.secretKey?.fill(0);
+    consumerKey?.publicKey?.fill(0);
     runtime.syncing = false;
     $("#syncNow").classList.remove("spinning");
   }
 }
 
-async function acknowledgeMessages(messageIds, accessKey) {
-  const identity = runtime.profile.identity;
-  const signedAt = swiftISODate();
-  const nonce = swiftUUID();
-  const payload = { inboxId: identity.inboxId, messageIds, signedAt, nonce };
-  const response = await makeRelayClient(runtime.profile.relay.address, { authToken: runtime.profile.relay.authToken }).send(relayRequests.acknowledgeMessages({
+async function recordTransportQuarantine(event, envelopeDigest, reason, routeKey) {
+  const sequence = event?.sequence;
+  const envelopeId = String(event?.envelope?.id ?? "").toLowerCase();
+  if (!Number.isSafeInteger(sequence) || sequence < 1 ||
+      !/^[0-9a-f-]{36}$/u.test(envelopeId) ||
+      typeof envelopeDigest !== "string" || envelopeDigest.length !== 44 ||
+      !["unknownSender", "invalidAttribution", "replayConflict", "unsupportedPayload"].includes(reason)) {
+    throw new Error("A transport quarantine receipt cannot be constructed safely.");
+  }
+  const streamDigest = base64(await runtime.crypto.sha256(new TextEncoder().encode(routeKey)));
+  const existing = runtime.profile.quarantinedTransportEnvelopes.find(
+    (item) => item.streamDigest === streamDigest && item.sequence === sequence
+  );
+  if (existing) {
+    if (existing.envelopeId !== envelopeId || existing.envelopeDigest !== envelopeDigest ||
+        existing.reason !== reason) {
+      throw new Error("The relay changed an already quarantined mailbox position.");
+    }
+    return;
+  }
+  if (runtime.profile.quarantinedTransportEnvelopes.length >= 512) {
+    runtime.profile.quarantinedTransportEnvelopes.splice(0, 64);
+  }
+  runtime.profile.quarantinedTransportEnvelopes.push({
+    streamDigest,
+    sequence,
+    envelopeId,
+    envelopeDigest,
+    reason,
+    quarantinedAt: swiftISODate()
+  });
+  await saveProfile();
+}
+
+async function commitMailboxCursor(client, identity, route, consumerKey) {
+  const pending = route.pendingCommit;
+  if (!pending) return;
+  if (!Number.isSafeInteger(route.committedSequence) || route.committedSequence < 0 ||
+      !Number.isSafeInteger(pending.sequence) || pending.sequence < route.committedSequence) {
+    throw new Error("The persisted mailbox sequence state is invalid.");
+  }
+  const request = await buildCommitMailboxCursorRequest({
     inboxId: identity.inboxId,
-    messageIds,
-    accessProof: actorProof(accessKey, identity.accessFingerprint, payload, signedAt, nonce)
-  }));
-  if (response?.type !== "ok") throw new Error("Messages were saved locally but relay acknowledgement failed; sync will retry safely.");
+    consumerId: route.consumerId,
+    cursor: pending.cursor,
+    sequence: pending.sequence,
+    consumerSigningKey: consumerKey,
+    consumerFingerprint: route.signingFingerprint,
+    pqc: runtime.pqc,
+    crypto: runtime.crypto
+  });
+  const response = await client.commitMailboxCursor(request);
+  const registration = response.mailboxConsumer;
+  if (registration?.state !== "active" ||
+      registration.consumerId !== route.consumerId ||
+      registration.consumerSigningPublicKey !== route.signing.publicKey ||
+      registration.committedSequence !== pending.sequence) {
+    throw new Error("The relay returned a mismatched committed mailbox sequence.");
+  }
+  route.registration = registration;
+  route.cursor = pending.cursor;
+  route.committedSequence = pending.sequence;
+  route.pendingCommit = null;
+  await saveProfile();
 }
 
 async function decodeEnvelope(envelope) {
-  const contact = contactByFingerprint(envelope.senderFingerprint);
+  const contact = await findNativeContactForEnvelope({
+    crypto: runtime.crypto,
+    identity: runtime.profile.identity,
+    contacts: runtime.profile.contacts,
+    envelope
+  });
   if (!contact) return null;
   const key = nativeConversationKey(contact);
-  let conversation = runtime.profile.conversations[key];
+  const storedConversation = runtime.profile.conversations[key];
+  let conversation = storedConversation ? structuredClone(storedConversation) : null;
   if (!conversation) {
     if (!envelope.kemCiphertext) return null;
     conversation = await createNativeInboundSession({
-      crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact, kemCiphertext: envelope.kemCiphertext
+      crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact,
+      kemCiphertext: envelope.kemCiphertext, prekey: envelope.prekey ?? null
     });
-    runtime.profile.conversations[key] = conversation;
   }
-  const text = await decryptNativeEnvelope({ crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact, conversation, envelope });
-  return { id: envelope.id, direction: "in", contactFingerprint: contact.fingerprint, text, sentAt: envelope.sentAt, read: false, status: "received" };
+  const decryptOptions = {
+    crypto: runtime.crypto,
+    pqc: runtime.pqc,
+    identity: runtime.profile.identity,
+    contact,
+    conversation,
+    envelope
+  };
+  let text;
+  let silent = false;
+  if (contact.version === 4) {
+    const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
+    silent = decoded.projection.disposition === "silent";
+    text = decoded.projection.kind === "text"
+      ? decoded.projection.text
+      : decoded.projection.fallbackText;
+  } else {
+    text = await decryptNativeEnvelope(decryptOptions);
+  }
+  runtime.profile.conversations[key] = conversation;
+  return {
+    id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
+    direction: "in", contactFingerprint: contact.fingerprint, text, silent,
+    sentAt: envelope.sentAt, read: false, status: "received"
+  };
 }
 
-function actorProof(keypair, fingerprint, payload, signedAt, nonce) {
-  return { fingerprint, publicSigningKey: base64(keypair.publicKey), signedAt, nonce, signature: base64(runtime.pqc.sign(canonicalJsonBytes(payload), keypair.secretKey)) };
+async function verifyEnvelopeAttribution(envelope) {
+  const contact = await findNativeContactForEnvelope({
+    crypto: runtime.crypto,
+    identity: runtime.profile.identity,
+    contacts: runtime.profile.contacts,
+    envelope
+  });
+  if (!contact) throw new Error("The envelope cannot be attributed to a verified contact.");
+  const key = nativeConversationKey(contact);
+  let conversation = runtime.profile.conversations[key];
+  if (!conversation) {
+    if (!envelope.kemCiphertext) {
+      throw new Error("The signed envelope cannot establish an authenticated session.");
+    }
+    conversation = await createNativeInboundSession({
+      crypto: runtime.crypto,
+      pqc: runtime.pqc,
+      identity: runtime.profile.identity,
+      contact,
+      kemCiphertext: envelope.kemCiphertext,
+      prekey: envelope.prekey ?? null
+    });
+  }
+  await verifyNativeEnvelope({
+    crypto: runtime.crypto,
+    pqc: runtime.pqc,
+    contact,
+    conversation,
+    envelope
+  });
 }
 
 async function clearConversation() {
@@ -561,11 +945,7 @@ function contactByFingerprint(fingerprint) { return runtime.profile?.contacts.fi
 function contactName(contact) { return contact.alias || contact.displayName; }
 
 function contactFromOffer(offer, alias = "") {
-  return {
-    alias: alias || undefined, displayName: offer.displayName, inboxId: offer.inboxId, relay: offer.relay,
-    fingerprint: offer.fingerprint, signingPublicKey: offer.signingPublicKey, agreementPublicKey: offer.agreementPublicKey,
-    inboxAccessPublicKey: offer.inboxAccessPublicKey, verifiedAt: new Date().toISOString()
-  };
+  return { ...contactFromNativeOffer(offer, alias), verifiedAt: new Date().toISOString() };
 }
 
 function relayRecord(address, authToken, relayInfo) {
@@ -730,47 +1110,6 @@ function downloadCode() {
   downloadBlob(blob, `${safeFilename(runtime.profile.identity.displayName)}.noctweave-contact.txt`);
 }
 
-async function exportProfile() {
-  const passphrase = await requestSecret("Protect profile backup", "Choose a separate passphrase. This file contains private keys, sessions, contacts, and history.", true);
-  if (passphrase === null) return;
-  const packageData = await encryptPortableProfile({ ...runtime.profile, exportedAt: new Date().toISOString() }, passphrase);
-  downloadBlob(new Blob([JSON.stringify(packageData, null, 2)], { type: "application/vnd.noctweave.profile+json" }), `noctweave-${safeFilename(profileName)}.noctweave.json`);
-}
-
-async function importProfile() {
-  const input = $("#importProfile");
-  const file = input.files?.[0]; input.value = "";
-  if (!file) return;
-  if (file.size < 1 || file.size > maximumProfileFileBytes) throw new Error("The profile backup must be no larger than 2 MB.");
-  const passphrase = await requestSecret("Unlock profile backup", "Enter the passphrase used for this encrypted backup.", false);
-  if (passphrase === null) return;
-  let packageData;
-  try { packageData = JSON.parse(await file.text()); } catch { throw new Error("The profile backup is not valid JSON."); }
-  const profile = migrateProfile(await decryptPortableProfile(packageData, passphrase));
-  validateProfile(profile);
-  runtime.profile = profile;
-  await saveProfile();
-  renderApplication();
-  notify("Encrypted profile imported");
-}
-
-function requestSecret(title, description, confirmation) {
-  if (runtime.pendingSecret) return Promise.reject(new Error("A passphrase request is already open."));
-  elements.secretTitle.textContent = title; elements.secretDescription.textContent = description;
-  elements.secretConfirmationRow.hidden = !confirmation; elements.secretPassphrase.value = ""; elements.secretConfirmation.value = ""; elements.secretError.textContent = "";
-  elements.secretDialog.showModal(); elements.secretPassphrase.focus();
-  return new Promise((resolve) => { runtime.pendingSecret = { resolve, confirmation }; });
-}
-function submitSecretDialog(event) {
-  event.preventDefault();
-  if (!runtime.pendingSecret) return;
-  const passphrase = elements.secretPassphrase.value;
-  if (runtime.pendingSecret.confirmation && passphrase.length < 12) { elements.secretError.textContent = "Use at least 12 characters."; return; }
-  if (runtime.pendingSecret.confirmation && passphrase !== elements.secretConfirmation.value) { elements.secretError.textContent = "Passphrases do not match."; return; }
-  const resolve = runtime.pendingSecret.resolve; runtime.pendingSecret = null; elements.secretDialog.close(); resolve(passphrase);
-}
-function cancelSecretDialog() { if (!runtime.pendingSecret) return; const resolve = runtime.pendingSecret.resolve; runtime.pendingSecret = null; elements.secretDialog.close(); resolve(null); }
-
 function updateAutoFetch() { runtime.profile.settings.autoFetch = elements.autoFetch.checked; void saveProfile(); configureAutoFetch(); }
 function configureAutoFetch() {
   clearInterval(runtime.autoFetchTimer); runtime.autoFetchTimer = null;
@@ -784,11 +1123,73 @@ function lockClient() {
   showStep("unlock");
 }
 
-async function resetInstallation() {
-  const runtimeName = document.documentElement.dataset.runtime === "desktop" ? "desktop application" : "browser installation";
-  if (!confirm(`Reset this ${runtimeName}? Private keys, sessions, contacts, and local history will be permanently deleted.`)) return;
+async function resetLockedProfile() {
+  const runtimeName = document.documentElement.dataset.runtime === "desktop" ? "desktop application" : "browser profile";
+  if (!confirm(`Forget this locked ${runtimeName}? The encrypted local data will be deleted, but the inbox cannot be cryptographically retired while its key is locked. Unlock first to retire and delete the identity generation completely.`)) return;
   clearInterval(runtime.autoFetchTimer);
-  if (runtime.repository) await runtime.repository.clear();
+  await finishLocalReset(null);
+}
+
+async function retireAndDeleteIdentity() {
+  const runtimeName = document.documentElement.dataset.runtime === "desktop" ? "desktop application" : "browser endpoint";
+  if (!confirm(`Retire and delete this ${runtimeName} identity generation? Every known inbox route will be retired before private keys, sessions, contacts, and local history are permanently deleted. This deletes the generation; it does not create or link a replacement.`)) return;
+  if (!runtime.repository || !runtime.profile?.identity) {
+    throw new Error("Unlock the identity before performing complete retirement and deletion.");
+  }
+  clearInterval(runtime.autoFetchTimer);
+  if (!runtime.profile.identityDeletionPending) {
+    const accessKey = deserializeKeypair(runtime.profile.identity.access);
+    try {
+      const request = await buildRetireInboxRequest({
+        inboxId: runtime.profile.identity.inboxId,
+        accessSigningKey: accessKey,
+        accessFingerprint: runtime.profile.identity.accessFingerprint,
+        pqc: runtime.pqc,
+        crypto: runtime.crypto
+      });
+      const relays = new Map();
+      for (const relay of [runtime.profile.relay, ...runtime.profile.relays].filter(Boolean)) {
+        if (relay?.address) relays.set(relay.address, relay);
+      }
+      if (relays.size === 0 || relays.size > 32) {
+        throw new Error("The identity has no bounded set of known inbox relays to retire.");
+      }
+      runtime.profile.pendingInboxRetirements = [...relays.values()].map((relay) => ({
+        relayAddress: relay.address,
+        request
+      }));
+      runtime.profile.identityDeletionPending = true;
+      // Persist the exact private-key-free requests before any key deletion or
+      // network call. Exact relay retries are intentionally idempotent.
+      await saveProfile();
+    } finally {
+      accessKey.secretKey.fill(0);
+      accessKey.publicKey.fill(0);
+    }
+  }
+  if (runtime.profile.pendingInboxRetirements.length > 0) {
+    await resumePendingInboxRetirements(runtime.profile, runtime.repository);
+  }
+  await finishLocalReset(runtime.repository);
+}
+
+async function resumePendingInboxRetirements(profile, repository) {
+  while (profile.pendingInboxRetirements.length > 0) {
+    const pending = profile.pendingInboxRetirements[0];
+    const relay = [profile.relay, ...profile.relays].find(
+      (candidate) => candidate?.address === pending.relayAddress
+    );
+    const client = new NoctweaveRelayClient(pending.relayAddress, {
+      authToken: relay?.authToken ?? null
+    });
+    await client.retireInbox(pending.request);
+    profile.pendingInboxRetirements.shift();
+    await repository.save(profile);
+  }
+}
+
+async function finishLocalReset(repository) {
+  if (repository) await repository.clear();
   localStorage.removeItem(saltStorageKey); localStorage.removeItem(encryptedStorageKey);
   runtime.repository = null; runtime.profile = null; runtime.verifiedRelay = null;
   elements.acceptNotice.checked = false; $("[data-step='welcome'] .next").disabled = true; showStep("welcome");
