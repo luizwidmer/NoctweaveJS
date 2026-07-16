@@ -276,7 +276,6 @@ const knownModuleValues = [
   { module: "nw.groups", versions: [1], status: "experimental" },
   { module: "nw.wake", versions: [1], status: "experimental" },
   { module: "nw.federation", versions: [1], status: "provisional" },
-  { module: "nw.compat.legacy-fingerprint", versions: [1], status: "deprecated" },
   { module: "nw.privacy.hidden-retrieval", versions: [1], status: "experimental" },
   { module: "nw.privacy.onion", versions: [1], status: "experimental" },
   { module: "nw.privacy.mixnet", versions: [1], status: "experimental" }

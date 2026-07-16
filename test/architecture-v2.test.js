@@ -151,7 +151,7 @@ test("direct-v4 negotiation is symmetric, bounded, and requires every implemente
 });
 
 test("capability manifests are bounded and require the architecture-v2 core", () => {
-  assert.equal(protocolKnownModuleCatalog.length, 14);
+  assert.equal(protocolKnownModuleCatalog.length, 13);
   assert.deepEqual(defaultActiveEndpointModules.map(({ module }) => module), [
     "nw.core",
     "nw.endpoints",
@@ -170,7 +170,6 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
     "nw.groups",
     "nw.wake",
     "nw.federation",
-    "nw.compat.legacy-fingerprint",
     "nw.privacy.hidden-retrieval",
     "nw.privacy.onion",
     "nw.privacy.mixnet"

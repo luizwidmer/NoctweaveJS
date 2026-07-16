@@ -26,7 +26,6 @@
     "desktop:watch": "electrobun dev --watch",
     "desktop:build": "electrobun build --env=stable",
     "desktop:icons": "bun desktop/scripts/generate-icons.ts",
-    "smoke:client": "node scripts/client-chat-smoke.js",
     "smoke:relay": "node scripts/relay-smoke.js",
     "typecheck:desktop": "tsc --noEmit",
     "test": "node --test"

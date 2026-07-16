@@ -1,0 +1,32 @@
+{
+  "profile": "Noctweave architecture-v2 clean baseline",
+  "rendezvousOffer": {
+    "version": 2,
+    "purpose": "contactPairing",
+    "transportCapabilityBytesHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "oneTimeTokenDigestRepeatedByte": 161,
+    "ephemeralAgreementPublicKeyRepeatedByte": 178,
+    "ephemeralAgreementPublicKeyBytes": 1184,
+    "createdAt": "2026-07-16T12:00:00Z",
+    "expiresAt": "2026-07-16T12:10:00Z",
+    "maximumFrames": 16,
+    "maximumFramePlaintextBytes": 61440,
+    "expectedTranscriptBytes": 1350,
+    "expectedTranscriptDigestHex": "21d227489e59a1be842eb7dd2289a6cef7c4d9ac31e2b0f513bab98a384ea3e0"
+  },
+  "opaqueRouteCreate": {
+    "routeIdRepeatedByte": 1,
+    "sendCapabilityRepeatedByte": 2,
+    "readCredentialRepeatedByte": 3,
+    "renewCapabilityRepeatedByte": 4,
+    "teardownCapabilityRepeatedByte": 5,
+    "idempotencyKeyRepeatedByte": 6,
+    "proofNonceRepeatedByte": 7,
+    "issuedAt": "2026-07-16T12:00:00Z",
+    "expiresAt": "2026-07-16T13:00:00Z",
+    "paddingBucket": 16384,
+    "retentionBucket": 86400,
+    "quotaBucket": 256,
+    "expectedTransitionDigestHex": "eeed484656e7976d8d0b13024260c1bb87c24e44d3c2b1edf8324c3213171c11"
+  }
+}

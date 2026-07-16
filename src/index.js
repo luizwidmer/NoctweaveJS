@@ -22,6 +22,8 @@ export {
   NoctweaveStateRepository
 } from "./storage.js";
 export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
+export * from "./rendezvous-v2.js";
+export * from "./opaque-route-v2.js";
 export {
   advanceDeliveryState,
   buildCommitMailboxCursorRequest,

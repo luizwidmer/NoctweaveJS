@@ -564,7 +564,7 @@ test("direct-v4 rejects authenticated-context tampering without advancing the ra
   }
 });
 
-test("direct-v4 refuses missing modules, version gaps, altered limits, and legacy downgrade", async () => {
+test("direct-v4 refuses missing modules, version gaps, altered limits, and uncertified downgrade", async () => {
   const { crypto, pqc } = await primitives();
   const alice = await makeV4Identity({ crypto, pqc, displayName: "Alice" });
   const bob = await makeV4Identity({ crypto, pqc, displayName: "Bob" });
@@ -616,7 +616,7 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and legac
       identity: alice,
       contact: { ...bobContact, preferredInstallationEndpoint: undefined }
     }),
-    /legacy fallback is forbidden/
+    /certified direct-v4 endpoint is required/
   );
   await assert.rejects(
     createNativeOutboundSession({
@@ -625,7 +625,16 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and legac
       identity: alice,
       contact: { ...bobContact, version: 3 }
     }),
-    /legacy fallback is forbidden/
+    /certified direct-v4 endpoint is required/
+  );
+  assert.throws(
+    () => nativeAuthenticatedDataBytes({
+      conversationId: outbound.conversation.id,
+      sessionId: outbound.conversation.sessionId,
+      authenticatedContext: null,
+      messageCounter: 0
+    }),
+    /Direct-v4 authenticated context is required/
   );
 });
 
@@ -781,7 +790,7 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
   assert.equal(signatureDigest, vector.wire.signatureCanonicalSHA256);
 });
 
-test("contact decoding keeps legacy v2 and v3 explicit and rejects incomplete v4", async () => {
+test("contact decoding rejects pre-v4 contact offers instead of migrating them", async () => {
   const { crypto, pqc } = await primitives();
   const signing = pqc.generateSigningKeypair();
   const agreement = pqc.generateKemKeypair();
@@ -798,22 +807,31 @@ test("contact decoding keeps legacy v2 and v3 explicit and rejects incomplete v4
     ...unsignedV2,
     signature: base64(pqc.sign(canonicalJsonBytes(unsignedV2), signing.secretKey))
   };
-  await verifyNativeContactOffer({ crypto, pqc, offer: offerV2 });
-
   const access = pqc.generateSigningKeypair();
   const unsignedV3 = { ...unsignedV2, version: 3, inboxAccessPublicKey: base64(access.publicKey) };
   const offerV3 = {
     ...unsignedV3,
     signature: base64(pqc.sign(canonicalJsonBytes(unsignedV3), signing.secretKey))
   };
-  await verifyNativeContactOffer({ crypto, pqc, offer: offerV3 });
   await assert.rejects(
-    verifyNativeContactOffer({ crypto, pqc, offer: { ...offerV3, version: 4 } }),
-    /Certified contact offer is malformed/
+    verifyNativeContactOffer({ crypto, pqc, offer: offerV2 }),
+    /Contact offer is malformed/
   );
   await assert.rejects(
-    verifyNativeContactOffer({ crypto, pqc, offer: { ...offerV2, version: 3 } }),
-    /version is inconsistent/
+    verifyNativeContactOffer({ crypto, pqc, offer: offerV3 }),
+    /Contact offer is malformed/
+  );
+  assert.throws(
+    () => makeNativeContactOffer({
+      pqc,
+      identity: {
+        displayName: "Uncertified",
+        signing: serializeKeypair(signing),
+        agreement: serializeKeypair(agreement)
+      },
+      relayEndpoint: relay
+    }),
+    /certified direct-v4 endpoint is required/
   );
 });
 

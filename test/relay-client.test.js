@@ -147,57 +147,17 @@ test("relay client exposes validated mailbox-v2 consumer methods", async () => {
   ]);
 });
 
-test("web client cannot silently return to legacy fetch after a v2 binding", async () => {
-  const consumerId = base64(new Uint8Array(32).fill(0x71));
-  const publicSigningKey = base64(new Uint8Array(1_952).fill(0x72));
-  const proof = actorProof(publicSigningKey, 0x73);
-  const fetch = async () => new Response(JSON.stringify({
-    type: "mailboxConsumer",
-    mailboxConsumer: {
-      consumerId,
-      consumerSigningPublicKey: publicSigningKey,
-      state: "active",
-      committedSequence: 0,
-      registeredAt: "2026-07-16T12:34:56Z"
-    }
-  }));
-  const store = new MemoryNoctweaveStore();
+test("web client exposes only cursor-based mailbox synchronization", () => {
   const web = new NoctweaveWebClient({
     relay: "https://relay.example",
-    store,
-    fetch
-  });
-  await web.registerMailboxConsumer({
-    inboxId: testInboxId,
-    consumerId,
-    consumerSigningPublicKey: publicSigningKey,
-    authorityProof: proof,
-    consumerProof: proof
+    store: new MemoryNoctweaveStore(),
+    fetch: async () => new Response(JSON.stringify({ type: "ok" }))
   });
 
-  await assert.rejects(
-    () => web.fetchInbox({ inboxId: testInboxId, maxCount: 1 }),
-    /Legacy fetch is disabled/
-  );
-  await assert.rejects(
-    () => web.acknowledgeInbox({ inboxId: testInboxId, messageIds: [] }),
-    /Legacy acknowledgement is disabled/
-  );
-  await web.saveState({
-    identity: {
-      inboxId: testInboxId,
-      localInstallation: { mailboxRoutes: { home: { mode: "v2" } } }
-    }
-  });
-  const restarted = new NoctweaveWebClient({
-    relay: "https://relay.example",
-    store,
-    fetch
-  });
-  await assert.rejects(
-    () => restarted.fetchInbox({ inboxId: testInboxId, maxCount: 1 }),
-    /Legacy fetch is disabled/
-  );
+  assert.equal(web.fetchInbox, undefined);
+  assert.equal(web.acknowledgeInbox, undefined);
+  assert.equal(typeof web.syncMailbox, "function");
+  assert.equal(typeof web.commitMailboxCursor, "function");
 });
 
 test("tcp endpoint fails explicitly in web client", async () => {
