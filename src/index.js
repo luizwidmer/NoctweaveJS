@@ -27,6 +27,7 @@ export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 export * from "./rendezvous-v2.js";
 export * from "./opaque-route-v2.js";
 export * from "./opaque-route-packet-v2.js";
+export * from "./pairwise-opaque-route-v2.js";
 export {
   advanceDeliveryState,
   buildCommitMailboxCursorRequest,
@@ -131,6 +132,9 @@ export {
   nativeDirectV4,
   prepareNativeDirectV4Identity,
   renewNativeDirectV4PrekeyIfNeeded,
+  validateCertifiedGenerationEndpointV4,
+  validateEndpointSetCheckpointV4,
   verifyCertifiedNativeContactOffer,
+  verifyCertifiedGenerationEndpointV4,
   verifyEndpointRemovalProofV4
 } from "./crypto/direct-v4.js";

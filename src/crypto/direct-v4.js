@@ -396,31 +396,65 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
     offer.signingPublicKey,
     "contact offer"
   );
-  const checkpoint = offer.endpointSetCheckpoint;
-  const endpoint = offer.preferredGenerationEndpoint;
-  validateCheckpointStructure(checkpoint);
+  await verifyCertifiedGenerationEndpointV4({
+    crypto,
+    pqc,
+    identityGenerationId: offer.identityGenerationId,
+    identitySigningPublicKey: offer.signingPublicKey,
+    endpointSetCheckpoint: offer.endpointSetCheckpoint,
+    preferredEndpoint: offer.preferredGenerationEndpoint,
+    now
+  });
+  return offer;
+}
+
+/// Verifies the current direct-v4 checkpoint and the one endpoint certificate
+/// selected by that checkpoint. Signed carriers share this primitive instead
+/// of implementing subtly different endpoint-validation paths.
+export async function verifyCertifiedGenerationEndpointV4({
+  crypto,
+  pqc,
+  identityGenerationId,
+  identitySigningPublicKey,
+  endpointSetCheckpoint,
+  preferredEndpoint,
+  now = Date.now()
+}) {
+  if (typeof crypto?.sha256 !== "function" || typeof pqc?.verify !== "function") {
+    throw new TypeError("Certified endpoint verification requires SHA-256 and ML-DSA verification.");
+  }
+  if (!canonicalUUID(identityGenerationId)) {
+    throw new Error("Certified endpoint identity generation is malformed.");
+  }
+  const identityPublicKey = decodeBase64(
+    identitySigningPublicKey,
+    "identity signing public key",
+    ML_DSA_PUBLIC_KEY_BYTES
+  );
+  const checkpoint = validateEndpointSetCheckpointV4(endpointSetCheckpoint);
+  const endpoint = validateCertifiedGenerationEndpointV4(preferredEndpoint, now);
+  const identityFingerprint = base64(await crypto.sha256(identityPublicKey));
   verifyCanonical(
     pqc,
     checkpointPayload(checkpoint),
     checkpoint.signature,
-    offer.signingPublicKey,
+    identitySigningPublicKey,
     "endpoint manifest checkpoint"
   );
-  if (checkpoint.identityFingerprint !== offer.fingerprint ||
-      checkpoint.identityGenerationId !== offer.identityGenerationId ||
-      endpoint.identityGenerationId !== offer.identityGenerationId ||
-      endpoint.identityAuthorityPublicKey !== offer.signingPublicKey ||
+  if (checkpoint.identityFingerprint !== identityFingerprint ||
+      checkpoint.identityGenerationId !== identityGenerationId ||
+      endpoint.identityGenerationId !== identityGenerationId ||
+      endpoint.identityAuthorityPublicKey !== identitySigningPublicKey ||
       endpoint.manifestEpoch !== checkpoint.epoch ||
       endpoint.manifestDigest !== checkpoint.manifestDigest) {
     throw new Error("Certified endpoint does not match its identity checkpoint.");
   }
-  validateEndpointStructure(endpoint, now);
   const endpointPayloadValue = certifiedEndpointPayload(endpoint);
   verifyCanonical(
     pqc,
     endpointPayloadValue,
     endpoint.authoritySignature,
-    offer.signingPublicKey,
+    identitySigningPublicKey,
     "certified endpoint authority"
   );
   verifyCanonical(
@@ -463,7 +497,11 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
   if (endpoint.prekeyBundle.identityFingerprint !== endpointFingerprint) {
     throw new Error("Certified endpoint prekey fingerprint is invalid.");
   }
-  return offer;
+  return Object.freeze({
+    identityFingerprint,
+    endpointSetCheckpoint: checkpoint,
+    preferredEndpoint: endpoint
+  });
 }
 
 export function contactFromNativeOffer(offer, alias) {
@@ -745,7 +783,7 @@ export async function assertContactEndpointActive({
 }
 
 export function assertCertifiedEndpointPrekeyFresh({ endpoint, now = Date.now() }) {
-  validateEndpointStructure(endpoint, now);
+  validateCertifiedGenerationEndpointV4(endpoint, now);
   return endpoint.prekeyBundle.signedPrekey;
 }
 
@@ -854,7 +892,7 @@ async function validatePreparedIdentity({ crypto, pqc, identity }) {
   });
 }
 
-function validateCheckpointStructure(checkpoint) {
+export function validateEndpointSetCheckpointV4(checkpoint) {
   requireRecord(checkpoint, "Endpoint manifest checkpoint");
   if (checkpoint.version !== DIRECT_VERSION ||
       !canonicalUUID(checkpoint.identityGenerationId) ||
@@ -865,6 +903,7 @@ function validateCheckpointStructure(checkpoint) {
   decodeBase64(checkpoint.identityFingerprint, "checkpoint identity fingerprint", DIGEST_BYTES);
   decodeBase64(checkpoint.manifestDigest, "checkpoint manifest digest", DIGEST_BYTES);
   decodeBase64(checkpoint.signature, "checkpoint signature", ML_DSA_SIGNATURE_BYTES);
+  return checkpoint;
 }
 
 function validateCertifiedOfferShape(offer) {
@@ -884,7 +923,7 @@ function validateCertifiedOfferShape(offer) {
   decodeBase64(offer.signature, "contact offer signature", ML_DSA_SIGNATURE_BYTES);
 }
 
-function validateEndpointStructure(endpoint, now) {
+export function validateCertifiedGenerationEndpointV4(endpoint, now = Date.now()) {
   requireRecord(endpoint, "Certified generation endpoint");
   if (!canonicalUUID(endpoint.identityGenerationId) || !canonicalUUID(endpoint.endpointId) ||
       !Number.isSafeInteger(endpoint.manifestEpoch) || endpoint.manifestEpoch < 0 ||
@@ -929,6 +968,7 @@ function validateEndpointStructure(endpoint, now) {
       createdAtMs > nowMs + PREKEY_FUTURE_SKEW_MS) {
     throw new Error("Certified endpoint prekey bundle is expired.");
   }
+  return endpoint;
 }
 
 function validateLocalEndpoint(local, generationId) {
