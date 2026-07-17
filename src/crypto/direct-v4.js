@@ -657,47 +657,6 @@ export function directV4EndpointSession({ contact, identity, binding }) {
   };
 }
 
-export function makeDirectV4AuthenticatedContext({ eventId = swiftUUID(), endpointSession }) {
-  if (!canonicalUUID(eventId)) {
-    throw new Error("Direct-v4 event ID is invalid.");
-  }
-  validateEndpointSession(endpointSession);
-  return {
-    purpose: "directV4",
-    directV4: {
-      version: DIRECT_VERSION,
-      payloadFormat: nativeDirectV4.payloadFormat,
-      cipherSuite: endpointSession.cipherSuite,
-      negotiatedCapabilitiesDigest: endpointSession.negotiatedCapabilitiesDigest,
-      eventId,
-      senderEndpointHandle: endpointSession.localEndpointHandle.rawValue,
-      senderCertificateDigest: endpointSession.localCertificateReferenceDigest,
-      recipientEndpointHandle: endpointSession.peerEndpointHandle.rawValue,
-      senderManifestEpoch: endpointSession.localManifestEpoch,
-      recipientManifestEpoch: endpointSession.peerManifestEpoch,
-      recipientCertificateDigest: endpointSession.peerCertificateReferenceDigest
-    }
-  };
-}
-
-export function validateInboundDirectV4Context({ context, endpointSession }) {
-  validateEndpointSession(endpointSession);
-  const direct = context?.purpose === "directV4" ? context.directV4 : null;
-  if (!direct || direct.version !== DIRECT_VERSION ||
-      direct.payloadFormat !== nativeDirectV4.payloadFormat || !canonicalUUID(direct.eventId) ||
-      direct.cipherSuite !== endpointSession.cipherSuite ||
-      direct.negotiatedCapabilitiesDigest !== endpointSession.negotiatedCapabilitiesDigest ||
-      direct.senderEndpointHandle !== endpointSession.peerEndpointHandle.rawValue ||
-      direct.senderCertificateDigest !== endpointSession.peerCertificateReferenceDigest ||
-      direct.recipientEndpointHandle !== endpointSession.localEndpointHandle.rawValue ||
-      direct.recipientCertificateDigest !== endpointSession.localCertificateReferenceDigest ||
-      direct.senderManifestEpoch !== endpointSession.peerManifestEpoch ||
-      direct.recipientManifestEpoch !== endpointSession.localManifestEpoch) {
-    throw new Error("Direct-v4 authenticated context does not match the endpoint session.");
-  }
-  return direct;
-}
-
 export async function createEndpointRemovalProofV4({
   crypto,
   pqc,

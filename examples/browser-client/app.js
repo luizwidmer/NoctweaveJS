@@ -2,6 +2,7 @@ import oqsFactory from "../../wasm/dist/noctweave_oqs.js";
 import {
   BrowserLocalStorageStore,
   EncryptedNoctweaveStore,
+  NoctweaveRemoteEnvelopeError,
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
   NoctweaveStateRepository,
@@ -25,6 +26,7 @@ import {
   swiftISODate,
   swiftUUID,
   validateRetireInboxRequest,
+  validateProtocolEnvelopeV1,
   verifyNativeContactOffer
 } from "../../src/index.js";
 
@@ -448,8 +450,7 @@ async function sendMessage() {
     const conversationKey = nativeConversationKey(contact);
     const previousConversation = state.conversations[conversationKey] ?? null;
     let conversation = previousConversation ? structuredClone(previousConversation) : null;
-    let kemCiphertext = null;
-    let prekey = null;
+    let bootstrap = { kind: "none" };
     if (!conversation) {
       const created = await createNativeOutboundSession({
         crypto: state.crypto,
@@ -458,13 +459,12 @@ async function sendMessage() {
         contact
       });
       conversation = created.conversation;
-      kemCiphertext = created.kemCiphertext;
-      prekey = created.prekey ?? null;
+      bootstrap = created.bootstrap;
     }
     const sentAt = swiftISODate();
     const eventId = swiftUUID();
     const clientTransactionId = swiftUUID();
-    const envelope = await encryptNativeTextEnvelope({
+    const directEnvelope = await encryptNativeTextEnvelope({
       crypto: state.crypto,
       pqc: state.pqc,
       identity: state.identity,
@@ -474,12 +474,12 @@ async function sendMessage() {
       sentAt,
       eventId,
       clientTransactionId,
-      kemCiphertext,
-      prekey
+      bootstrap
     });
+    const envelope = validateProtocolEnvelopeV1({ version: 1, directV4: directEnvelope });
     const message = {
-      id: envelope.authenticatedContext?.directV4?.eventId ?? eventId,
-      envelopeId: envelope.id,
+      id: directEnvelope.eventId,
+      envelopeId: directEnvelope.id,
       clientTransactionId,
       direction: "out",
       contactFingerprint: contact.fingerprint,
@@ -599,9 +599,9 @@ async function fetchMessages() {
       throw new Error(`Fetch failed: ${JSON.stringify(response)}`);
     }
     let decodedCount = 0;
-    for (const envelope of response.messages ?? []) {
-      const normalizedEnvelopeId = envelope.id?.toLowerCase();
-      if (!normalizedEnvelopeId) throw new Error("The relay returned an envelope without an ID.");
+    for (const protocolEnvelope of response.messages ?? []) {
+      const envelope = requireDirectEnvelope(protocolEnvelope);
+      const normalizedEnvelopeId = envelope.id.toLowerCase();
       if (state.seenEnvelopeIds.has(normalizedEnvelopeId)) {
         continue;
       }
@@ -682,14 +682,14 @@ async function decodeEnvelope(envelope) {
     envelope
   });
   if (!contact) {
-    log(`ignored unknown sender ${envelope.senderFingerprint}`);
+    log(`ignored unknown sender ${envelope.senderEndpointHandle.rawValue}`);
     return null;
   }
   const conversationKey = nativeConversationKey(contact);
   const storedConversation = state.conversations[conversationKey];
   let conversation = storedConversation ? structuredClone(storedConversation) : null;
   if (!conversation) {
-    if (!envelope.kemCiphertext) {
+    if (envelope.bootstrap.kind !== "signedPrekey") {
       log(`ignored ${contact.displayName}: no session has been established`);
       return null;
     }
@@ -698,8 +698,7 @@ async function decodeEnvelope(envelope) {
       pqc: state.pqc,
       identity: state.identity,
       contact,
-      kemCiphertext: envelope.kemCiphertext,
-      prekey: envelope.prekey ?? null
+      bootstrap: envelope.bootstrap
     });
   }
   const decryptOptions = {
@@ -717,13 +716,24 @@ async function decodeEnvelope(envelope) {
     : decoded.projection.fallbackText;
   state.conversations[conversationKey] = conversation;
   return {
-    id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
+    id: envelope.eventId,
     direction: "in",
     contactFingerprint: contact.fingerprint,
     text,
     silent,
     sentAt: envelope.sentAt
   };
+}
+
+function requireDirectEnvelope(protocolEnvelope) {
+  const validated = validateProtocolEnvelopeV1(protocolEnvelope);
+  if (!validated.directV4) {
+    throw new NoctweaveRemoteEnvelopeError(
+      "unsupportedPayload",
+      "This browser client does not implement the received strict group envelope."
+    );
+  }
+  return validated.directV4;
 }
 
 function relayClient(endpointOverride = undefined) {

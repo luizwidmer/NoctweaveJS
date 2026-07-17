@@ -591,7 +591,35 @@ test("mailbox IDs, registrations, batches, and independent consumers are strictl
     state: "revoked"
   }), /must have revokedAt/);
 
-  const envelope = (id) => ({ id, conversationId: "test", ciphertext: "AA==" });
+  const repeated = (byte, count) => base64(new Uint8Array(count).fill(byte));
+  const envelope = (id) => ({
+    version: 1,
+    directV4: {
+      version: 4,
+      id,
+      payloadFormat: "nw.wire-payload.v2",
+      conversationId: repeated(1, 32),
+      sessionId: repeated(2, 32),
+      eventId: id,
+      senderEndpointHandle: { rawValue: repeated(3, 32) },
+      senderCertificateDigest: repeated(4, 32),
+      senderEndpointSetEpoch: 1,
+      recipientEndpointHandle: { rawValue: repeated(5, 32) },
+      recipientCertificateDigest: repeated(6, 32),
+      recipientEndpointSetEpoch: 1,
+      cipherSuite: "nw.direct-v4.ml-kem-768.ml-dsa-65.hkdf-sha256.hmac-sha256.aes-256-gcm",
+      negotiatedCapabilitiesDigest: repeated(7, 32),
+      bootstrap: { kind: "none" },
+      sentAt: "2026-07-16T12:34:56Z",
+      messageCounter: 0,
+      payload: {
+        nonce: repeated(8, 12),
+        ciphertext: repeated(9, 512),
+        tag: repeated(10, 16)
+      },
+      signature: repeated(11, 3_309)
+    }
+  });
   const batch = validateMailboxSyncBatch({
     events: [
       { sequence: 1, envelope: envelope(ids.eventId), storedAt: "2026-07-16T12:34:56Z" },

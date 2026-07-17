@@ -5,7 +5,8 @@ import {
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
   WebCryptoPrimitives,
-  relayRequests
+  relayRequests,
+  validateProtocolEnvelopeV1
 } from "../src/index.js";
 
 const BECH32_CHARSET = Array.from("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
@@ -25,11 +26,12 @@ const inboxId = options.inbox ?? bech32Encode("noctweave", await crypto.sha256(a
 const accessFingerprint = base64(await crypto.sha256(access.publicKey));
 const messageText = options.text ?? `NoctweaveJS relay smoke ${swiftISODate()}`;
 const encodedMessage = new TextEncoder().encode(messageText);
-const ciphertext = await crypto.sha256(encodedMessage);
+const ciphertext = crypto.randomBytes(512);
+ciphertext.set(encodedMessage.subarray(0, ciphertext.byteLength));
 const nonce = crypto.randomBytes(12);
 const tag = crypto.randomBytes(16);
 const signature = crypto.randomBytes(3309);
-const envelopeId = randomUUID();
+const envelopeId = swiftUUID();
 
 console.log(`Relay: ${endpoint}`);
 const health = await client.health();
@@ -72,17 +74,24 @@ if (registerResponse.type !== "ok") {
 }
 console.log("Registered: ok");
 
-const envelope = {
+const directEnvelope = {
+  version: 4,
   id: envelopeId,
+  payloadFormat: "nw.wire-payload.v2",
   conversationId: options.conversationId ?? `js-smoke-${Date.now()}`,
   sessionId: options.sessionId ?? "js-smoke-session",
-  senderFingerprint: options.senderFingerprint ?? "js-smoke-sender",
+  eventId: swiftUUID(),
+  senderEndpointHandle: { rawValue: base64(crypto.randomBytes(32)) },
+  senderCertificateDigest: base64(crypto.randomBytes(32)),
+  senderEndpointSetEpoch: 0,
+  recipientEndpointHandle: { rawValue: base64(crypto.randomBytes(32)) },
+  recipientCertificateDigest: base64(crypto.randomBytes(32)),
+  recipientEndpointSetEpoch: 0,
+  cipherSuite: "nw.direct-v4.ml-kem-768.ml-dsa-65.hkdf-sha256.hmac-sha256.aes-256-gcm",
+  negotiatedCapabilitiesDigest: base64(crypto.randomBytes(32)),
+  bootstrap: { kind: "none" },
   sentAt: swiftISODate(),
   messageCounter: Number(options.messageCounter ?? 1),
-  kemCiphertext: options.kemCiphertext ?? null,
-  prekey: null,
-  rootRatchet: null,
-  authenticatedContext: null,
   payload: {
     nonce: base64(nonce),
     ciphertext: base64(ciphertext),
@@ -90,6 +99,7 @@ const envelope = {
   },
   signature: base64(signature)
 };
+const envelope = validateProtocolEnvelopeV1({ version: 1, directV4: directEnvelope });
 
 const response = await client.send(
   relayRequests.deliver({
@@ -137,19 +147,21 @@ if (fetchResponse.type !== "messages") {
   process.exit(1);
 }
 
-const fetched = fetchResponse.messages?.find((message) => message.id?.toLowerCase() === envelopeId.toLowerCase());
+const fetched = fetchResponse.messages?.find((message) =>
+  message.directV4?.id?.toLowerCase() === envelopeId.toLowerCase()
+);
 if (!fetched) {
   console.error(`Fetch did not include delivered envelope ${envelopeId}: ${JSON.stringify(fetchResponse)}`);
   process.exit(1);
 }
-if (fetched.payload?.ciphertext !== envelope.payload.ciphertext) {
+if (fetched.directV4.payload.ciphertext !== directEnvelope.payload.ciphertext) {
   console.error("Fetched payload did not match delivered encoded ciphertext.");
   process.exit(1);
 }
 console.log(`Fetched: ${fetchResponse.messages.length} message(s), matched envelope ${envelopeId}`);
 console.log(`Inbox: ${inboxId}`);
 console.log(`Envelope: ${envelopeId}`);
-console.log(`Encoded payload: nonce=${envelope.payload.nonce.length}b64 ciphertext=${envelope.payload.ciphertext.length}b64 tag=${envelope.payload.tag.length}b64`);
+console.log(`Encoded payload: nonce=${directEnvelope.payload.nonce.length}b64 ciphertext=${directEnvelope.payload.ciphertext.length}b64 tag=${directEnvelope.payload.tag.length}b64`);
 
 function actorProof({ keypair, fingerprint, signedAt, nonce, payload }) {
   return {

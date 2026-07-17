@@ -5,6 +5,7 @@ import {
   validateRevokeMailboxConsumerRequest,
   validateSyncMailboxRequest
 } from "./architecture-v2.js";
+import { validateProtocolEnvelopeV1 } from "./crypto/noctweave-wire.js";
 
 export const relayRequests = {
   health(authToken) {
@@ -27,7 +28,13 @@ export const relayRequests = {
   },
 
   deliver(request, authToken) {
-    return withAuth({ type: "deliver", deliver: request }, authToken);
+    return withAuth({
+      type: "deliver",
+      deliver: {
+        ...request,
+        envelope: validateProtocolEnvelopeV1(request?.envelope)
+      }
+    }, authToken);
   },
 
   fetch(request, authToken) {

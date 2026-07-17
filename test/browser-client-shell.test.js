@@ -119,7 +119,8 @@ test("browser send paths persist one exact retry envelope before relay submissio
     const retry = script.slice(retryStart, deliveryStart);
     assert.match(send, /structuredClone\(previousConversation\)/);
     assert.match(send, /clientTransactionId/);
-    assert.match(send, /envelopeId:\s*envelope\.id/);
+    assert.match(send, /envelopeId:\s*directEnvelope\.id/);
+    assert.match(send, /validateProtocolEnvelopeV1\(\{ version: 1, directV4: directEnvelope \}\)/);
     assert.ok(send.indexOf(saveCall) < send.indexOf("await deliverStoredMessage"));
     assert.match(retry, /message\.envelope/);
     assert.doesNotMatch(retry, /encryptNative/);

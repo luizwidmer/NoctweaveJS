@@ -1,5 +1,6 @@
 import { base64, canonicalJsonBytes, swiftISODate, swiftUUID } from "./crypto/swift-canonical.js";
 import { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
+import { validateProtocolEnvelopeV1 } from "./crypto/noctweave-wire.js";
 
 const encoder = new TextEncoder();
 const controlCharacters = /\p{Cc}/u;
@@ -1327,20 +1328,16 @@ function mailboxConsumerProofPayloadForRequest(operation, request, proof) {
 
 function validateSequencedEnvelope(value) {
   requireRecord(value, "Sequenced envelope");
-  requireRecord(value.envelope, "Sequenced envelope payload");
+  const envelope = validateProtocolEnvelopeV1(value.envelope);
   let encoded;
   try {
-    encoded = JSON.stringify(value.envelope);
+    encoded = JSON.stringify(envelope);
   } catch {
     throw new TypeError("Sequenced envelope payload must be JSON serializable.");
   }
   if (typeof encoded !== "string" || encoder.encode(encoded).byteLength > MAXIMUM_SEQUENCED_ENVELOPE_BYTES) {
     throw new TypeError("Sequenced envelope payload exceeds its size bound.");
   }
-  const envelope = freezeRecord({
-    ...value.envelope,
-    id: normalizeUUID(value.envelope.id, "Sequenced envelope id")
-  });
   return freezeRecord({
     sequence: uint64(value.sequence, "Sequenced envelope sequence"),
     envelope,

@@ -29,6 +29,7 @@ import {
   swiftISODate,
   swiftUUID,
   validateMailboxSyncContinuity,
+  validateProtocolEnvelopeV1,
   validateBrowserIdentityState,
   validateRetireInboxRequest,
   verifyNativeContactOffer,
@@ -497,25 +498,24 @@ async function sendMessage() {
     const conversationKey = nativeConversationKey(contact);
     const previousConversation = runtime.profile.conversations[conversationKey] ?? null;
     let conversation = previousConversation ? structuredClone(previousConversation) : null;
-    let kemCiphertext = null;
-    let prekey = null;
+    let bootstrap = { kind: "none" };
     if (!conversation) {
       const created = await createNativeOutboundSession({ crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact });
       conversation = created.conversation;
-      kemCiphertext = created.kemCiphertext;
-      prekey = created.prekey ?? null;
+      bootstrap = created.bootstrap;
     }
     const sentAt = swiftISODate();
     const eventId = swiftUUID();
     const clientTransactionId = swiftUUID();
-    const envelope = await encryptNativeTextEnvelope({
+    const directEnvelope = await encryptNativeTextEnvelope({
       crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity,
       contact, conversation, text, sentAt, eventId, clientTransactionId,
-      kemCiphertext, prekey
+      bootstrap
     });
+    const envelope = validateProtocolEnvelopeV1({ version: 1, directV4: directEnvelope });
     const message = {
-      id: envelope.authenticatedContext?.directV4?.eventId ?? eventId,
-      envelopeId: envelope.id,
+      id: directEnvelope.eventId,
+      envelopeId: directEnvelope.id,
       clientTransactionId,
       direction: "out",
       contactFingerprint: contact.fingerprint,
@@ -629,19 +629,16 @@ async function syncMessages() {
     );
     let received = 0;
     for (const event of batch.events) {
-      const envelope = event.envelope;
-      const normalizedId = String(envelope.id ?? "").toLowerCase();
-      if (!normalizedId) throw new Error("The relay returned an envelope without an ID.");
-      const logicalId = String(
-        envelope.authenticatedContext?.directV4?.eventId ?? envelope.id ?? ""
-      ).toLowerCase();
-      if (!logicalId) throw new Error("The relay returned an envelope without a logical event ID.");
-      const sourceScope = String(envelope.senderFingerprint ?? "");
+      const protocolEnvelope = validateProtocolEnvelopeV1(event.envelope);
+      const envelope = requireDirectEnvelope(protocolEnvelope);
+      const normalizedId = envelope.id.toLowerCase();
+      const logicalId = envelope.eventId.toLowerCase();
+      const sourceScope = envelope.senderEndpointHandle.rawValue;
       if (sourceScope.length < 1 || sourceScope.length > 160) {
         throw new Error("The relay returned an envelope without a bounded relationship source.");
       }
       const receiptKey = envelopeReceiptKey(sourceScope, logicalId);
-      const digest = base64(await runtime.crypto.sha256(canonicalJsonBytes(envelope)));
+      const digest = base64(await runtime.crypto.sha256(canonicalJsonBytes(protocolEnvelope)));
       const priorReceipt = runtime.profile.seenEnvelopeReceipts[receiptKey]
         ?? runtime.profile.seenEnvelopeReceipts[logicalId];
       if (priorReceipt) {
@@ -817,10 +814,10 @@ async function decodeEnvelope(envelope) {
   const storedConversation = runtime.profile.conversations[key];
   let conversation = storedConversation ? structuredClone(storedConversation) : null;
   if (!conversation) {
-    if (!envelope.kemCiphertext) return null;
+    if (envelope.bootstrap.kind !== "signedPrekey") return null;
     conversation = await createNativeInboundSession({
       crypto: runtime.crypto, pqc: runtime.pqc, identity: runtime.profile.identity, contact,
-      kemCiphertext: envelope.kemCiphertext, prekey: envelope.prekey ?? null
+      bootstrap: envelope.bootstrap
     });
   }
   const decryptOptions = {
@@ -838,7 +835,7 @@ async function decodeEnvelope(envelope) {
     : decoded.projection.fallbackText;
   runtime.profile.conversations[key] = conversation;
   return {
-    id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
+    id: envelope.eventId,
     direction: "in", contactFingerprint: contact.fingerprint, text, silent,
     sentAt: envelope.sentAt, read: false, status: "received"
   };
@@ -855,7 +852,7 @@ async function verifyEnvelopeAttribution(envelope) {
   const key = nativeConversationKey(contact);
   let conversation = runtime.profile.conversations[key];
   if (!conversation) {
-    if (!envelope.kemCiphertext) {
+    if (envelope.bootstrap.kind !== "signedPrekey") {
       throw new Error("The signed envelope cannot establish an authenticated session.");
     }
     conversation = await createNativeInboundSession({
@@ -863,8 +860,7 @@ async function verifyEnvelopeAttribution(envelope) {
       pqc: runtime.pqc,
       identity: runtime.profile.identity,
       contact,
-      kemCiphertext: envelope.kemCiphertext,
-      prekey: envelope.prekey ?? null
+      bootstrap: envelope.bootstrap
     });
   }
   await verifyNativeEnvelope({
@@ -874,6 +870,17 @@ async function verifyEnvelopeAttribution(envelope) {
     conversation,
     envelope
   });
+}
+
+function requireDirectEnvelope(protocolEnvelope) {
+  const validated = validateProtocolEnvelopeV1(protocolEnvelope);
+  if (!validated.directV4) {
+    throw new NoctweaveRemoteEnvelopeError(
+      "unsupportedPayload",
+      "This client does not implement the received strict group envelope."
+    );
+  }
+  return validated.directV4;
 }
 
 async function clearConversation() {

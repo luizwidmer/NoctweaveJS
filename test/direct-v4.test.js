@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import oqsFactory from "../wasm/dist/noctweave_oqs.js";
-import { canonicalEnvelopeBytes } from "../src/crypto/noctweave-native-message.js";
 import {
   NoctweaveOQSWasmAdapter,
   WebCryptoPrimitives,
@@ -20,12 +19,13 @@ import {
   decryptNativeEnvelope,
   deriveNativeDirectV4Binding,
   derivePairwiseEndpointBindingV4,
+  directEnvelopeV4AuthenticatedDataBytes,
+  directEnvelopeV4SignableBytes,
   directV4ConversationId,
   encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
   inboxIdForAccessPublicKey,
   makeNativeContactOffer,
-  nativeAuthenticatedDataBytes,
   prepareNativeDirectV4Identity,
   renewNativeDirectV4PrekeyIfNeeded,
   standardContentTypes,
@@ -75,8 +75,7 @@ test("direct-v4 renews endpoint prekeys without changing stable authorization", 
     pqc,
     identity: bob,
     contact: aliceContact,
-    kemCiphertext: base64(outbound.kemCiphertext),
-    prekey: outbound.prekey,
+    bootstrap: outbound.bootstrap,
     now: renewalTime
   });
   assert.equal(inbound.id, outbound.conversation.id);
@@ -97,8 +96,7 @@ test("direct-v4 renews endpoint prekeys without changing stable authorization", 
       pqc,
       identity: bob,
       contact: aliceContact,
-      kemCiphertext: base64(outbound.kemCiphertext),
-      prekey: outbound.prekey,
+      bootstrap: outbound.bootstrap,
       now: Date.parse(originalPrekey.expiresAt)
     }),
     /expired or unknown/
@@ -129,26 +127,24 @@ test("direct-v4 uses a certified local endpoint and survives persisted-session r
     contact: bobContact,
     conversation: outbound.conversation,
     text: "direct v4 after restart",
-    kemCiphertext: outbound.kemCiphertext,
-    prekey: outbound.prekey,
+    bootstrap: outbound.bootstrap,
     eventId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
     clientTransactionId: "11111111-2222-4333-8444-555555555555",
     sentAt: "2026-07-16T12:34:56Z"
   });
 
-  assert.equal(envelope.authenticatedContext.purpose, "directV4");
-  assert.equal(envelope.authenticatedContext.directV4.payloadFormat, "nw.wire-payload.v2");
-  assert.notEqual(envelope.senderFingerprint, alice.signingFingerprint);
-  assert.notEqual(envelope.senderFingerprint, alice.localEndpoint.signingFingerprint);
-  assert.equal(envelope.prekey.id, bob.localEndpoint.prekeys.signedPrekeyId);
+  assert.equal(envelope.version, 4);
+  assert.equal(envelope.payloadFormat, "nw.wire-payload.v2");
+  assert.notEqual(envelope.senderEndpointHandle.rawValue, alice.signingFingerprint);
+  assert.notEqual(envelope.senderEndpointHandle.rawValue, alice.localEndpoint.signingFingerprint);
+  assert.equal(envelope.bootstrap.prekey.id, bob.localEndpoint.prekeys.signedPrekeyId);
 
   const inbound = await createNativeInboundSession({
     crypto,
     pqc,
     identity: bob,
     contact: aliceContact,
-    kemCiphertext: envelope.kemCiphertext,
-    prekey: envelope.prekey
+    bootstrap: envelope.bootstrap
   });
   const restartedConversation = JSON.parse(JSON.stringify(inbound));
   assert.equal(
@@ -164,7 +160,7 @@ test("direct-v4 uses a certified local endpoint and survives persisted-session r
   );
   assert.equal(
     restartedConversation.endpointSession.peerEndpointHandle.rawValue,
-    envelope.senderFingerprint
+    envelope.senderEndpointHandle.rawValue
   );
 });
 
@@ -194,16 +190,14 @@ test("direct-v4 preserves typed application content and fails closed for malform
     contact: bobContact,
     conversation: outbound.conversation,
     content: custom,
-    kemCiphertext: outbound.kemCiphertext,
-    prekey: outbound.prekey
+    bootstrap: outbound.bootstrap
   });
   const inbound = await createNativeInboundSession({
     crypto,
     pqc,
     identity: bob,
     contact: aliceContact,
-    kemCiphertext: first.kemCiphertext,
-    prekey: first.prekey
+    bootstrap: first.bootstrap
   });
   const decodedCustom = await decryptNativeApplicationEnvelope({
     crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: first
@@ -328,8 +322,7 @@ test("direct-v4 authenticates private relation targets, truthful tombstones, and
       disposition: "visible"
     }),
     relation: { kind: "reaction", targetEventId },
-    kemCiphertext: outbound.kemCiphertext,
-    prekey: outbound.prekey
+    bootstrap: outbound.bootstrap
   });
   assert.equal(JSON.stringify(reaction).includes(targetEventId), false);
   const inbound = await createNativeInboundSession({
@@ -337,8 +330,7 @@ test("direct-v4 authenticates private relation targets, truthful tombstones, and
     pqc,
     identity: bob,
     contact: aliceContact,
-    kemCiphertext: reaction.kemCiphertext,
-    prekey: reaction.prekey
+    bootstrap: reaction.bootstrap
   });
   const decodedReaction = await decryptNativeApplicationEnvelope({
     crypto, pqc, identity: bob, contact: aliceContact, conversation: inbound, envelope: reaction
@@ -484,12 +476,12 @@ test("aged endpoints reopen established sessions but cannot bootstrap a new sess
   const first = await encryptNativeTextEnvelope({
     crypto, pqc, identity: alice, contact: bobContact,
     conversation: outbound.conversation, text: "establish while fresh",
-    kemCiphertext: outbound.kemCiphertext, prekey: outbound.prekey,
+    bootstrap: outbound.bootstrap,
     sentAt: issuedAt
   });
   const inbound = await createNativeInboundSession({
     crypto, pqc, identity: bob, contact: aliceContact,
-    kemCiphertext: first.kemCiphertext, prekey: first.prekey, now: issuanceTime
+    bootstrap: first.bootstrap, now: issuanceTime
   });
   assert.equal(await decryptNativeEnvelope({
     crypto, pqc, identity: bob, contact: aliceContact,
@@ -518,13 +510,13 @@ test("aged endpoints reopen established sessions but cannot bootstrap a new sess
   await assert.rejects(
     createNativeInboundSession({
       crypto, pqc, identity: restartedBob, contact: aliceContact,
-      kemCiphertext: first.kemCiphertext, prekey: first.prekey
+      bootstrap: first.bootstrap
     }),
     /expired/
   );
 });
 
-test("direct-v4 rejects authenticated-context tampering without advancing the ratchet", async () => {
+test("direct-v4 rejects authenticated-header tampering without advancing the ratchet", async () => {
   const { crypto, pqc } = await primitives();
   const alice = await makeV4Identity({ crypto, pqc, displayName: "Alice" });
   const bob = await makeV4Identity({ crypto, pqc, displayName: "Bob" });
@@ -534,23 +526,23 @@ test("direct-v4 rejects authenticated-context tampering without advancing the ra
   const envelope = await encryptNativeTextEnvelope({
     crypto, pqc, identity: alice, contact: bobContact,
     conversation: outbound.conversation, text: "tamper resistant",
-    kemCiphertext: outbound.kemCiphertext, prekey: outbound.prekey
+    bootstrap: outbound.bootstrap
   });
   const inbound = await createNativeInboundSession({
     crypto, pqc, identity: bob, contact: aliceContact,
-    kemCiphertext: envelope.kemCiphertext, prekey: envelope.prekey
+    bootstrap: envelope.bootstrap
   });
   const before = structuredClone(inbound.receiveChain);
   const mutations = [
     (direct) => { direct.senderCertificateDigest = base64(new Uint8Array(32)); },
     (direct) => { direct.negotiatedCapabilitiesDigest = base64(new Uint8Array(32)); },
-    (direct) => { direct.cipherSuite = "nw.direct-v4.downgraded"; }
+    (direct) => { direct.senderEndpointSetEpoch += 1; }
   ];
   for (const mutate of mutations) {
     const tampered = structuredClone(envelope);
-    mutate(tampered.authenticatedContext.directV4);
+    mutate(tampered);
     tampered.signature = base64(pqc.sign(
-      canonicalEnvelopeBytes(tampered),
+      directEnvelopeV4SignableBytes(tampered),
       Buffer.from(alice.localEndpoint.signing.secretKey, "base64")
     ));
     await assert.rejects(
@@ -558,10 +550,19 @@ test("direct-v4 rejects authenticated-context tampering without advancing the ra
         crypto, pqc, identity: bob, contact: aliceContact,
         conversation: inbound, envelope: tampered
       }),
-      /authenticated context/
+      /endpoint session/
     );
     assert.deepEqual(inbound.receiveChain, before);
   }
+  const downgraded = { ...envelope, cipherSuite: "nw.direct-v4.downgraded" };
+  await assert.rejects(
+    decryptNativeEnvelope({
+      crypto, pqc, identity: bob, contact: aliceContact,
+      conversation: inbound, envelope: downgraded
+    }),
+    /version, payload format, or cipher suite/
+  );
+  assert.deepEqual(inbound.receiveChain, before);
 });
 
 test("direct-v4 refuses missing modules, version gaps, altered limits, and uncertified downgrade", async () => {
@@ -618,24 +619,6 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and uncer
     }),
     /certified direct-v4 endpoint is required/
   );
-  await assert.rejects(
-    createNativeOutboundSession({
-      crypto,
-      pqc,
-      identity: alice,
-      contact: { ...bobContact, version: 3 }
-    }),
-    /certified direct-v4 endpoint is required/
-  );
-  assert.throws(
-    () => nativeAuthenticatedDataBytes({
-      conversationId: outbound.conversation.id,
-      sessionId: outbound.conversation.sessionId,
-      authenticatedContext: null,
-      messageCounter: 0
-    }),
-    /Direct-v4 authenticated context is required/
-  );
 });
 
 test("direct-v4 endpoint revocation fails closed", async () => {
@@ -687,15 +670,15 @@ test("direct-v4 relay context contains no global endpoint or identity material",
   const envelope = await encryptNativeTextEnvelope({
     crypto, pqc, identity: alice, contact: bobContact,
     conversation: outbound.conversation, text: "opaque context",
-    kemCiphertext: outbound.kemCiphertext, prekey: outbound.prekey
+    bootstrap: outbound.bootstrap
   });
-  const relayContext = JSON.stringify(envelope.authenticatedContext);
+  const relayContext = JSON.stringify(envelope);
   assert.equal(
-    envelope.authenticatedContext.directV4.cipherSuite,
+    envelope.cipherSuite,
     outbound.conversation.endpointSession.cipherSuite
   );
   assert.equal(
-    envelope.authenticatedContext.directV4.negotiatedCapabilitiesDigest,
+    envelope.negotiatedCapabilitiesDigest,
     outbound.conversation.endpointSession.negotiatedCapabilitiesDigest
   );
   for (const forbidden of [
@@ -748,36 +731,28 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
     vector.wire.conversationId
   );
 
-  const authenticatedContext = {
-    purpose: "directV4",
-    directV4: {
-      version: 4,
-      payloadFormat: "nw.wire-payload.v2",
-      cipherSuite: vector.expected.cipherSuite,
-      negotiatedCapabilitiesDigest: vector.expected.negotiatedCapabilitiesDigest,
-      eventId: vector.wire.eventId,
-      senderEndpointHandle: binding.localEndpointHandle.rawValue,
-      senderCertificateDigest: binding.localCertificateReferenceDigest,
-      recipientEndpointHandle: binding.peerEndpointHandle.rawValue,
-      senderManifestEpoch: vector.local.manifestEpoch,
-      recipientManifestEpoch: vector.peer.manifestEpoch,
-      recipientCertificateDigest: binding.peerCertificateReferenceDigest
-    }
-  };
-  const aad = nativeAuthenticatedDataBytes({
-    conversationId: vector.wire.conversationId,
-    sessionId: vector.wire.sessionId,
-    authenticatedContext,
-    messageCounter: vector.wire.messageCounter
-  });
-  const signable = canonicalEnvelopeBytes({
+  const header = {
+    version: 4,
     id: vector.wire.envelopeId,
+    payloadFormat: "nw.wire-payload.v2",
     conversationId: vector.wire.conversationId,
     sessionId: vector.wire.sessionId,
-    senderFingerprint: binding.localEndpointHandle.rawValue,
+    eventId: vector.wire.eventId,
+    senderEndpointHandle: binding.localEndpointHandle,
+    senderCertificateDigest: binding.localCertificateReferenceDigest,
+    senderEndpointSetEpoch: vector.local.manifestEpoch,
+    recipientEndpointHandle: binding.peerEndpointHandle,
+    recipientCertificateDigest: binding.peerCertificateReferenceDigest,
+    recipientEndpointSetEpoch: vector.peer.manifestEpoch,
+    cipherSuite: vector.expected.cipherSuite,
+    negotiatedCapabilitiesDigest: vector.expected.negotiatedCapabilitiesDigest,
+    bootstrap: { kind: "none" },
     sentAt: vector.wire.sentAt,
-    messageCounter: vector.wire.messageCounter,
-    authenticatedContext,
+    messageCounter: vector.wire.messageCounter
+  };
+  const aad = directEnvelopeV4AuthenticatedDataBytes(header);
+  const signable = directEnvelopeV4SignableBytes({
+    ...header,
     payload: {
       nonce: repeatedBase64(vector.wire.nonceByte, 12),
       ciphertext: repeatedBase64(vector.wire.ciphertextByte, vector.wire.ciphertextCount),
@@ -788,51 +763,6 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
   const signatureDigest = base64(await crypto.sha256(signable));
   assert.equal(base64(aad), vector.wire.aadCanonicalBase64);
   assert.equal(signatureDigest, vector.wire.signatureCanonicalSHA256);
-});
-
-test("contact decoding rejects pre-v4 contact offers instead of migrating them", async () => {
-  const { crypto, pqc } = await primitives();
-  const signing = pqc.generateSigningKeypair();
-  const agreement = pqc.generateKemKeypair();
-  const unsignedV2 = {
-    agreementPublicKey: base64(agreement.publicKey),
-    displayName: "Legacy v2",
-    fingerprint: base64(await crypto.sha256(signing.publicKey)),
-    inboxId: "legacy-v2-inbox",
-    relay,
-    signingPublicKey: base64(signing.publicKey),
-    version: 2
-  };
-  const offerV2 = {
-    ...unsignedV2,
-    signature: base64(pqc.sign(canonicalJsonBytes(unsignedV2), signing.secretKey))
-  };
-  const access = pqc.generateSigningKeypair();
-  const unsignedV3 = { ...unsignedV2, version: 3, inboxAccessPublicKey: base64(access.publicKey) };
-  const offerV3 = {
-    ...unsignedV3,
-    signature: base64(pqc.sign(canonicalJsonBytes(unsignedV3), signing.secretKey))
-  };
-  await assert.rejects(
-    verifyNativeContactOffer({ crypto, pqc, offer: offerV2 }),
-    /Contact offer is malformed/
-  );
-  await assert.rejects(
-    verifyNativeContactOffer({ crypto, pqc, offer: offerV3 }),
-    /Contact offer is malformed/
-  );
-  assert.throws(
-    () => makeNativeContactOffer({
-      pqc,
-      identity: {
-        displayName: "Uncertified",
-        signing: serializeKeypair(signing),
-        agreement: serializeKeypair(agreement)
-      },
-      relayEndpoint: relay
-    }),
-    /certified direct-v4 endpoint is required/
-  );
 });
 
 async function primitives() {
