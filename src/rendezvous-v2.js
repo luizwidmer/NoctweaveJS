@@ -28,7 +28,7 @@ const ML_KEM_SHARED_SECRET_BYTES = 32;
 const rendezvousPurposes = new Set([
   "contactPairing",
   "endpointAdmission",
-  "relayMigration",
+  "routeRollover",
   "groupInvitation",
   "historyTransfer"
 ]);
@@ -56,7 +56,7 @@ export const noctweaveRendezvousV2 = Object.freeze({
 export const rendezvousPurposeV2 = Object.freeze({
   contactPairing: "contactPairing",
   endpointAdmission: "endpointAdmission",
-  relayMigration: "relayMigration",
+  routeRollover: "routeRollover",
   groupInvitation: "groupInvitation",
   historyTransfer: "historyTransfer"
 });
