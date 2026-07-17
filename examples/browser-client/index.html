@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NoctweaveJS Client</title>
+  <title>NoctweaveJS Pairwise Example</title>
   <link rel="icon" href="./assets/noctweave-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
@@ -11,162 +11,32 @@
   <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
     <div class="vaultCard">
       <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
-      <p class="eyebrow">Encrypted browser profile</p>
-      <h1 id="vaultTitle">Unlock Noctweave</h1>
-      <p id="vaultDescription">Private identity keys stay encrypted in this browser while the profile is locked.</p>
-      <label for="vaultPassphrase">Profile passphrase</label>
-      <input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
-      <div id="vaultConfirmationRow">
-        <label for="vaultConfirmation">Repeat passphrase</label>
-        <input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024">
-      </div>
-      <p class="fieldHint" id="vaultHint">Use at least 12 characters. This passphrase cannot be recovered.</p>
-      <div class="vaultActions">
-        <button id="unlockVault" class="primaryWide">Create encrypted profile</button>
-        <button id="forgetVault" class="subtle danger" hidden>Forget local profile</button>
-      </div>
+      <p class="eyebrow">Encrypted local persona</p>
+      <h1 id="vaultTitle">Open Noctweave</h1>
+      <p>A persona is only a local label. Every relationship receives fresh post-quantum keys and an opaque route.</p>
+      <label for="displayName">Local display name</label><input id="displayName" maxlength="128" value="Anonymous">
+      <label for="vaultPassphrase">Persona passphrase</label><input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+      <div id="vaultConfirmationRow"><label for="vaultConfirmation">Repeat passphrase</label><input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024"></div>
+      <p class="fieldHint">Use at least 12 characters. There is no account recovery or identity linkage.</p>
+      <div class="vaultActions"><button id="unlockVault" class="primaryWide">Create encrypted persona</button><button id="forgetVault" class="subtle danger" hidden>Delete local persona</button></div>
       <p class="vaultError" id="vaultError" role="alert"></p>
     </div>
   </section>
 
-  <main class="shell" id="appShell" inert aria-hidden="true">
-    <section class="hero">
-      <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
-        <p class="eyebrow">NoctweaveJS</p>
-        <h1>Browser Messenger</h1>
-        <p>A dependency-light browser client for pairing, relaying, and decrypting Noctweave messages.</p>
-      </div></div>
-      <div class="heroActions">
-        <a class="profileLink" href="?profile=alice">Alice</a>
-        <a class="profileLink" href="?profile=bob">Bob</a>
-        <div class="status" id="status">Idle</div>
-      </div>
-    </section>
-
+  <main class="shell" id="appShell" hidden inert>
+    <section class="hero"><div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div><p class="eyebrow">Reference client</p><h1>Pairwise Messenger</h1><p>One-use rendezvous pairing without accounts or reusable public identities.</p></div></div><div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button></div></section>
     <section class="workspace">
       <aside class="sideRail">
-        <section class="panel compact">
-          <div class="sectionHeader">
-            <div>
-              <p class="eyebrow">Profile</p>
-              <h2 id="profile">default</h2>
-            </div>
-            <span class="stateDot" id="identityDot"></span>
-          </div>
-          <dl class="identityDetails">
-            <dt>Inbox</dt>
-            <dd id="inbox">Not created</dd>
-            <dt>Fingerprint</dt>
-            <dd id="fingerprint">Not created</dd>
-          </dl>
-          <div class="buttonRow">
-            <button id="createIdentity">Create Inbox</button>
-            <button id="lockProfile" class="subtle">Lock</button>
-            <button id="resetProfile" class="subtle danger">Reset Empty Profile</button>
-          </div>
-          <p class="info">Live endpoint keys, ratchets, routes, and cursors cannot be exported or cloned.</p>
-        </section>
-
-        <section class="panel compact">
-          <div class="sectionHeader">
-            <div>
-              <p class="eyebrow">Relay</p>
-              <h2>Connection</h2>
-            </div>
-          </div>
-          <label for="relay">Relay URL</label>
-          <input id="relay" value="http://127.0.0.1:9339" spellcheck="false" inputmode="url">
-          <div class="buttonRow">
-            <button id="connect">Check Relay</button>
-            <button id="fetch" class="subtle">Fetch</button>
-          </div>
-          <label class="toggle">
-            <input id="autoFetch" type="checkbox">
-            <span>Auto-fetch</span>
-          </label>
-          <div id="relayInfo" class="info">No relay checked yet.</div>
-        </section>
-
-        <section class="panel compact">
-          <div class="sectionHeader">
-            <div>
-              <p class="eyebrow">Pairing</p>
-              <h2>Contact Code</h2>
-            </div>
-            <button id="toggleCode" class="iconButton" type="button" aria-label="Reveal contact code">Show</button>
-          </div>
-          <textarea id="contactCode" rows="5" readonly placeholder="Create an inbox first."></textarea>
-          <p class="info">This reusable compatibility code exposes the same identity generation, endpoint authorization, inbox, and relay details to each recipient. It is not a one-time unlinkable rendezvous.</p>
-          <div class="buttonRow">
-            <button id="copyCode">Copy Code</button>
-          </div>
-          <label for="peerCode">Paste a peer code</label>
-          <textarea id="peerCode" rows="5" placeholder="Paste a contact code from another profile."></textarea>
-          <div class="buttonRow">
-            <button id="importContact">Import Contact</button>
-          </div>
-        </section>
-
-        <section class="panel compact">
-          <div class="sectionHeader">
-            <div>
-              <p class="eyebrow">Contacts</p>
-              <h2>Address Book</h2>
-            </div>
-            <span id="contactCount" class="countPill">0</span>
-          </div>
-          <div id="contactList" class="contactList"></div>
-        </section>
+        <section class="panel compact"><p class="eyebrow">Local persona</p><h2 id="personaName"></h2><dl class="identityDetails"><dt>Pairwise relationships</dt><dd id="relationshipCount">0</dd></dl><p class="info">This label has no protocol key or routable identifier.</p></section>
+        <section class="panel compact"><p class="eyebrow">Opaque delivery</p><h2>Relay</h2><label for="relay">Relay URL</label><input id="relay" value="http://127.0.0.1:9339" spellcheck="false"><button id="verifyRelay">Verify opaque-route support</button><div id="relayInfo" class="info">Not checked yet.</div></section>
       </aside>
-
       <section class="chatPanel">
-        <div class="chatHeader">
-          <div>
-            <p class="eyebrow">Chat</p>
-            <h2 id="chatTitle">No contact selected</h2>
-          </div>
-          <div class="chatHeaderActions">
-            <select id="contacts" aria-label="Select contact"></select>
-            <button id="deleteContact" class="subtle danger">Delete</button>
-          </div>
-        </div>
-        <div id="chat" class="chat" aria-live="polite">Pair with a contact to start.</div>
-        <div class="composer">
-          <textarea id="message" rows="3" placeholder="Write a message. Cmd/Ctrl+Enter sends."></textarea>
-          <div class="composerMeta">
-            <span id="messageCount">0 characters</span>
-            <button id="send">Send</button>
-          </div>
-        </div>
+        <div class="chatHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh rendezvous invitation</h2></div></div>
+        <div class="panel compact"><p>Invitations expire after ten minutes and can be redeemed once.</p><div class="buttonRow"><button id="createInvitation">Create fresh invitation</button><button id="copyInvitation" class="subtle">Copy</button></div><textarea id="pairingInvitation" rows="8" readonly></textarea><label for="peerInvitation">Inspect a received invitation</label><textarea id="peerInvitation" rows="8" placeholder="Paste a one-use invitation"></textarea><button id="inspectInvitation">Validate invitation</button><p id="invitationResult" class="info">No reusable public relationship material is generated.</p></div>
+        <div class="panel compact"><p class="eyebrow">Established relationships</p><div id="relationshipList" class="contactList">No completed pairwise relationships yet.</div></div>
       </section>
     </section>
-
-    <section class="panel guide">
-      <div class="sectionHeader">
-        <div>
-          <p class="eyebrow">Quick Test</p>
-          <h2>Two Profiles</h2>
-        </div>
-      </div>
-      <div class="steps">
-        <span>Open <code>?profile=alice</code> and <code>?profile=bob</code>.</span>
-        <span>Create an inbox in both profiles and exchange contact codes.</span>
-        <span>Use Auto-fetch or press Fetch to receive queued ciphertext.</span>
-      </div>
-    </section>
-
-    <section class="panel logPanel">
-      <div class="sectionHeader">
-        <div>
-          <p class="eyebrow">Diagnostics</p>
-          <h2>Event Log</h2>
-        </div>
-        <button id="clearLog" class="subtle">Clear</button>
-      </div>
-      <pre id="log"></pre>
-    </section>
   </main>
-
   <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -10,6 +10,18 @@ export function requireRecord(value, label) {
   return value;
 }
 
+export function requireExactRecord(value, requiredKeys, optionalKeys, label) {
+  requireRecord(value, label);
+  const required = new Set(requiredKeys);
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const actual = Object.keys(value);
+  if (actual.some((key) => !allowed.has(key)) ||
+      [...required].some((key) => !Object.hasOwn(value, key))) {
+    throw new TypeError(`${label} must contain exactly its current protocol fields.`);
+  }
+  return value;
+}
+
 export function requireInteger(value, label, minimum, maximum) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw new TypeError(`${label} must be an integer from ${minimum} through ${maximum}.`);

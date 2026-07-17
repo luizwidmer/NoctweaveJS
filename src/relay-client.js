@@ -1,9 +1,17 @@
 import { normalizeRelayEndpoint, relayEndpointURL } from "./endpoint.js";
-import { relayRequests } from "./requests.js";
+import { relayRequests, validateRelayRequestEnvelopeV2 } from "./requests.js";
 import {
-  validateMailboxConsumerRegistration,
-  validateMailboxSyncBatch
-} from "./architecture-v2.js";
+  validateOpaqueRouteCommitResponseV2,
+  validateOpaqueRouteCommitSubmissionV2,
+  validateOpaqueRouteCreateSubmissionV2,
+  validateOpaqueRouteEnqueueResponseV2,
+  validateOpaqueRouteEnqueueSubmissionV2,
+  validateOpaqueRouteRenewSubmissionV2,
+  validateOpaqueRouteStateResponseV2,
+  validateOpaqueRouteSyncResponseV2,
+  validateOpaqueRouteSyncSubmissionV2,
+  validateOpaqueRouteTeardownSubmissionV2
+} from "./opaque-route-relay-v2.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
@@ -57,6 +65,7 @@ export class NoctweaveRelayClient {
     }
     this.fetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.WebSocket = options.WebSocket ?? globalThis.WebSocket;
+    this.protocolCrypto = options.crypto ?? null;
     this.timeoutMs = normalizedTimeout(options.timeoutMs ?? this.policy.timeoutMs);
 
     if (!this.fetch) {
@@ -72,57 +81,84 @@ export class NoctweaveRelayClient {
     return this.send(relayRequests.info(), options);
   }
 
-  async retireInbox(request, options = {}) {
-    const response = await this.send(relayRequests.retireInbox(request), options);
-    if (response?.type !== "ok") {
-      throw new Error("Relay rejected inbox retirement.");
-    }
-    return response;
+  async createOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteCreateSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.createOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteStateResponseV2(response, submission.transition);
   }
 
-  async registerMailboxConsumer(request, options = {}) {
-    const response = await this.send(relayRequests.registerMailboxConsumer(request), options);
-    const validated = validatedMailboxConsumerResponse(response, "registration");
-    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
-        validated.mailboxConsumer.consumerSigningPublicKey !== request.consumerSigningPublicKey ||
-        validated.mailboxConsumer.state !== "active") {
-      throw new Error("Relay returned a mismatched mailbox consumer registration response.");
-    }
-    return validated;
+  async renewOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteRenewSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.renewOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteStateResponseV2(response, submission.transition);
   }
 
-  async syncMailbox(request, options = {}) {
-    const response = await this.send(relayRequests.syncMailbox(request), options);
-    if (response?.type !== "mailboxSync" || response.mailboxSync == null) {
-      throw new Error("Relay returned an incompatible mailbox sync response.");
-    }
-    return { ...response, mailboxSync: validateMailboxSyncBatch(response.mailboxSync) };
+  async teardownOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteTeardownSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.teardownOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteStateResponseV2(response, submission.transition);
   }
 
-  async commitMailboxCursor(request, options = {}) {
-    const response = await this.send(relayRequests.commitMailboxCursor(request), options);
-    const validated = validatedMailboxConsumerResponse(response, "cursor commit");
-    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
-        validated.mailboxConsumer.consumerSigningPublicKey !== request.consumerProof.publicSigningKey ||
-        validated.mailboxConsumer.state !== "active" ||
-        validated.mailboxConsumer.committedSequence !== request.sequence) {
-      throw new Error("Relay returned a mismatched mailbox cursor commit response.");
-    }
-    return validated;
+  async enqueueOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteEnqueueSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.enqueueOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteEnqueueResponseV2(response, submission.packet);
   }
 
-  async revokeMailboxConsumer(request, options = {}) {
-    const response = await this.send(relayRequests.revokeMailboxConsumer(request), options);
-    const validated = validatedMailboxConsumerResponse(response, "revocation");
-    if (validated.mailboxConsumer.consumerId !== request.consumerId ||
-        validated.mailboxConsumer.state !== "revoked") {
-      throw new Error("Relay returned a mismatched mailbox consumer revocation response.");
-    }
-    return validated;
+  async syncOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteSyncSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.syncOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteSyncResponseV2({
+      crypto,
+      response,
+      request: submission.request
+    });
+  }
+
+  async commitOpaqueRoute(request, options = {}) {
+    const crypto = this.validationCrypto(options);
+    const submission = await validateOpaqueRouteCommitSubmissionV2({
+      crypto,
+      submission: request
+    });
+    const response = requireOpaqueRouteResponse(
+      await this.send(relayRequests.commitOpaqueRoute(submission), options)
+    );
+    return validateOpaqueRouteCommitResponseV2(response, submission.request);
   }
 
   async send(request, options = {}) {
-    const authenticated = this.withAuthToken(request);
+    const authenticated = validateRelayRequestEnvelopeV2(this.withAuthToken(request));
     const timeoutMs = normalizedTimeout(options.timeoutMs ?? this.timeoutMs);
 
     if (this.endpoint.transport === "websocket") {
@@ -244,16 +280,21 @@ export class NoctweaveRelayClient {
     }
     return { ...request, authToken: this.authToken };
   }
+
+  validationCrypto(options) {
+    const crypto = options.crypto ?? this.protocolCrypto;
+    if (typeof crypto?.sha256 !== "function" || typeof crypto?.hmacSha256 !== "function") {
+      throw new TypeError("Opaque route operations require SHA-256 and HMAC-SHA-256 primitives.");
+    }
+    return crypto;
+  }
 }
 
-function validatedMailboxConsumerResponse(response, operation) {
-  if (response?.type !== "mailboxConsumer" || response.mailboxConsumer == null) {
-    throw new Error(`Relay returned an incompatible mailbox consumer ${operation} response.`);
+function requireOpaqueRouteResponse(response) {
+  if (response?.type === "error") {
+    throw new Error("Relay rejected the opaque route operation.");
   }
-  return {
-    ...response,
-    mailboxConsumer: validateMailboxConsumerRegistration(response.mailboxConsumer)
-  };
+  return response;
 }
 
 function decodeRelayResponse(text, requestType) {

@@ -8,6 +8,7 @@ import {
   freezeWire,
   requireBase64,
   requireCanonicalTimestamp,
+  requireExactRecord,
   requireInteger,
   requireNonzeroFixedBase64,
   requireRecord,
@@ -136,7 +137,12 @@ export function opaqueRoutePacketAuthenticatedDataV2({
 }
 
 export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
-  requireRecord(value, "Opaque route packet");
+  requireExactRecord(value, [
+    "routeID",
+    "packetID",
+    "sealedFrame",
+    "authorization"
+  ], [], "Opaque route packet");
   const routeID = validateIdentifier(value.routeID, "Opaque route ID");
   const packetID = validateOpaqueRoutePacketIdV2(value.packetID);
   const sealedBytes = requireBase64(
@@ -291,7 +297,13 @@ export async function sealOpaqueRouteBundleV2({
 }
 
 export async function validateOpaqueRouteSealedBundleV2({ crypto, bundle: value }) {
-  requireRecord(value, "Opaque route sealed bundle");
+  requireExactRecord(value, [
+    "bundleID",
+    "bundleDigest",
+    "routeRevision",
+    "paddingBucket",
+    "packets"
+  ], [], "Opaque route sealed bundle");
   const bundleID = validateOpaqueRouteBundleIdV2(value.bundleID);
   requireBase64(value.bundleDigest, 32, "Opaque route bundle digest");
   const routeRevision = validateRouteRevision(value.routeRevision);
@@ -681,7 +693,7 @@ async function packetDigest(crypto, domain, components) {
 }
 
 function validateIdentifier(value, label) {
-  requireRecord(value, label);
+  requireExactRecord(value, ["rawValue"], [], label);
   const rawValue = encodeBase64(requireNonzeroFixedBase64(
     value.rawValue,
     noctweaveOpaqueRoutePacketsV2.identifierBytes,

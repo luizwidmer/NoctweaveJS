@@ -2,7 +2,7 @@ import { NoctweaveRelayClient } from "./relay-client.js";
 import { NoctweaveStateRepository } from "./storage.js";
 
 export class NoctweaveWebClient {
-  constructor({ relay, store, stateKey, authToken, fetch, WebSocket, timeoutMs }) {
+  constructor({ relay, store, stateKey, authToken, fetch, WebSocket, timeoutMs, crypto }) {
     if (!relay) {
       throw new TypeError("NoctweaveWebClient requires a relay endpoint.");
     }
@@ -11,7 +11,7 @@ export class NoctweaveWebClient {
     }
     this.relay = relay instanceof NoctweaveRelayClient
       ? relay
-      : new NoctweaveRelayClient(relay, { authToken, fetch, WebSocket, timeoutMs });
+      : new NoctweaveRelayClient(relay, { authToken, fetch, WebSocket, timeoutMs, crypto });
     this.state = new NoctweaveStateRepository(store, { key: stateKey });
   }
 
@@ -35,23 +35,27 @@ export class NoctweaveWebClient {
     return this.relay.info();
   }
 
-  async raw(request) {
-    return this.relay.send(request);
+  async createOpaqueRoute(request, options) {
+    return this.relay.createOpaqueRoute(request, options);
   }
 
-  async registerMailboxConsumer(request, options) {
-    return this.relay.registerMailboxConsumer(request, options);
+  async renewOpaqueRoute(request, options) {
+    return this.relay.renewOpaqueRoute(request, options);
   }
 
-  async syncMailbox(request, options) {
-    return this.relay.syncMailbox(request, options);
+  async teardownOpaqueRoute(request, options) {
+    return this.relay.teardownOpaqueRoute(request, options);
   }
 
-  async commitMailboxCursor(request, options) {
-    return this.relay.commitMailboxCursor(request, options);
+  async enqueueOpaqueRoute(request, options) {
+    return this.relay.enqueueOpaqueRoute(request, options);
   }
 
-  async revokeMailboxConsumer(request, options) {
-    return this.relay.revokeMailboxConsumer(request, options);
+  async syncOpaqueRoute(request, options) {
+    return this.relay.syncOpaqueRoute(request, options);
+  }
+
+  async commitOpaqueRoute(request, options) {
+    return this.relay.commitOpaqueRoute(request, options);
   }
 }

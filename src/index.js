@@ -1,5 +1,5 @@
 export { normalizeRelayEndpoint, parseRelayEndpoint, relayEndpointURL } from "./endpoint.js";
-export { relayRequests } from "./requests.js";
+export { relayRequests, validateRelayRequestEnvelopeV2 } from "./requests.js";
 export {
   NoctweaveRelayClient,
   normalizeRelayClientPolicy,
@@ -8,12 +8,12 @@ export {
 } from "./relay-client.js";
 export { NoctweaveWebClient } from "./client.js";
 export {
-  NoctweaveBrowserIdentityService,
-  browserIdentityStateSchema,
-  browserMailboxRouteKey,
+  NoctweaveBrowserPairingService,
+  browserPersonaStateSchema,
+  defaultRelationshipPseudonymV2,
   parseBrowserRelayEndpoint,
   validateBrowserDisplayName,
-  validateBrowserIdentityState
+  validateBrowserPersonaState
 } from "./browser-identity.js";
 export {
   BrowserLocalStorageStore,
@@ -27,30 +27,21 @@ export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 export * from "./rendezvous-v2.js";
 export * from "./opaque-route-v2.js";
 export * from "./opaque-route-packet-v2.js";
+export * from "./opaque-route-relay-v2.js";
 export * from "./pairwise-opaque-route-v2.js";
+export * from "./contact-pairing-v2.js";
 export {
   advanceDeliveryState,
-  buildCommitMailboxCursorRequest,
-  buildRegisterMailboxConsumerRequest,
-  buildRetireInboxRequest,
-  buildRevokeMailboxConsumerRequest,
-  buildSyncMailboxRequest,
   contentTypeCanonicalName,
   createContentTypeId,
   createConversationEvent,
   createDeliveryStateRecord,
   createEncodedContent,
-  createMailboxCursor,
-  createMailboxConsumerId,
-  createMailboxConsumerProof,
   createProtocolCapabilityManifest,
   createRelationshipEndpointHandle,
   createTextEncodedContent,
   defaultActiveEndpointModules,
   generateRelationshipEndpointHandle,
-  generateMailboxConsumerId,
-  inboxRetirementProofPayload,
-  mailboxConsumerProofPayload,
   mayMutateControlState,
   messageDeliveryStates,
   negotiateProtocolCapabilities,
@@ -62,19 +53,6 @@ export {
   validateConversationEvent,
   validateDeliveryStateRecord,
   validateEncodedContent,
-  validateMailboxCursor,
-  validateMailboxConsumerId,
-  validateMailboxConsumerRegistration,
-  validateMailboxSyncBatch,
-  validateMailboxSyncContinuity,
-  validateCommitMailboxCursorRequest,
-  validateRegisterMailboxConsumerRequest,
-  validateRetireInboxRequest,
-  validateRelayActorProof,
-  validateRevokeMailboxConsumerRequest,
-  validateSyncMailboxRequest,
-  verifyMailboxConsumerProof,
-  verifyInboxRetirementProof,
   validateProtocolCapabilityManifest,
   validateProtocolModuleCapability,
   validateRelationshipEndpointHandle
@@ -103,38 +81,30 @@ export {
   NoctweaveRemoteEnvelopeError,
   createNativeInboundSession,
   createNativeOutboundSession,
-  decodeNativeContactCode,
   decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
-  encodeNativeContactCode,
   encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
-  findNativeContactForEnvelope,
-  makeNativeContactOffer,
-  nativeConversationKey,
-  verifyNativeContactOffer,
+  findPairwiseRelationshipForEnvelope,
+  pairwiseConversationKey,
   verifyNativeEnvelope
 } from "./crypto/noctweave-native-message.js";
 export {
   assertCertifiedEndpointPrekeyFresh,
-  assertContactEndpointActive,
+  assertPeerEndpointActive,
   certifiedEndpointAuthorizationDigest,
   certifiedEndpointDigest,
-  contactFromNativeOffer,
   createEndpointRemovalProofV4,
-  deriveNativeDirectV4Binding,
+  derivePairwiseDirectV4Binding,
   derivePairwiseEndpointBindingV4,
   directV4ConversationId,
-  directV4EndpointSession,
-  inboxIdForAccessPublicKey,
-  isCertifiedNativeContact,
-  makeCertifiedNativeContactOffer,
+  pairwiseDirectV4EndpointSession,
+  isPeerPairwiseIdentityV2,
   nativeDirectV4,
-  prepareNativeDirectV4Identity,
-  renewNativeDirectV4PrekeyIfNeeded,
+  preparePairwiseDirectV4Identity,
+  renewPairwiseDirectV4PrekeyIfNeeded,
   validateCertifiedGenerationEndpointV4,
   validateEndpointSetCheckpointV4,
-  verifyCertifiedNativeContactOffer,
   verifyCertifiedGenerationEndpointV4,
   verifyEndpointRemovalProofV4
 } from "./crypto/direct-v4.js";

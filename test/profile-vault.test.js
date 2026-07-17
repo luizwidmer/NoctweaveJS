@@ -14,8 +14,7 @@ test("public JS surfaces cannot clone a live protocol endpoint", async () => {
   ]);
   assert.doesNotMatch(html, /id="(?:export|import)Profile"/);
   assert.doesNotMatch(script, /(?:encrypt|decrypt)PortableProfile/);
-  assert.match(
-    html,
-    /Live identity keys, ratchets, routes, and cursors are never exported or cloned/
-  );
+  assert.match(html, /This label has no protocol key or routable identifier/);
+  assert.match(html, /Every peer relationship receives fresh post-quantum keys/);
+  assert.match(script, /EncryptedNoctweaveStore/);
 });

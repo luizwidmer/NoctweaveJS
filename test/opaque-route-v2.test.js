@@ -66,7 +66,7 @@ test("opaque route creation keeps four authorities independent and relay state d
   for (const authority of rawAuthorities) {
     assert.equal(relayProjection.includes(authority), false);
   }
-  for (const forbidden of ["identity", "generation", "endpoint", "relationship", "provider", "owner", "account", "inbox"]) {
+  for (const forbidden of ["identity", "generation", "endpoint", "relationship", "provider", "owner", "account", "reusableaddress"]) {
     assert.equal(relayProjection.toLowerCase().includes(forbidden), false, forbidden);
   }
   assert.equal(request.lease.policy.transportRequirement, "confidentialAuthenticated");

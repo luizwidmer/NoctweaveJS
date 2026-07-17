@@ -1,238 +1,174 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
+import oqsFactory from "../wasm/dist/noctweave_oqs.js";
 import {
-  NoctweaveBrowserIdentityService,
-  browserIdentityStateSchema,
+  NoctweaveBrowserPairingService,
+  NoctweaveCryptoSuite,
+  NoctweaveOQSWasmAdapter,
+  WebCryptoPrimitives,
+  browserPersonaStateSchema,
+  defaultRelationshipPseudonymV2,
+  createOpaqueReceiveRouteV2,
+  createProtocolCapabilityManifest,
   parseBrowserRelayEndpoint,
   validateBrowserDisplayName,
-  validateBrowserIdentityState
+  validateBrowserPersonaState
 } from "../src/index.js";
 
-test("browser identity setup verifies relay and registers a post-quantum inbox", async () => {
-  const requests = [];
-  const clients = [];
-  const service = new NoctweaveBrowserIdentityService({
-    pqc: mockPQC(),
-    crypto: mockCrypto(),
-    relayClientFactory(endpoint, options) {
-      clients.push({ endpoint, options });
-      return {
-        health: async () => ({ type: "ok" }),
-        info: async () => ({ type: "info", relayInfo: testRelayInfo({ relayName: "Test Relay" }) }),
-        send: async (request) => {
-          requests.push(request);
-          if (request.type === "registerMailboxConsumer") {
-            return mailboxConsumerResponse(request.registerMailboxConsumer);
-          }
-          return { type: "ok" };
-        }
-      };
-    }
+test("browser personas are keyless UI containers and each pairing mints fresh authority", async () => {
+  const service = await pairingService();
+  const persona = service.createPersona({
+    displayName: "  Alice   Example  ",
+    createdAt: "2026-07-16T12:00:00Z"
   });
-
-  const result = await service.createAndRegister({
-    displayName: "  Alice   Example ",
-    relay: "https://relay.example",
-    authToken: "relay-password"
-  });
-
-  assert.equal(result.identity.displayName, "Alice Example");
-  assert.match(result.identity.inboxId, /^noctweave1/);
-  assert.equal(result.identity.contactOffer.inboxId, result.identity.inboxId);
-  assert.equal(result.identity.contactOffer.version, 4);
-  assert.equal(
-    result.identity.contactOffer.preferredGenerationEndpoint.endpointId,
-    result.identity.localEndpoint.id
-  );
-  assert.equal(result.relay.endpoint.useTLS, true);
-  assert.equal(result.relay.relayInfo.relayName, "Test Relay");
-  assert.equal(clients.length, 3);
-  assert.equal(clients[0].options.authToken, "relay-password");
-  assert.equal(requests[0].type, "registerInbox");
-  assert.equal(requests[0].registerInbox.inboxId, result.identity.inboxId);
-  assert.equal(requests[0].registerInbox.registrationVersion, 2);
-  assert.equal(requests[0].registerInbox.contactOffer, undefined);
-  assert.equal(requests[0].registerInbox.accessProof.signature.length > 100, true);
-  const registrationJSON = JSON.stringify(requests[0]);
-  for (const forbiddenName of [
-    "contactOffer",
-    "displayName",
-    "signingPublicKey",
-    "agreementPublicKey",
-    "endpointSetManifest",
-    "endpointCertificate",
-    "prekey"
+  assert.equal(persona.stateSchema, browserPersonaStateSchema);
+  assert.equal(persona.displayName, "Alice Example");
+  assert.deepEqual(persona.relationships, []);
+  for (const forbidden of [
+    "signing",
+    "agreement",
+    "access",
+    "networkAddress",
+    "identityGenerationId"
   ]) {
-    assert.equal(registrationJSON.includes(forbiddenName), false, forbiddenName);
+    assert.equal(Object.hasOwn(persona, forbidden), false, forbidden);
   }
-  assert.equal(registrationJSON.includes(result.identity.signing.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.agreement.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.localEndpoint.signing.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.localEndpoint.agreement.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.identityGenerationId), false);
-  assert.equal(registrationJSON.includes(result.identity.localEndpoint.id), false);
-  assert.equal(
-    registrationJSON.includes(result.identity.localEndpoint.prekeys.signedPrekeyPublicKey),
-    false
-  );
-  assert.equal(requests[1].type, "registerMailboxConsumer");
-  assert.equal(requests[1].registerMailboxConsumer.sponsorConsumerId, undefined);
-  const mailboxRoute = Object.values(result.identity.localEndpoint.mailboxRoutes)[0];
-  assert.equal(
-    requests[1].registerMailboxConsumer.consumerSigningPublicKey,
-    mailboxRoute.signing.publicKey
-  );
+  const first = await service.preparePairingParticipant({
+    persona,
+    relay: "https://relay.example",
+    createdAt: "2026-07-16T12:00:00Z"
+  });
+  const second = await service.preparePairingParticipant({
+    persona,
+    relay: "https://relay.example",
+    createdAt: "2026-07-16T12:00:01Z"
+  });
+  assert.equal(first.localIdentity.displayName, defaultRelationshipPseudonymV2);
+  assert.notEqual(first.localIdentity.displayName, persona.displayName);
+  assert.notEqual(first.localIdentity.signing.publicKey, second.localIdentity.signing.publicKey);
   assert.notEqual(
-    mailboxRoute.signing.publicKey,
-    result.identity.localEndpoint.signing.publicKey
+    first.localReceiveRoute.clientCapabilities.routeID.rawValue,
+    second.localReceiveRoute.clientCapabilities.routeID.rawValue
   );
-  assert.notEqual(result.identity.localEndpoint.signing.publicKey, result.identity.signing.publicKey);
-  assert.notEqual(result.identity.localEndpoint.agreement.publicKey, result.identity.agreement.publicKey);
-  assert.equal(mailboxRoute.mode, "v2");
-  assert.equal(result.identity.stateSchema, browserIdentityStateSchema);
-  assert.equal(Object.hasOwn(result.identity.localEndpoint, "mailboxConsumerIdsByRoute"), false);
-  assert.equal(Object.hasOwn(mailboxRoute, "legacySponsorConsumerId"), false);
-  assert.equal(mailboxRoute.cursor, null);
-  assert.equal(mailboxRoute.pendingCommit, null);
-  assert.equal(mailboxRoute.committedSequence, 0);
-  assert.doesNotThrow(() => validateBrowserIdentityState(result.identity));
+
+  const peerPersona = service.createPersona({
+    displayName: "Bob Example",
+    createdAt: "2026-07-16T12:00:00Z"
+  });
+  const made = await service.createPairingInvitation({
+    createdAt: "2026-07-16T12:00:00Z",
+    expiresAt: "2026-07-16T12:10:00Z"
+  });
+  const peer = await service.preparePairingParticipant({
+    persona: peerPersona,
+    relay: "https://relay.example",
+    relationshipLabel: "Bob for Alice",
+    createdAt: "2026-07-16T12:00:00Z"
+  });
+  const completed = await service.establishPairing({
+    persona,
+    pending: made.pending,
+    invitation: made.invitation,
+    localParticipant: first,
+    peerParticipant: peer,
+    at: "2026-07-16T12:01:00Z"
+  });
+  assert.equal(completed.persona.relationships.length, 1);
+  assert.equal(completed.persona.relationships[0].relationshipID, completed.relationship.relationshipID);
+  assert.equal(completed.persona.relationships[0].peerIdentity.displayName, "Bob for Alice");
 });
 
-test("browser identity decoding rejects every pre-1.0 or incomplete state", () => {
-  const oldState = {
-    displayName: "Old Alice",
-    architectureVersion: 2
+test("browser relay verification requires current opaque-route delivery", async () => {
+  const service = await pairingService({
+    relayClientFactory: () => ({
+      health: async () => ({ type: "ok" }),
+      info: async () => ({ type: "info", relayInfo: testRelayInfo() })
+    })
+  });
+  const verified = await service.verifyRelay("https://relay.example");
+  assert.equal(verified.endpoint.transport, "http");
+  assert.equal(verified.endpoint.useTLS, true);
+
+  const incompatible = await pairingService({
+    relayClientFactory: () => ({
+      health: async () => ({ type: "ok" }),
+      info: async () => ({
+        type: "info",
+        relayInfo: {
+          ...testRelayInfo(),
+          protocolCapabilities: {
+            ...createProtocolCapabilityManifest(),
+            modules: createProtocolCapabilityManifest().modules.filter(({ module }) => module !== "nw.opaque-route")
+          }
+        }
+      })
+    })
+  });
+  await assert.rejects(() => incompatible.verifyRelay("https://relay.example"), /opaque route v2/);
+});
+
+test("browser persona schema rejects non-current global identity state", () => {
+  const foreignState = {
+    stateSchema: "nw.browser-global-identity",
+    architectureVersion: 2,
+    displayName: "Alice",
+    identityGenerationId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+    networkAddress: "reusable-address"
   };
-  assert.throws(() => validateBrowserIdentityState(oldState), /unsupported state schema/);
-
-  const currentButIncomplete = {
-    ...oldState,
-    stateSchema: browserIdentityStateSchema
+  assert.throws(() => validateBrowserPersonaState(foreignState), /fields do not match|unsupported/);
+  const extended = {
+    stateSchema: browserPersonaStateSchema,
+    version: 2,
+    displayName: "Alice",
+    relationships: [],
+    pendingPairings: [],
+    createdAt: "2026-07-16T12:00:00Z",
+    networkAddress: "forbidden"
   };
-  assert.throws(() => validateBrowserIdentityState(currentButIncomplete), /malformed/);
-});
-
-test("fresh browser identity creation fails closed when PQ key generation fails", async () => {
-  const pqc = mockPQC();
-  pqc.generateKemKeypair = () => ({ publicKey: new Uint8Array(), secretKey: new Uint8Array() });
-  const service = new NoctweaveBrowserIdentityService({ pqc, crypto: mockCrypto() });
-  await assert.rejects(
-    () => service.createFreshIdentityState({ displayName: "Alice", relay: "https://relay.example" }),
-    /key generation failed/
-  );
-});
-
-test("browser setup rejects raw TCP, invalid names, coordinators, and failed registration", async () => {
-  assert.throws(() => parseBrowserRelayEndpoint("relay.example:9339"), /requires an HTTP/);
+  assert.throws(() => validateBrowserPersonaState(extended), /fields do not match/);
+  assert.deepEqual(parseBrowserRelayEndpoint("wss://relay.example"), {
+    host: "relay.example",
+    port: 443,
+    useTLS: true,
+    transport: "websocket"
+  });
+  assert.throws(() => parseBrowserRelayEndpoint("tcp://relay.example"), /requires an HTTP/);
   assert.throws(() => validateBrowserDisplayName("   "), /Display name/);
-
-  const coordinator = new NoctweaveBrowserIdentityService({
-    pqc: mockPQC(),
-    crypto: mockCrypto(),
-    relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
-      info: async () => ({ type: "info", relayInfo: testRelayInfo({ kind: "coordinator" }) })
-    })
-  });
-  await assert.rejects(() => coordinator.verifyRelay("https://relay.example"), /client-facing/);
-
-  const incompatibleRelay = new NoctweaveBrowserIdentityService({
-    pqc: mockPQC(),
-    crypto: mockCrypto(),
-    relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
-      info: async () => ({ type: "info", relayInfo: { kind: "standard" } })
-    })
-  });
-  await assert.rejects(
-    () => incompatibleRelay.verifyRelay("https://relay.example"),
-    /architecture-v2 capability manifest/
-  );
-
-  const rejected = new NoctweaveBrowserIdentityService({
-    pqc: mockPQC(),
-    crypto: mockCrypto(),
-    relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
-      info: async () => ({ type: "info", relayInfo: testRelayInfo() }),
-      send: async () => ({ type: "error" })
-    })
-  });
-  await assert.rejects(
-    () => rejected.createAndRegister({ displayName: "Alice", relay: "https://relay.example" }),
-    /rejected inbox registration/
-  );
 });
 
-function mockPQC() {
-  let sequence = 1;
-  return {
-    generateSigningKeypair() {
-      return keypair(1_952, 4_032, sequence++);
-    },
-    generateKemKeypair() {
-      return keypair(1_184, 2_400, sequence++);
-    },
-    sign() {
-      return new Uint8Array(3_309).fill(0x5a);
-    },
-    verify() {
-      return true;
-    }
-  };
+async function pairingService(options = {}) {
+  const pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
+  const crypto = new NoctweaveCryptoSuite({ pqc, webcrypto: new WebCryptoPrimitives() });
+  const relayClientFactory = options.relayClientFactory ?? (() => ({
+    createOpaqueRoute: async ({ transition, renewCapability }) => ({
+      type: "opaqueRouteV2",
+      opaqueRouteV2: await createOpaqueReceiveRouteV2({
+        crypto,
+        request: transition,
+        presentedRenewCapability: renewCapability,
+        confidentialTransport: true,
+        receivedAt: transition.lease.issuedAt
+      })
+    })
+  }));
+  return new NoctweaveBrowserPairingService({
+    pqc,
+    crypto,
+    ...options,
+    relayClientFactory
+  });
 }
 
-function keypair(publicLength, secretLength, seed) {
-  return {
-    publicKey: new Uint8Array(publicLength).fill(seed),
-    secretKey: new Uint8Array(secretLength).fill(seed + 10)
-  };
-}
-
-function mockCrypto() {
-  return {
-    async sha256(value) {
-      if (value.byteLength === 1_952 || value.byteLength === 1_184) {
-        const digest = new Uint8Array(32);
-        digest.fill(value[0] ?? 0);
-        return digest;
-      }
-      return new Uint8Array(createHash("sha256").update(value).digest());
-    }
-  };
-}
-
-function mailboxConsumerResponse(request) {
-  return {
-    type: "mailboxConsumer",
-    mailboxConsumer: {
-      consumerId: request.consumerId,
-      consumerSigningPublicKey: request.consumerSigningPublicKey,
-      state: "active",
-      committedSequence: request.startingSequence ?? 0,
-      registeredAt: "2026-07-16T12:34:56Z"
-    }
-  };
-}
-
-function serialized(value) {
-  return {
-    publicKey: Buffer.from(value.publicKey).toString("base64"),
-    secretKey: Buffer.from(value.secretKey).toString("base64")
-  };
-}
-
-function testRelayInfo(overrides = {}) {
+function testRelayInfo() {
+  const capabilities = createProtocolCapabilityManifest();
   return {
     kind: "standard",
     protocolCapabilities: {
-      architectureVersion: 2,
+      ...capabilities,
       modules: [
-        { module: "nw.core", versions: [2], status: "provisional", limits: {} },
-        { module: "nw.mailbox", versions: [2], status: "provisional", limits: { maxPage: 256 } }
+        ...capabilities.modules,
+        { module: "nw.opaque-route", versions: [2], status: "stable", limits: {} }
       ]
-    },
-    ...overrides
+    }
   };
 }

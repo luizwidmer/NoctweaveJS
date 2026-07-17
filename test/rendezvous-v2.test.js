@@ -43,7 +43,7 @@ test("rendezvous public offer matches the Swift canonical transcript vector", as
   assert.deepEqual(validateRendezvousOfferV2(offer), offer);
 
   const publicJson = JSON.stringify(offer);
-  for (const forbidden of ["identity", "generation", "provider", "account", "inbox", "owner", "secretKey", "oneTimeToken\""]) {
+  for (const forbidden of ["identity", "generation", "provider", "account", "reusableAddress", "owner", "secretKey", "oneTimeToken\""]) {
     assert.equal(publicJson.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
   }
 });
@@ -79,7 +79,7 @@ test("one-use ML-KEM rendezvous derives matching directional sessions and fixed-
     crypto,
     session: opened.session,
     plaintext: message,
-    kind: "contactOffer",
+    kind: "introduction",
     at: openedAt
   });
   assert.equal(Buffer.from(sealed.frame.payload.ciphertext, "base64").byteLength, 4_096);

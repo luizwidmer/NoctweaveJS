@@ -31,6 +31,10 @@ export class NoctweaveCryptoSuite {
     return this.webcrypto.hkdfSha256(input);
   }
 
+  hmacSha256(input) {
+    return this.webcrypto.hmacSha256(input);
+  }
+
   aesGcmEncrypt(input) {
     return this.webcrypto.aesGcmEncrypt(input);
   }

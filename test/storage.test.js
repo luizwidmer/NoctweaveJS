@@ -61,8 +61,8 @@ test("database adapter store delegates persistence", async () => {
   });
 
   const repo = new NoctweaveStateRepository(store);
-  await repo.save({ inboxId: "nw1..." });
-  assert.deepEqual(await repo.load(), { inboxId: "nw1..." });
+  await repo.save({ personaLabel: "Night" });
+  assert.deepEqual(await repo.load(), { personaLabel: "Night" });
   await repo.clear();
   assert.equal(await repo.load(), null);
 });
@@ -73,14 +73,17 @@ test("encrypted store refuses plaintext records and hides persisted state", asyn
     keyBytes: new Uint8Array(32).fill(7)
   });
 
-  await store.set("state", { inboxId: "nw1secret", contacts: [{ name: "Alice" }] });
+  await store.set("state", { routeSecret: "route-secret", relationships: [{ label: "Alice" }] });
   const raw = await backend.get("state");
 
   assert.equal(raw.__noctweaveEncrypted, 1);
   assert.equal(JSON.stringify(raw).includes("nw1secret"), false);
-  assert.deepEqual(await store.get("state"), { inboxId: "nw1secret", contacts: [{ name: "Alice" }] });
+  assert.deepEqual(await store.get("state"), {
+    routeSecret: "route-secret",
+    relationships: [{ label: "Alice" }]
+  });
 
-  await backend.set("plaintext", { inboxId: "leak" });
+  await backend.set("plaintext", { routeSecret: "leak" });
   await assert.rejects(() => store.get("plaintext"), /refused to load plaintext/);
 });
 

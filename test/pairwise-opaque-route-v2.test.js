@@ -24,7 +24,7 @@ import {
   markPairwiseRouteTestedV2,
   pairwiseRouteSetV2Digest,
   pairwiseRouteSetV2SignableBytes,
-  prepareNativeDirectV4Identity,
+  preparePairwiseDirectV4Identity,
   swiftUUID,
   promotePairwiseRouteV2,
   revokeDrainedPairwiseRouteV2,
@@ -280,7 +280,7 @@ test("contact introductions reject unknown, non-current, and overbroad route sta
   });
 
   const unknownTopLevel = structuredClone(introduction);
-  unknownTopLevel.inboxId = "stable-routing-identifier-must-not-exist";
+  unknownTopLevel.reusableAddress = "stable-routing-identifier-must-not-exist";
   assert.throws(
     () => validateContactIntroductionV2(unknownTopLevel, { pqc }),
     (error) => error instanceof PairwiseOpaqueRouteV2Error && error.code === "invalidIntroduction"
@@ -537,16 +537,25 @@ async function createRelationshipAuthority({ crypto, pqc }) {
   const signing = pqc.generateSigningKeypair();
   const agreement = pqc.generateKemKeypair();
   const relationship = {
+    version: 2,
+    scope: "pairwise",
+    id: swiftUUID(),
     architectureVersion: 2,
     identityGenerationId: swiftUUID(),
     displayName: "Ephemeral Alice",
     signing: serializeKeypair(signing),
     agreement: serializeKeypair(agreement),
-    signingFingerprint: base64(await crypto.sha256(signing.publicKey))
+    signingFingerprint: base64(await crypto.sha256(signing.publicKey)),
+    createdAt: issuedAt
   };
   // The direct-v4 certificate builder is reused only to mint a certificate
   // graph for this freshly generated relationship authority in the fixture.
-  await prepareNativeDirectV4Identity({ crypto, pqc, identity: relationship, issuedAt });
+  await preparePairwiseDirectV4Identity({
+    crypto,
+    pqc,
+    localIdentity: relationship,
+    issuedAt
+  });
   await verifyCertifiedGenerationEndpointV4({
     crypto,
     pqc,

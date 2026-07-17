@@ -34,8 +34,8 @@ const rendezvousPurposes = new Set([
 ]);
 const rendezvousRoles = new Set(["offerer", "responder"]);
 const rendezvousMessageKinds = new Set([
-  "contactOffer",
-  "contactAcceptance",
+  "introduction",
+  "acceptance",
   "confirmation",
   "abort"
 ]);

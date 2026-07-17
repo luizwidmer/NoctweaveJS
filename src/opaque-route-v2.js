@@ -10,6 +10,7 @@ import {
   requireCanonicalTimestamp,
   requireInteger,
   requireNonzeroFixedBase64,
+  requireExactRecord,
   requireRecord,
   swiftCanonicalBytes,
   timestampMilliseconds,
@@ -72,7 +73,13 @@ export async function createOpaqueRouteProofNonceV2(crypto) {
 }
 
 export function validateOpaqueRouteClientCapabilityMaterialV2(value) {
-  requireRecord(value, "Opaque route client capability material");
+  requireExactRecord(value, [
+    "routeID",
+    "sendCapability",
+    "readCredential",
+    "renewCapability",
+    "teardownCapability"
+  ], [], "Opaque route client capability material");
   const result = {
     routeID: validateFixedValue(value.routeID, "Opaque route ID"),
     sendCapability: validateFixedValue(value.sendCapability, "Opaque route send capability"),
@@ -102,7 +109,12 @@ export function createOpaqueRoutePolicyV2({ paddingBucket, retentionBucket, quot
 }
 
 export function validateOpaqueRoutePolicyV2(value) {
-  requireRecord(value, "Opaque route policy");
+  requireExactRecord(value, [
+    "paddingBucket",
+    "retentionBucket",
+    "quotaBucket",
+    "transportRequirement"
+  ], [], "Opaque route policy");
   if (!paddingBuckets.has(value.paddingBucket) || !retentionBuckets.has(value.retentionBucket) ||
       !quotaBuckets.has(value.quotaBucket) || value.transportRequirement !== "confidentialAuthenticated") {
     throw new OpaqueRouteV2Error("invalidPolicy");
@@ -129,7 +141,13 @@ export function createOpaqueRouteLeaseV2({ issuedAt, expiresAt, policy }) {
 }
 
 export function validateOpaqueRouteLeaseV2(value) {
-  requireRecord(value, "Opaque route lease");
+  requireExactRecord(value, [
+    "issuedAt",
+    "lastRenewedAt",
+    "expiresAt",
+    "renewalSequence",
+    "policy"
+  ], [], "Opaque route lease");
   const issuedAt = requireCanonicalTimestamp(value.issuedAt, "Opaque route issue time");
   const lastRenewedAt = requireCanonicalTimestamp(value.lastRenewedAt, "Opaque route renewal time");
   const expiresAt = requireCanonicalTimestamp(value.expiresAt, "Opaque route expiry");
@@ -225,7 +243,13 @@ export async function verifyOpaqueRouteAuthorizationProofV2({
 }
 
 export function validateOpaqueRouteAuthorizationProofV2(value) {
-  requireRecord(value, "Opaque route authorization proof");
+  requireExactRecord(value, [
+    "authority",
+    "nonce",
+    "operationDigest",
+    "authorizedAt",
+    "mac"
+  ], [], "Opaque route authorization proof");
   if (!authorities.has(value.authority)) {
     throw new OpaqueRouteV2Error("invalidAuthorization");
   }
@@ -369,7 +393,17 @@ export async function opaqueRouteTransitionDigestV2(crypto, value) {
 }
 
 export async function validateOpaqueRouteCreateRequestV2(crypto, value) {
-  requireRecord(value, "Opaque route create request");
+  requireExactRecord(value, [
+    "version",
+    "routeID",
+    "sendCapabilityDigest",
+    "readCredentialDigest",
+    "renewCapabilityDigest",
+    "teardownCapabilityDigest",
+    "lease",
+    "idempotencyKey",
+    "authorization"
+  ], [], "Opaque route create request");
   const unsigned = createUnsignedProjection(value);
   const digests = [
     unsigned.sendCapabilityDigest,
@@ -390,6 +424,16 @@ export async function validateOpaqueRouteCreateRequestV2(crypto, value) {
 }
 
 export async function validateOpaqueRouteRenewRequestV2(crypto, value) {
+  requireExactRecord(value, [
+    "version",
+    "routeID",
+    "renewalSequence",
+    "previousTransitionDigest",
+    "newExpiry",
+    "authorizedAt",
+    "idempotencyKey",
+    "authorization"
+  ], [], "Opaque route renew request");
   const unsigned = renewUnsignedProjection(value);
   if (unsigned.version !== 2 || unsigned.renewalSequence < 1) {
     throw new OpaqueRouteV2Error("invalidRequest");
@@ -404,6 +448,15 @@ export async function validateOpaqueRouteRenewRequestV2(crypto, value) {
 }
 
 export async function validateOpaqueRouteTeardownRequestV2(crypto, value) {
+  requireExactRecord(value, [
+    "version",
+    "routeID",
+    "renewalSequence",
+    "previousTransitionDigest",
+    "authorizedAt",
+    "idempotencyKey",
+    "authorization"
+  ], [], "Opaque route teardown request");
   const unsigned = teardownUnsignedProjection(value);
   const transitionDigest = encodeBase64(await opaqueRouteTransitionDigestV2(crypto, unsigned));
   const authorization = validateOpaqueRouteAuthorizationProofV2(value.authorization);
@@ -541,7 +594,21 @@ export async function teardownOpaqueReceiveRouteV2({ crypto, current: currentVal
 }
 
 export function validateOpaqueReceiveRouteV2(value) {
-  requireRecord(value, "Opaque receive route");
+  requireExactRecord(value, [
+    "version",
+    "routeID",
+    "sendCapabilityDigest",
+    "readCredentialDigest",
+    "renewCapabilityDigest",
+    "teardownCapabilityDigest",
+    "lease",
+    "status",
+    "createdAt",
+    "creationIdempotencyKey",
+    "creationDigest",
+    "lastIdempotencyKey",
+    "lastTransitionDigest"
+  ], ["tornDownAt"], "Opaque receive route");
   if (value.version !== 2 || !statuses.has(value.status)) throw new OpaqueRouteV2Error("invalidRequest");
   const digests = [value.sendCapabilityDigest, value.readCredentialDigest, value.renewCapabilityDigest, value.teardownCapabilityDigest];
   digests.forEach((digest) => requireBase64(digest, 32, "Opaque route credential digest"));
@@ -567,7 +634,7 @@ export function validateOpaqueReceiveRouteV2(value) {
   if (value.status === "tornDown") {
     result.tornDownAt = requireCanonicalTimestamp(value.tornDownAt, "Opaque route teardown time");
     if (timestampMilliseconds(result.tornDownAt) < timestampMilliseconds(createdAt)) throw new OpaqueRouteV2Error("invalidRequest");
-  } else if (value.tornDownAt !== undefined && value.tornDownAt !== null) {
+  } else if (Object.hasOwn(value, "tornDownAt")) {
     throw new OpaqueRouteV2Error("invalidRequest");
   }
   return freezeWire(result);
@@ -592,7 +659,7 @@ export function createOpaqueRouteAuthorizationReplayLedgerV2() {
 }
 
 export function validateOpaqueRouteAuthorizationReplayLedgerV2(value) {
-  requireRecord(value, "Opaque route replay ledger");
+  requireExactRecord(value, ["consumedDigests"], [], "Opaque route replay ledger");
   if (!Array.isArray(value.consumedDigests) ||
       value.consumedDigests.length > noctweaveOpaqueRoutesV2.maximumAuthorizationReplayEntries) {
     throw new OpaqueRouteV2Error("invalidAuthorization");
@@ -759,7 +826,7 @@ function requireConfidentialTransport(value) {
 }
 
 function validateFixedValue(value, label) {
-  requireRecord(value, label);
+  requireExactRecord(value, ["rawValue"], [], label);
   requireNonzeroFixedBase64(value.rawValue, 32, label);
   return freezeWire({ rawValue: value.rawValue });
 }

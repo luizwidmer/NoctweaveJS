@@ -8,7 +8,6 @@ import {
   directEnvelopeV4SignableBytes,
   encodeProtocolEnvelopeV1,
   groupApplicationEnvelopeV2SignableBytes,
-  relayRequests,
   validateDirectBootstrapV4,
   validateDirectEnvelopeV4,
   validateGroupApplicationEnvelopeV2,
@@ -96,14 +95,6 @@ test("ProtocolEnvelopeV1 requires exactly one known strict case", () => {
   assert.deepEqual(
     decodeProtocolEnvelopeV1(encodeProtocolEnvelopeV1(protocol)),
     protocol
-  );
-  assert.deepEqual(
-    relayRequests.deliver({ inboxId: "opaque-inbox", envelope: protocol }).deliver.envelope,
-    protocol
-  );
-  assert.throws(
-    () => relayRequests.deliver({ inboxId: "opaque-inbox", envelope: direct }),
-    /version and exactly one case/
   );
   assert.throws(() => validateProtocolEnvelopeV1({ version: 1 }), /exactly one case/);
   assert.throws(
