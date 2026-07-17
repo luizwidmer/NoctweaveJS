@@ -20,7 +20,7 @@ import { WebCryptoPrimitives } from "../src/crypto/webcrypto.js";
 import { base64 } from "../src/crypto/swift-canonical.js";
 
 const vectors = JSON.parse(readFileSync(
-  new URL("./fixtures/rendezvous-opaque-v2-vectors.json", import.meta.url),
+  new URL("../../NoctweaveDocumentation/test_vectors/rendezvous_opaque_v2.json", import.meta.url),
   "utf8"
 ));
 const offerVector = vectors.rendezvousOffer;

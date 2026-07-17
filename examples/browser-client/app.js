@@ -14,7 +14,6 @@ import {
   createNativeOutboundSession,
   decodeNativeContactCode,
   decryptNativeApplicationEnvelope,
-  decryptNativeEnvelope,
   encodeNativeContactCode,
   encryptNativeTextEnvelope,
   findNativeContactForEnvelope,
@@ -33,8 +32,7 @@ const BECH32_CHARSET = Array.from("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
 const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const encoder = new TextEncoder();
 const profile = new URL(location.href).searchParams.get("profile") || "default";
-const legacyStorageKey = `noctweave-js-browser-client:${profile}`;
-const vaultNamespace = `${legacyStorageKey}:vault`;
+const vaultNamespace = `noctweave-js-browser-client:${profile}:vault`;
 const vaultSaltKey = `${vaultNamespace}:salt`;
 const vaultStateStorageKey = `${vaultNamespace}:state`;
 const vaultStateKey = "state";
@@ -227,11 +225,10 @@ async function createVault(passphrase) {
   crypto.getRandomValues(salt);
   const repository = makeVaultRepository(passphrase, salt);
   try {
-    const initial = legacyStateForMigration() ?? snapshotState();
+    const initial = snapshotState();
     await validatePersistedState(initial);
     localStorage.setItem(vaultSaltKey, base64(salt));
     await repository.save(initial);
-    localStorage.removeItem(legacyStorageKey);
     state.repository = repository;
     applyPersistedState(initial);
   } catch (error) {
@@ -299,32 +296,6 @@ function makeVaultRepository(passphrase, salt) {
   return new NoctweaveStateRepository(encrypted, { key: vaultStateKey });
 }
 
-function legacyStateForMigration() {
-  const raw = localStorage.getItem(legacyStorageKey);
-  if (!raw) {
-    return null;
-  }
-  let legacy;
-  try {
-    legacy = JSON.parse(raw);
-  } catch {
-    throw new Error("Legacy plaintext profile data is malformed and was not migrated.");
-  }
-  return {
-    version: 2,
-    identity: legacy.identity ?? null,
-    contacts: legacy.contacts ?? [],
-    conversations: legacy.conversations ?? {},
-    messages: legacy.messages ?? [],
-    seenEnvelopeIds: legacy.seenEnvelopeIds ?? [],
-    relay: legacy.relay ?? elements.relay.value,
-    selectedContactFingerprint: legacy.selectedContactFingerprint ?? "",
-    pendingInboxRetirements: [],
-    identityDeletionPending: false,
-    autoFetchEnabled: Boolean(legacy.autoFetchEnabled)
-  };
-}
-
 function lockProfile() {
   stopAutoFetch();
   clearLiveState();
@@ -339,7 +310,6 @@ function forgetLocalVault() {
   stopAutoFetch();
   localStorage.removeItem(vaultStateStorageKey);
   localStorage.removeItem(vaultSaltKey);
-  localStorage.removeItem(legacyStorageKey);
   clearLiveState();
   configureVaultGate();
 }
@@ -740,17 +710,11 @@ async function decodeEnvelope(envelope) {
     conversation,
     envelope
   };
-  let text;
-  let silent = false;
-  if (contact.version === 4) {
-    const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
-    silent = decoded.projection.disposition === "silent";
-    text = decoded.projection.kind === "text"
-      ? decoded.projection.text
-      : decoded.projection.fallbackText;
-  } else {
-    text = await decryptNativeEnvelope(decryptOptions);
-  }
+  const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
+  const silent = decoded.projection.disposition === "silent";
+  const text = decoded.projection.kind === "text"
+    ? decoded.projection.text
+    : decoded.projection.fallbackText;
   state.conversations[conversationKey] = conversation;
   return {
     id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
@@ -986,7 +950,8 @@ function renderRelayInfo({ health, info }) {
 
 function snapshotState() {
   return {
-    version: 2,
+    stateSchema: "nw.browser-example-profile.v1",
+    version: 1,
     identity: state.identity,
     contacts: state.contacts,
     conversations: state.conversations,
@@ -1015,16 +980,15 @@ function scheduleSave() {
 }
 
 function applyPersistedState(saved) {
-  state.identity = saved.identity ?? null;
-  state.contacts = saved.contacts ?? [];
-  state.conversations = saved.conversations ?? {};
-  state.messages = saved.messages ?? [];
-  state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds ?? []);
-  state.selectedContactFingerprint = saved.selectedContactFingerprint ?? state.contacts[0]?.fingerprint ?? "";
-  state.pendingInboxRetirements = saved.pendingInboxRetirements ?? [];
-  state.identityDeletionPending = saved.identityDeletionPending === true ||
-    state.pendingInboxRetirements.length > 0;
-  state.autoFetchEnabled = Boolean(saved.autoFetchEnabled);
+  state.identity = saved.identity;
+  state.contacts = saved.contacts;
+  state.conversations = saved.conversations;
+  state.messages = saved.messages;
+  state.seenEnvelopeIds = new Set(saved.seenEnvelopeIds);
+  state.selectedContactFingerprint = saved.selectedContactFingerprint;
+  state.pendingInboxRetirements = saved.pendingInboxRetirements;
+  state.identityDeletionPending = saved.identityDeletionPending;
+  state.autoFetchEnabled = saved.autoFetchEnabled;
   if (saved.relay) {
     elements.relay.value = saved.relay;
   }
@@ -1085,12 +1049,12 @@ async function finishLocalReset(repository) {
   }
   localStorage.removeItem(vaultStateStorageKey);
   localStorage.removeItem(vaultSaltKey);
-  localStorage.removeItem(legacyStorageKey);
   clearLiveState();
 }
 
 async function validatePersistedState(saved) {
-  if (!saved || typeof saved !== "object" || Array.isArray(saved) || saved.version !== 2) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) ||
+      saved.stateSchema !== "nw.browser-example-profile.v1" || saved.version !== 1) {
     throw new Error("Unsupported encrypted profile state.");
   }
   const encodedLength = encoder.encode(JSON.stringify(saved)).byteLength;
@@ -1101,7 +1065,10 @@ async function validatePersistedState(saved) {
       !Array.isArray(saved.messages) || saved.messages.length > 10_000 ||
       !Array.isArray(saved.seenEnvelopeIds) || saved.seenEnvelopeIds.length > 20_000 ||
       !Array.isArray(saved.pendingInboxRetirements) || saved.pendingInboxRetirements.length > 8 ||
-      (saved.identityDeletionPending != null && typeof saved.identityDeletionPending !== "boolean") ||
+      typeof saved.identityDeletionPending !== "boolean" ||
+      typeof saved.autoFetchEnabled !== "boolean" ||
+      typeof saved.selectedContactFingerprint !== "string" ||
+      typeof saved.relay !== "string" ||
       !saved.conversations || typeof saved.conversations !== "object" || Array.isArray(saved.conversations) ||
       Object.keys(saved.conversations).length > 512) {
     throw new Error("Encrypted profile collections exceed supported limits.");
@@ -1145,6 +1112,10 @@ async function validatePersistedState(saved) {
 
   const fingerprints = new Set();
   for (const contact of saved.contacts) {
+    if (contact?.version !== 4 || !contact.identityGenerationId ||
+        !contact.installationCheckpoint || !contact.preferredInstallationEndpoint) {
+      throw new Error("Encrypted profile contains an unsupported contact record.");
+    }
     validateBoundedString(contact?.displayName, "contact display name", 1, 128);
     validateBoundedString(contact?.inboxId, "contact inbox", 1, 160);
     validateBoundedString(contact?.fingerprint, "contact fingerprint", 1, 160);

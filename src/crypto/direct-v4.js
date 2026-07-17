@@ -68,10 +68,7 @@ export async function prepareNativeDirectV4Identity({
       signing: serializeKeypair(signing),
       agreement: serializeKeypair(agreement),
       signingFingerprint: base64(await crypto.sha256(signing.publicKey)),
-      mailboxConsumerIdsByRoute: {},
       mailboxRoutes: {},
-      cursorsByStream: {},
-      pendingMailboxCommitsByStream: {},
       createdAt: issuedAt
     };
   }
@@ -470,6 +467,9 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
 }
 
 export function contactFromNativeOffer(offer, alias) {
+  if (offer?.version !== DIRECT_VERSION) {
+    throw new Error("Only direct-v4 certified contact offers are supported.");
+  }
   const contact = {
     alias: alias || undefined,
     displayName: offer.displayName,
@@ -479,13 +479,11 @@ export function contactFromNativeOffer(offer, alias) {
     signingPublicKey: offer.signingPublicKey,
     agreementPublicKey: offer.agreementPublicKey,
     inboxAccessPublicKey: offer.inboxAccessPublicKey,
-    version: offer.version
+    version: DIRECT_VERSION,
+    identityGenerationId: offer.identityGenerationId,
+    installationCheckpoint: offer.installationCheckpoint,
+    preferredInstallationEndpoint: offer.preferredInstallationEndpoint
   };
-  if (offer.version === DIRECT_VERSION) {
-    contact.identityGenerationId = offer.identityGenerationId;
-    contact.installationCheckpoint = offer.installationCheckpoint;
-    contact.preferredInstallationEndpoint = offer.preferredInstallationEndpoint;
-  }
   return contact;
 }
 

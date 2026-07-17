@@ -9,7 +9,6 @@ import {
 import { base64, canonicalJsonBytes, swiftISODate, swiftUUID } from "./crypto/swift-canonical.js";
 import {
   buildRegisterMailboxConsumerRequest,
-  buildRevokeMailboxConsumerRequest,
   generateMailboxConsumerId,
   validateMailboxCursor,
   validateMailboxConsumerId,
@@ -18,6 +17,7 @@ import {
 } from "./architecture-v2.js";
 
 const encoder = new TextEncoder();
+export const browserIdentityStateSchema = "nw.browser-identity.v1";
 
 export class NoctweaveBrowserIdentityService {
   constructor({ pqc, crypto, relayClientFactory } = {}) {
@@ -65,28 +65,12 @@ export class NoctweaveBrowserIdentityService {
   async createAndRegister({ displayName, relay, authToken, fetch, WebSocket, timeoutMs } = {}) {
     const normalizedName = validateBrowserDisplayName(displayName);
     const verified = await this.verifyRelay(relay, { authToken, fetch, WebSocket, timeoutMs });
-    const signing = this.pqc.generateSigningKeypair();
-    const agreement = this.pqc.generateKemKeypair();
-    const access = this.pqc.generateSigningKeypair();
-    validateGeneratedKeypair(signing, "signing");
-    validateGeneratedKeypair(agreement, "agreement");
-    validateGeneratedKeypair(access, "inbox access");
-
-    const accessDigest = await this.crypto.sha256(access.publicKey);
-    const signingDigest = await this.crypto.sha256(signing.publicKey);
-    const inboxId = await inboxIdForAccessPublicKey({ crypto: this.crypto, publicKey: access.publicKey });
-    const identity = {
+    const identity = await this.createFreshIdentityState({
       displayName: normalizedName,
-      signing: serializeKeypair(signing),
-      agreement: serializeKeypair(agreement),
-      access: serializeKeypair(access),
-      inboxId,
-      accessFingerprint: base64(accessDigest),
-      signingFingerprint: base64(signingDigest)
-    };
-    const prepared = await this.prepareArchitectureV2Identity(identity, {
       relay: verified.endpoint
     });
+    const access = deserializeKeypair(identity.access, "inbox access", 1_952, 4_032);
+    const inboxId = identity.inboxId;
     const signedAt = swiftISODate();
     const nonce = swiftUUID();
     const payload = {
@@ -120,11 +104,11 @@ export class NoctweaveBrowserIdentityService {
     }
     const contactOffer = makeNativeContactOffer({
       pqc: this.pqc,
-      identity: prepared.identity,
+      identity,
       relayEndpoint: relayEndpointForContactOffer(verified.endpoint)
     });
     const boundIdentity = await this.bindMailboxConsumer({
-      identity: prepared.identity,
+      identity,
       relay,
       endpoint: verified.endpoint,
       authToken,
@@ -143,104 +127,62 @@ export class NoctweaveBrowserIdentityService {
     };
   }
 
-  async prepareArchitectureV2Identity(identityValue, { relay } = {}) {
-    validateLegacyIdentityShape(identityValue);
-    const identity = cloneIdentity(identityValue);
-    let changed = false;
-    if (identity.architectureVersion == null) {
-      identity.architectureVersion = 2;
-      changed = true;
-    } else if (identity.architectureVersion !== 2) {
-      throw new Error("The browser identity uses an unsupported architecture version.");
-    }
-    if (identity.identityGenerationId == null) {
-      identity.identityGenerationId = swiftUUID();
-      changed = true;
-    } else {
-      identity.identityGenerationId = normalizedUUID(identity.identityGenerationId, "identity generation ID");
-    }
-    if (identity.localInstallation == null) {
-      const signing = this.pqc.generateSigningKeypair();
-      const agreement = this.pqc.generateKemKeypair();
-      validateGeneratedKeypair(signing, "installation signing");
-      validateGeneratedKeypair(agreement, "installation agreement");
-      const signingDigest = await this.crypto.sha256(signing.publicKey);
-      identity.localInstallation = {
+  async createFreshIdentityState({ displayName, relay }) {
+    const normalizedName = validateBrowserDisplayName(displayName);
+    const signing = this.pqc.generateSigningKeypair();
+    const agreement = this.pqc.generateKemKeypair();
+    const access = this.pqc.generateSigningKeypair();
+    const endpointSigning = this.pqc.generateSigningKeypair();
+    const endpointAgreement = this.pqc.generateKemKeypair();
+    const routeSigning = this.pqc.generateSigningKeypair();
+    for (const [pair, label] of [
+      [signing, "signing"],
+      [agreement, "agreement"],
+      [access, "inbox access"],
+      [endpointSigning, "endpoint signing"],
+      [endpointAgreement, "endpoint agreement"],
+      [routeSigning, "mailbox route signing"]
+    ]) validateGeneratedKeypair(pair, label);
+
+    const identityGenerationId = swiftUUID();
+    const inboxId = await inboxIdForAccessPublicKey({ crypto: this.crypto, publicKey: access.publicKey });
+    const routeKey = browserMailboxRouteKey(relay, inboxId);
+    const consumerId = await generateMailboxConsumerId({ crypto: this.crypto });
+    const issuedAt = swiftISODate();
+    const identity = {
+      stateSchema: browserIdentityStateSchema,
+      architectureVersion: 2,
+      identityGenerationId,
+      displayName: normalizedName,
+      signing: serializeKeypair(signing),
+      agreement: serializeKeypair(agreement),
+      access: serializeKeypair(access),
+      inboxId,
+      accessFingerprint: base64(await this.crypto.sha256(access.publicKey)),
+      signingFingerprint: base64(await this.crypto.sha256(signing.publicKey)),
+      localInstallation: {
         id: swiftUUID(),
-        identityGenerationId: identity.identityGenerationId,
-        signing: serializeKeypair(signing),
-        agreement: serializeKeypair(agreement),
-        signingFingerprint: base64(signingDigest),
-        mailboxConsumerIdsByRoute: {},
-        mailboxRoutes: {},
-        cursorsByStream: {},
-        pendingMailboxCommitsByStream: {},
-        createdAt: swiftISODate()
-      };
-      changed = true;
-    } else {
-      validateLocalInstallation(identity.localInstallation, identity.identityGenerationId, identity);
-    }
-    if (relay != null) {
-      const routeKey = browserMailboxRouteKey(relay, identity.inboxId);
-      const local = identity.localInstallation;
-      let consumerId = local.mailboxConsumerIdsByRoute[routeKey];
-      if (consumerId == null) {
-        consumerId = await generateMailboxConsumerId({ crypto: this.crypto });
-        local.mailboxConsumerIdsByRoute[routeKey] = consumerId;
-        changed = true;
-      } else {
-        consumerId = validateMailboxConsumerId(consumerId);
-        local.mailboxConsumerIdsByRoute[routeKey] = consumerId;
-      }
-      if (local.mailboxRoutes[routeKey] == null) {
-        const routeSigning = this.pqc.generateSigningKeypair();
-        validateGeneratedKeypair(routeSigning, "mailbox route signing");
-        const routeSigningFingerprint = base64(
-          await this.crypto.sha256(routeSigning.publicKey)
-        );
-        local.mailboxRoutes[routeKey] = {
-          mode: "pending-v2-registration",
-          consumerId,
-          signing: serializeKeypair(routeSigning),
-          signingFingerprint: routeSigningFingerprint,
-          cursor: null,
-          committedSequence: 0,
-          pendingCommit: null
-        };
-        changed = true;
-      } else {
-        if (local.mailboxRoutes[routeKey].committedSequence == null) {
-          local.mailboxRoutes[routeKey].committedSequence =
-            local.mailboxRoutes[routeKey].registration?.committedSequence ?? 0;
-          changed = true;
-        }
-        const existingRoute = local.mailboxRoutes[routeKey];
-        if (existingRoute.signing == null) {
-          const routeSigning = this.pqc.generateSigningKeypair();
-          validateGeneratedKeypair(routeSigning, "mailbox route signing");
-          const replacementConsumerId = await generateMailboxConsumerId({ crypto: this.crypto });
-          local.mailboxRoutes[routeKey] = {
+        identityGenerationId,
+        signing: serializeKeypair(endpointSigning),
+        agreement: serializeKeypair(endpointAgreement),
+        signingFingerprint: base64(await this.crypto.sha256(endpointSigning.publicKey)),
+        mailboxRoutes: {
+          [routeKey]: {
             mode: "pending-v2-registration",
-            consumerId: replacementConsumerId,
+            consumerId,
             signing: serializeKeypair(routeSigning),
             signingFingerprint: base64(await this.crypto.sha256(routeSigning.publicKey)),
-            legacySponsorConsumerId: consumerId,
             cursor: null,
-            committedSequence: existingRoute.committedSequence,
+            committedSequence: 0,
             pendingCommit: null
-          };
-          local.mailboxConsumerIdsByRoute[routeKey] = replacementConsumerId;
-          changed = true;
-        } else {
-          validateLocalMailboxRoute(existingRoute, consumerId);
-        }
+          }
+        },
+        createdAt: issuedAt
       }
-    }
-    const hadDirectV4 = identity.certifiedInstallationEndpoint != null;
-    await prepareNativeDirectV4Identity({ crypto: this.crypto, pqc: this.pqc, identity });
-    changed = changed || !hadDirectV4;
-    return { identity, changed };
+    };
+    await prepareNativeDirectV4Identity({ crypto: this.crypto, pqc: this.pqc, identity, issuedAt });
+    validateBrowserIdentityState(identity);
+    return identity;
   }
 
   async bindMailboxConsumer({
@@ -250,80 +192,41 @@ export class NoctweaveBrowserIdentityService {
     authToken,
     fetch,
     WebSocket,
-    timeoutMs,
-    sponsorConsumerId,
-    sponsorSigningKey,
-    sponsorFingerprint
+    timeoutMs
   }) {
     const normalizedEndpoint = endpoint ?? parseBrowserRelayEndpoint(relay);
-    const prepared = await this.prepareArchitectureV2Identity(identityValue, {
-      relay: normalizedEndpoint
-    });
-    const identity = prepared.identity;
+    validateBrowserIdentityState(identityValue);
+    const identity = cloneIdentity(identityValue);
     const routeKey = browserMailboxRouteKey(normalizedEndpoint, identity.inboxId);
     const route = identity.localInstallation.mailboxRoutes[routeKey];
+    if (!route) {
+      throw new Error("The browser identity has no route for this relay.");
+    }
     if (route.mode === "v2" && route.registration?.state === "active") {
       return identity;
     }
-    const internalLegacySponsorId = route.legacySponsorConsumerId ?? null;
-    const effectiveSponsorId = internalLegacySponsorId ?? sponsorConsumerId;
-    const effectiveSponsorKey = internalLegacySponsorId == null
-      ? sponsorSigningKey
-      : identity.localInstallation.signing;
-    const effectiveSponsorFingerprint = internalLegacySponsorId == null
-      ? sponsorFingerprint
-      : identity.localInstallation.signingFingerprint;
-    const makeCurrentRequest = () => buildRegisterMailboxConsumerRequest({
+    if (route.mode !== "pending-v2-registration" || route.registration != null) {
+      throw new Error("The browser identity mailbox route is not registerable.");
+    }
+    const request = await buildRegisterMailboxConsumerRequest({
       inboxId: identity.inboxId,
       consumerId: route.consumerId,
       consumerSigningKey: route.signing,
       authoritySigningKey: identity.access,
       authorityFingerprint: identity.accessFingerprint,
       consumerFingerprint: route.signingFingerprint,
-      sponsorConsumerId: effectiveSponsorId,
-      sponsorSigningKey: effectiveSponsorKey,
-      sponsorFingerprint: effectiveSponsorFingerprint,
       startingSequence: route.committedSequence,
       pqc: this.pqc,
       crypto: this.crypto
     });
-    let request = await makeCurrentRequest();
     const client = this.relayClientFactory(relay, {
       authToken: normalizedOptionalSecret(authToken),
       fetch,
       WebSocket,
       timeoutMs
     });
-    let response = await client.send(relayRequests.registerMailboxConsumer(request));
-    if ((response?.type !== "mailboxConsumer" || response.mailboxConsumer == null) &&
-        internalLegacySponsorId != null) {
-      const legacyRequest = await buildRegisterMailboxConsumerRequest({
-        inboxId: identity.inboxId,
-        consumerId: internalLegacySponsorId,
-        consumerSigningKey: identity.localInstallation.signing,
-        authoritySigningKey: identity.access,
-        authorityFingerprint: identity.accessFingerprint,
-        consumerFingerprint: identity.localInstallation.signingFingerprint,
-        startingSequence: route.committedSequence,
-        pqc: this.pqc,
-        crypto: this.crypto
-      });
-      const legacyResponse = await client.send(
-        relayRequests.registerMailboxConsumer(legacyRequest)
-      );
-      if (legacyResponse?.type !== "mailboxConsumer" ||
-          legacyResponse.mailboxConsumer?.consumerId !== internalLegacySponsorId ||
-          legacyResponse.mailboxConsumer?.state !== "active") {
-        throw new Error("The relay rejected legacy mailbox consumer migration.");
-      }
-      request = await makeCurrentRequest();
-      response = await client.send(relayRequests.registerMailboxConsumer(request));
-    }
+    const response = await client.send(relayRequests.registerMailboxConsumer(request));
     if (response?.type !== "mailboxConsumer" || response.mailboxConsumer == null) {
-      if (response?.type === "error" &&
-          /fresh identity generation|no active (mailbox consumer|route credential) remains|new inbox generation/i.test(String(response.error))) {
-        throw new Error("The old inbox is closed: create a fresh identity generation and inbox.");
-      }
       throw new Error("The relay rejected mailbox consumer registration.");
     }
     const registration = validateMailboxConsumerRegistration(response.mailboxConsumer);
@@ -332,59 +235,18 @@ export class NoctweaveBrowserIdentityService {
         registration.state !== "active") {
       throw new Error("The relay returned a mismatched mailbox consumer registration.");
     }
-    if (internalLegacySponsorId != null) {
-      const revokeRequest = await buildRevokeMailboxConsumerRequest({
-        inboxId: identity.inboxId,
-        consumerId: internalLegacySponsorId,
-        authoritySigningKey: identity.access,
-        authorityFingerprint: identity.accessFingerprint,
-        pqc: this.pqc,
-        crypto: this.crypto
-      });
-      const revokeResponse = await client.send(
-        relayRequests.revokeMailboxConsumer(revokeRequest)
-      );
-      if (revokeResponse?.type !== "mailboxConsumer" ||
-          revokeResponse.mailboxConsumer?.consumerId !== internalLegacySponsorId ||
-          revokeResponse.mailboxConsumer?.state !== "revoked") {
-        throw new Error("The relay rejected legacy mailbox consumer revocation.");
-      }
-    }
     identity.localInstallation.mailboxRoutes[routeKey] = {
       mode: "v2",
       consumerId: route.consumerId,
       signing: route.signing,
       signingFingerprint: route.signingFingerprint,
       registration,
-      cursor: internalLegacySponsorId == null ? (route.cursor ?? null) : null,
+      cursor: route.cursor,
       committedSequence: registration.committedSequence,
-      pendingCommit: route.pendingCommit ?? null
+      pendingCommit: route.pendingCommit
     };
+    validateBrowserIdentityState(identity);
     return identity;
-  }
-
-  async migrateAndRegisterIdentity({ identity, relay, persist, ...options }) {
-    if (typeof persist !== "function") {
-      throw new TypeError("Identity migration requires a durable persist callback.");
-    }
-    const endpoint = options.endpoint ?? parseBrowserRelayEndpoint(relay);
-    const prepared = await this.prepareArchitectureV2Identity(identity, { relay: endpoint });
-    if (prepared.changed) {
-      await persist(prepared.identity);
-    }
-    const routeKey = browserMailboxRouteKey(endpoint, prepared.identity.inboxId);
-    const route = prepared.identity.localInstallation.mailboxRoutes[routeKey];
-    if (route.mode === "v2" && route.registration?.state === "active") {
-      return prepared.identity;
-    }
-    const bound = await this.bindMailboxConsumer({
-      identity: prepared.identity,
-      relay,
-      endpoint,
-      ...options
-    });
-    await persist(bound);
-    return bound;
   }
 }
 
@@ -451,18 +313,39 @@ function serializeKeypair(keypair) {
   };
 }
 
-function validateLegacyIdentityShape(identity) {
-  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
-    throw new Error("The browser identity is malformed.");
+export function validateBrowserIdentityState(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity) ||
+      identity.stateSchema !== browserIdentityStateSchema || identity.architectureVersion !== 2) {
+    throw new Error("The browser identity uses an unsupported state schema.");
   }
+  assertKnownKeys(identity, new Set([
+    "stateSchema", "architectureVersion", "identityGenerationId", "displayName", "signing",
+    "agreement", "access", "inboxId", "accessFingerprint", "signingFingerprint",
+    "localInstallation", "installationManifest", "installationCheckpoint",
+    "certifiedInstallationEndpoint", "contactOffer"
+  ]), "browser identity");
   validateBrowserDisplayName(identity.displayName);
   validateSerializedKeypair(identity.signing, "identity signing key", 1_952, 4_032);
   validateSerializedKeypair(identity.agreement, "identity agreement key", 1_184, 2_400);
   validateSerializedKeypair(identity.access, "inbox access key", 1_952, 4_032);
   if (typeof identity.inboxId !== "string" || !identity.inboxId.startsWith("noctweave1") ||
-      typeof identity.accessFingerprint !== "string" || typeof identity.signingFingerprint !== "string") {
+      typeof identity.accessFingerprint !== "string" || typeof identity.signingFingerprint !== "string" ||
+      normalizedUUID(identity.identityGenerationId, "identity generation ID") !== identity.identityGenerationId) {
     throw new Error("The browser identity is malformed.");
   }
+  decodeBase64(identity.accessFingerprint, "inbox access fingerprint", 32);
+  decodeBase64(identity.signingFingerprint, "identity signing fingerprint", 32);
+  validateLocalInstallation(identity.localInstallation, identity.identityGenerationId, identity);
+  for (const required of [
+    "installationManifest",
+    "installationCheckpoint",
+    "certifiedInstallationEndpoint"
+  ]) {
+    if (!identity[required] || typeof identity[required] !== "object" || Array.isArray(identity[required])) {
+      throw new Error("The browser identity direct-v4 state is incomplete.");
+    }
+  }
+  return identity;
 }
 
 function validateLocalInstallation(local, identityGenerationId, identity) {
@@ -471,17 +354,27 @@ function validateLocalInstallation(local, identityGenerationId, identity) {
       normalizedUUID(local.identityGenerationId, "installation identity generation ID") !== identityGenerationId) {
     throw new Error("The browser installation state is malformed.");
   }
+  assertKnownKeys(local, new Set([
+    "id", "identityGenerationId", "signing", "agreement", "signingFingerprint",
+    "mailboxRoutes", "createdAt", "prekeys"
+  ]), "browser endpoint state");
   validateSerializedKeypair(local.signing, "installation signing key", 1_952, 4_032);
   validateSerializedKeypair(local.agreement, "installation agreement key", 1_184, 2_400);
+  decodeBase64(local.signingFingerprint, "endpoint signing fingerprint", 32);
+  if (!local.prekeys || typeof local.prekeys !== "object" || Array.isArray(local.prekeys)) {
+    throw new Error("The browser endpoint prekey state is incomplete.");
+  }
   if (local.signing.publicKey === identity.signing.publicKey ||
       local.agreement.publicKey === identity.agreement.publicKey) {
     throw new Error("An installation must not reuse the identity's live cryptographic keys.");
   }
-  if (!local.mailboxConsumerIdsByRoute || typeof local.mailboxConsumerIdsByRoute !== "object" ||
-      Array.isArray(local.mailboxConsumerIdsByRoute) ||
-      !local.mailboxRoutes || typeof local.mailboxRoutes !== "object" || Array.isArray(local.mailboxRoutes) ||
-      Object.keys(local.mailboxConsumerIdsByRoute).length > 8 || Object.keys(local.mailboxRoutes).length > 8) {
+  if (!local.mailboxRoutes || typeof local.mailboxRoutes !== "object" ||
+      Array.isArray(local.mailboxRoutes) || Object.keys(local.mailboxRoutes).length < 1 ||
+      Object.keys(local.mailboxRoutes).length > 8) {
     throw new Error("The browser installation mailbox state is malformed.");
+  }
+  for (const route of Object.values(local.mailboxRoutes)) {
+    validateLocalMailboxRoute(route);
   }
   normalizedUUID(local.id, "installation ID");
   if (!Number.isFinite(new Date(local.createdAt).getTime())) {
@@ -489,22 +382,21 @@ function validateLocalInstallation(local, identityGenerationId, identity) {
   }
 }
 
-function validateLocalMailboxRoute(route, consumerId) {
+function validateLocalMailboxRoute(route) {
+  const consumerId = validateMailboxConsumerId(route?.consumerId);
   if (!route || typeof route !== "object" || Array.isArray(route) ||
       !["pending-v2-registration", "v2"].includes(route.mode) ||
-      validateMailboxConsumerId(route.consumerId) !== consumerId ||
-      !Number.isSafeInteger(route.committedSequence) || route.committedSequence < 0) {
+      !Number.isSafeInteger(route.committedSequence) || route.committedSequence < 0 ||
+      !Object.hasOwn(route, "cursor") || !Object.hasOwn(route, "pendingCommit")) {
     throw new Error("The browser installation mailbox route is malformed.");
   }
+  assertKnownKeys(route, new Set([
+    "mode", "consumerId", "signing", "signingFingerprint", "registration", "cursor",
+    "committedSequence", "pendingCommit"
+  ]), "browser mailbox route");
   validateSerializedKeypair(route.signing, "mailbox route signing key", 1_952, 4_032);
   if (typeof route.signingFingerprint !== "string" || route.signingFingerprint.length === 0) {
     throw new Error("The browser installation mailbox route fingerprint is malformed.");
-  }
-  if (route.legacySponsorConsumerId != null) {
-    validateMailboxConsumerId(route.legacySponsorConsumerId);
-    if (route.legacySponsorConsumerId === consumerId || route.mode !== "pending-v2-registration") {
-      throw new Error("The browser installation mailbox migration state is malformed.");
-    }
   }
   if (route.cursor != null) validateMailboxCursor(route.cursor);
   if (route.mode === "v2") {
@@ -514,6 +406,9 @@ function validateLocalMailboxRoute(route, consumerId) {
         registration.committedSequence !== route.committedSequence) {
       throw new Error("The browser installation mailbox registration is not active.");
     }
+  } else if (route.registration != null || route.committedSequence !== 0 ||
+      route.cursor !== null || route.pendingCommit !== null) {
+    throw new Error("The browser installation pending mailbox route is malformed.");
   }
   if (route.pendingCommit != null) {
     const pending = route.pendingCommit;
@@ -542,16 +437,34 @@ function validateSerializedKeypair(value, label, publicLength, secretLength) {
   }
 }
 
-function decodeBase64(value, label) {
+function decodeBase64(value, label, expectedLength) {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`The ${label} is malformed.`);
   }
   try {
     const binary = atob(value);
     if (btoa(binary) !== value) throw new Error();
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    if (expectedLength != null && decoded.byteLength !== expectedLength) throw new Error();
+    return decoded;
   } catch {
     throw new Error(`The ${label} is malformed.`);
+  }
+}
+
+function deserializeKeypair(value, label, publicLength, secretLength) {
+  validateSerializedKeypair(value, label, publicLength, secretLength);
+  return {
+    publicKey: decodeBase64(value.publicKey, `${label} public key`, publicLength),
+    secretKey: decodeBase64(value.secretKey, `${label} secret key`, secretLength)
+  };
+}
+
+function assertKnownKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new Error(`The ${label} contains unsupported state.`);
+    }
   }
 }
 

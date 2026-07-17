@@ -25,7 +25,7 @@ import { WebCryptoPrimitives } from "../src/crypto/webcrypto.js";
 import { base64, canonicalJson } from "../src/crypto/swift-canonical.js";
 
 const vectors = JSON.parse(readFileSync(
-  new URL("./fixtures/rendezvous-opaque-v2-vectors.json", import.meta.url),
+  new URL("../../NoctweaveDocumentation/test_vectors/rendezvous_opaque_v2.json", import.meta.url),
   "utf8"
 ));
 const routeVector = vectors.opaqueRouteCreate;
@@ -106,6 +106,10 @@ test("opaque route transition digests use the Swift sorted-JSON projection", asy
   assert.equal(
     Buffer.from(digest).toString("hex"),
     routeVector.expectedTransitionDigestHex
+  );
+  assert.equal(
+    Buffer.from(request.authorization.mac, "base64").toString("hex"),
+    routeVector.expectedAuthorizationMACHex
   );
 
   const unsigned = structuredClone(request);

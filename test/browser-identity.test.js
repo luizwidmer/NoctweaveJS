@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   NoctweaveBrowserIdentityService,
+  browserIdentityStateSchema,
   parseBrowserRelayEndpoint,
-  validateBrowserDisplayName
+  validateBrowserDisplayName,
+  validateBrowserIdentityState
 } from "../src/index.js";
 
 test("browser identity setup verifies relay and registers a post-quantum inbox", async () => {
@@ -88,190 +90,37 @@ test("browser identity setup verifies relay and registers a post-quantum inbox",
   assert.notEqual(result.identity.localInstallation.signing.publicKey, result.identity.signing.publicKey);
   assert.notEqual(result.identity.localInstallation.agreement.publicKey, result.identity.agreement.publicKey);
   assert.equal(mailboxRoute.mode, "v2");
+  assert.equal(result.identity.stateSchema, browserIdentityStateSchema);
+  assert.equal(Object.hasOwn(result.identity.localInstallation, "mailboxConsumerIdsByRoute"), false);
+  assert.equal(Object.hasOwn(mailboxRoute, "legacySponsorConsumerId"), false);
+  assert.equal(mailboxRoute.cursor, null);
+  assert.equal(mailboxRoute.pendingCommit, null);
+  assert.equal(mailboxRoute.committedSequence, 0);
+  assert.doesNotThrow(() => validateBrowserIdentityState(result.identity));
 });
 
-test("legacy stored identities persist fresh endpoint state before binding it", async () => {
-  const events = [];
-  const pqc = mockPQC();
-  const crypto = mockCrypto();
-  const signing = pqc.generateSigningKeypair();
-  const agreement = pqc.generateKemKeypair();
-  const access = pqc.generateSigningKeypair();
-  const accessDigest = await crypto.sha256(access.publicKey);
-  const legacy = {
-    displayName: "Legacy Alice",
-    signing: serialized(signing),
-    agreement: serialized(agreement),
-    access: serialized(access),
-    inboxId: "noctweave1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpskx0f2v",
-    accessFingerprint: Buffer.from(accessDigest).toString("base64"),
-    signingFingerprint: Buffer.from(await crypto.sha256(signing.publicKey)).toString("base64")
+test("browser identity decoding rejects every pre-1.0 or incomplete state", () => {
+  const oldState = {
+    displayName: "Old Alice",
+    architectureVersion: 2
   };
-  const service = new NoctweaveBrowserIdentityService({
-    pqc,
-    crypto,
-    relayClientFactory: () => ({
-      send: async (request) => {
-        events.push({ type: "request", request });
-        return mailboxConsumerResponse(request.registerMailboxConsumer);
-      }
-    })
-  });
+  assert.throws(() => validateBrowserIdentityState(oldState), /unsupported state schema/);
 
-  const migrated = await service.migrateAndRegisterIdentity({
-    identity: legacy,
-    relay: "https://relay.example",
-    persist: async (identity) => events.push({
-      type: "persist",
-      mode: Object.values(identity.localInstallation.mailboxRoutes)[0].mode
-    })
-  });
-
-  assert.deepEqual(events.map((event) => `${event.type}:${event.mode ?? event.request.type}`), [
-    "persist:pending-v2-registration",
-    "request:registerMailboxConsumer",
-    "persist:v2"
-  ]);
-  assert.equal(migrated.architectureVersion, 2);
-  assert.notEqual(migrated.localInstallation.signing.publicKey, legacy.signing.publicKey);
-  assert.notEqual(migrated.localInstallation.agreement.publicKey, legacy.agreement.publicKey);
+  const currentButIncomplete = {
+    ...oldState,
+    stateSchema: browserIdentityStateSchema
+  };
+  assert.throws(() => validateBrowserIdentityState(currentButIncomplete), /malformed/);
 });
 
-test("interrupted identity migration retries the same persisted endpoint and consumer", async () => {
+test("fresh browser identity creation fails closed when PQ key generation fails", async () => {
   const pqc = mockPQC();
-  const crypto = mockCrypto();
-  const signing = pqc.generateSigningKeypair();
-  const agreement = pqc.generateKemKeypair();
-  const access = pqc.generateSigningKeypair();
-  const accessDigest = await crypto.sha256(access.publicKey);
-  const legacy = {
-    displayName: "Retry Alice",
-    signing: serialized(signing),
-    agreement: serialized(agreement),
-    access: serialized(access),
-    inboxId: "noctweave1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpskx0f2v",
-    accessFingerprint: Buffer.from(accessDigest).toString("base64"),
-    signingFingerprint: Buffer.from(await crypto.sha256(signing.publicKey)).toString("base64")
-  };
-  let persisted;
-  const interrupted = new NoctweaveBrowserIdentityService({
-    pqc,
-    crypto,
-    relayClientFactory: () => ({ send: async () => { throw new Error("network interrupted"); } })
-  });
+  pqc.generateKemKeypair = () => ({ publicKey: new Uint8Array(), secretKey: new Uint8Array() });
+  const service = new NoctweaveBrowserIdentityService({ pqc, crypto: mockCrypto() });
   await assert.rejects(
-    () => interrupted.migrateAndRegisterIdentity({
-      identity: legacy,
-      relay: "https://relay.example",
-      persist: async (identity) => { persisted = structuredClone(identity); }
-    }),
-    /network interrupted/
+    () => service.createFreshIdentityState({ displayName: "Alice", relay: "https://relay.example" }),
+    /key generation failed/
   );
-  const pendingRoute = Object.values(persisted.localInstallation.mailboxRoutes)[0];
-  assert.equal(pendingRoute.committedSequence, 0);
-  const persistedSigningKey = pendingRoute.signing.publicKey;
-  const persistedConsumerId = pendingRoute.consumerId;
-  let retriedRequest;
-  const retry = new NoctweaveBrowserIdentityService({
-    pqc,
-    crypto,
-    relayClientFactory: () => ({
-      send: async (request) => {
-        retriedRequest = request.registerMailboxConsumer;
-        return mailboxConsumerResponse(retriedRequest);
-      }
-    })
-  });
-  const recovered = await retry.migrateAndRegisterIdentity({
-    identity: persisted,
-    relay: "https://relay.example",
-    persist: async (identity) => { persisted = structuredClone(identity); }
-  });
-
-  assert.equal(retriedRequest.consumerSigningPublicKey, persistedSigningKey);
-  assert.notEqual(retriedRequest.consumerSigningPublicKey, persisted.localInstallation.signing.publicKey);
-  assert.equal(retriedRequest.consumerId, persistedConsumerId);
-  assert.equal(Object.values(recovered.localInstallation.mailboxRoutes)[0].mode, "v2");
-  assert.equal(Object.values(recovered.localInstallation.mailboxRoutes)[0].committedSequence, 0);
-});
-
-test("endpoint-key mailbox bindings rotate to a fresh route credential", async () => {
-  const pqc = mockPQC();
-  const crypto = mockCrypto();
-  const signing = pqc.generateSigningKeypair();
-  const agreement = pqc.generateKemKeypair();
-  const access = pqc.generateSigningKeypair();
-  const identity = {
-    displayName: "Route migration",
-    signing: serialized(signing),
-    agreement: serialized(agreement),
-    access: serialized(access),
-    inboxId: "noctweave1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpskx0f2v",
-    accessFingerprint: Buffer.from(await crypto.sha256(access.publicKey)).toString("base64"),
-    signingFingerprint: Buffer.from(await crypto.sha256(signing.publicKey)).toString("base64")
-  };
-  const requests = [];
-  const service = new NoctweaveBrowserIdentityService({
-    pqc,
-    crypto,
-    relayClientFactory: () => ({
-      send: async (request) => {
-        requests.push(request);
-        if (request.type === "registerMailboxConsumer") {
-          return mailboxConsumerResponse(request.registerMailboxConsumer);
-        }
-        const revoked = request.revokeMailboxConsumer;
-        return {
-          type: "mailboxConsumer",
-          mailboxConsumer: {
-            consumerId: revoked.consumerId,
-            state: "revoked",
-            committedSequence: 0,
-            registeredAt: "2026-07-16T12:34:56Z",
-            revokedAt: "2026-07-16T12:35:00Z"
-          }
-        };
-      }
-    })
-  });
-  const prepared = await service.prepareArchitectureV2Identity(identity, {
-    relay: "https://relay.example"
-  });
-  const local = prepared.identity.localInstallation;
-  const [routeKey, route] = Object.entries(local.mailboxRoutes)[0];
-  const legacyConsumerId = route.consumerId;
-  local.mailboxRoutes[routeKey] = {
-    mode: "v2",
-    consumerId: legacyConsumerId,
-    registration: {
-      ...route.registration,
-      consumerId: legacyConsumerId,
-      consumerSigningPublicKey: local.signing.publicKey,
-      state: "active",
-      committedSequence: 0,
-      registeredAt: "2026-07-16T12:34:56Z"
-    },
-    cursor: null,
-    committedSequence: 0,
-    pendingCommit: null
-  };
-
-  const migrated = await service.bindMailboxConsumer({
-    identity: prepared.identity,
-    relay: "https://relay.example"
-  });
-  const migratedRoute = migrated.localInstallation.mailboxRoutes[routeKey];
-  const registration = requests.find((request) => request.type === "registerMailboxConsumer")
-    .registerMailboxConsumer;
-  const revocation = requests.find((request) => request.type === "revokeMailboxConsumer")
-    .revokeMailboxConsumer;
-
-  assert.equal(registration.sponsorConsumerId, legacyConsumerId);
-  assert.notEqual(registration.consumerId, legacyConsumerId);
-  assert.notEqual(registration.consumerSigningPublicKey, local.signing.publicKey);
-  assert.equal(revocation.consumerId, legacyConsumerId);
-  assert.equal(migratedRoute.mode, "v2");
-  assert.equal(migratedRoute.legacySponsorConsumerId, undefined);
 });
 
 test("browser setup rejects raw TCP, invalid names, coordinators, and failed registration", async () => {
@@ -288,7 +137,7 @@ test("browser setup rejects raw TCP, invalid names, coordinators, and failed reg
   });
   await assert.rejects(() => coordinator.verifyRelay("https://relay.example"), /client-facing/);
 
-  const legacyRelay = new NoctweaveBrowserIdentityService({
+  const incompatibleRelay = new NoctweaveBrowserIdentityService({
     pqc: mockPQC(),
     crypto: mockCrypto(),
     relayClientFactory: () => ({
@@ -297,7 +146,7 @@ test("browser setup rejects raw TCP, invalid names, coordinators, and failed reg
     })
   });
   await assert.rejects(
-    () => legacyRelay.verifyRelay("https://relay.example"),
+    () => incompatibleRelay.verifyRelay("https://relay.example"),
     /architecture-v2 capability manifest/
   );
 
@@ -313,22 +162,6 @@ test("browser setup rejects raw TCP, invalid names, coordinators, and failed reg
   await assert.rejects(
     () => rejected.createAndRegister({ displayName: "Alice", relay: "https://relay.example" }),
     /rejected inbox registration/
-  );
-
-  const recoveryRequired = new NoctweaveBrowserIdentityService({
-    pqc: mockPQC(),
-    crypto: mockCrypto(),
-    relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
-      info: async () => ({ type: "info", relayInfo: testRelayInfo() }),
-      send: async (request) => request.type === "registerInbox"
-        ? { type: "ok" }
-        : { type: "error", error: "The old inbox has no active route credential; create a fresh identity generation and inbox" }
-    })
-  });
-  await assert.rejects(
-    () => recoveryRequired.createAndRegister({ displayName: "Alice", relay: "https://relay.example" }),
-    /old inbox is closed/
   );
 });
 

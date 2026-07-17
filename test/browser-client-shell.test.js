@@ -31,7 +31,24 @@ test("production browser client keeps secret-bearing state behind encrypted stor
   assert.match(script, /NoctweaveRemoteEnvelopeError/);
   assert.match(script, /envelopeReceiptKey\(sourceScope, logicalId\)/);
   assert.match(script, /const scopedMessageId/);
+  assert.match(script, /stateSchema:\s*"nw\.browser-profile\.v1"/);
+  assert.match(script, /validateBrowserIdentityState\(profile\.identity\)/);
+  assert.doesNotMatch(script, /migrateProfile|migrateAndRegisterIdentity|legacyUnscoped/);
   assert.doesNotMatch(script, /relayRequests\.(?:fetch|acknowledgeMessages)/);
+});
+
+test("browser profiles reject old schemas instead of migrating or backfilling them", async () => {
+  const [production, example] = await Promise.all([
+    readFile(new URL("../client/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../examples/browser-client/app.js", import.meta.url), "utf8")
+  ]);
+  assert.match(production, /profile\.stateSchema !== "nw\.browser-profile\.v1"/);
+  assert.match(example, /saved\.stateSchema !== "nw\.browser-example-profile\.v1"/);
+  for (const script of [production, example]) {
+    assert.doesNotMatch(script, /legacyStateForMigration|migrateProfile|migrateMessages|migrateEnvelopeReceipts/);
+    assert.doesNotMatch(script, /contact\.version === 4/);
+    assert.doesNotMatch(script, /decryptNativeEnvelope/);
+  }
 });
 
 test("browser identity-deletion paths journal relay retirement before deleting identity keys", async () => {

@@ -9,9 +9,11 @@ export {
 export { NoctweaveWebClient } from "./client.js";
 export {
   NoctweaveBrowserIdentityService,
+  browserIdentityStateSchema,
   browserMailboxRouteKey,
   parseBrowserRelayEndpoint,
-  validateBrowserDisplayName
+  validateBrowserDisplayName,
+  validateBrowserIdentityState
 } from "./browser-identity.js";
 export {
   BrowserLocalStorageStore,

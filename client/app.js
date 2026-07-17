@@ -19,16 +19,17 @@ import {
   createNativeOutboundSession,
   decodeNativeContactCode,
   decryptNativeApplicationEnvelope,
-  decryptNativeEnvelope,
   encodeNativeContactCode,
   encryptNativeTextEnvelope,
   findNativeContactForEnvelope,
+  isCertifiedNativeContact,
   nativeConversationKey,
   parseBrowserRelayEndpoint,
   relayRequests,
   swiftISODate,
   swiftUUID,
   validateMailboxSyncContinuity,
+  validateBrowserIdentityState,
   validateRetireInboxRequest,
   verifyNativeContactOffer,
   verifyNativeEnvelope
@@ -198,8 +199,19 @@ async function unlockProfile() {
     const repository = makeRepository(elements.unlockPassphrase.value, salt);
     let profile;
     try { profile = await repository.load(); } catch { throw new Error("The profile could not be unlocked. Check the passphrase."); }
-    profile = migrateProfile(profile);
     validateProfile(profile);
+    if (profile.identity) {
+      await verifyNativeContactOffer({
+        crypto: runtime.crypto,
+        pqc: runtime.pqc,
+        offer: profile.identity.contactOffer
+      });
+      if (profile.identity.contactOffer.fingerprint !== profile.identity.signingFingerprint ||
+          profile.identity.contactOffer.inboxId !== profile.identity.inboxId ||
+          profile.identity.contactOffer.identityGenerationId !== profile.identity.identityGenerationId) {
+        throw new Error("The encrypted browser profile identity binding is invalid.");
+      }
+    }
     if (profile.identityDeletionPending) {
       if (profile.pendingInboxRetirements.length > 0) {
         await resumePendingInboxRetirements(profile, repository);
@@ -212,17 +224,6 @@ async function unlockProfile() {
       if (message.direction === "out" && message.status === "sending" && message.envelope) {
         message.status = "failed";
       }
-    }
-    if (profile.identity && profile.relay?.address) {
-      profile.identity = await runtime.identityService.migrateAndRegisterIdentity({
-        identity: profile.identity,
-        relay: profile.relay.address,
-        authToken: profile.relay.authToken,
-        persist: async (identity) => {
-          profile.identity = identity;
-          await repository.save(profile);
-        }
-      });
     }
     runtime.repository = repository;
     runtime.profile = profile;
@@ -240,86 +241,30 @@ function makeRepository(passphrase, salt) {
 
 function newProfileState() {
   return {
-    version: 2, onboardingComplete: false, identity: null, relay: null, relays: [], contacts: [],
+    stateSchema: "nw.browser-profile.v1", version: 1,
+    onboardingComplete: false, identity: null, relay: null, relays: [], contacts: [],
     conversations: {}, messages: [], seenEnvelopeIds: [], seenEnvelopeReceipts: {}, selectedContactFingerprint: "",
     quarantinedTransportEnvelopes: [], pendingInboxRetirements: [], identityDeletionPending: false,
     settings: { autoFetch: true }, lastSyncAt: null
   };
 }
 
-function migrateProfile(profile) {
-  if (!profile || typeof profile !== "object") throw new Error("The encrypted browser profile has an unsupported format.");
-  if (profile.version === 2) {
-    const relay = profile.relay?.address
-      ? { ...profile.relay, id: relayId(profile.relay.address), preferred: true }
-      : null;
-    const relays = (profile.relays ?? []).map((item) => ({
-      ...item,
-      id: relayId(item.address),
-      preferred: relay?.id === relayId(item.address)
-    }));
-    if (relay && !relays.some((item) => item.id === relay.id)) relays.unshift(relay);
-    return {
-      ...newProfileState(), ...profile, relay, relays,
-      messages: migrateMessages(profile.messages),
-      seenEnvelopeReceipts: migrateEnvelopeReceipts(profile.seenEnvelopeReceipts ?? {}),
-      quarantinedTransportEnvelopes: profile.quarantinedTransportEnvelopes ?? [],
-      pendingInboxRetirements: profile.pendingInboxRetirements ?? [],
-      identityDeletionPending: profile.identityDeletionPending === true ||
-        (profile.pendingInboxRetirements?.length ?? 0) > 0,
-      settings: { autoFetch: true, ...(profile.settings ?? {}) }
-    };
-  }
-  if (profile.version !== 1) throw new Error("The encrypted browser profile has an unsupported format.");
-  const homeRelay = profile.relay?.address
-    ? { ...profile.relay, id: relayId(profile.relay.address), preferred: true }
-    : null;
-  return {
-    ...newProfileState(), ...profile, version: 2, relay: homeRelay,
-    messages: migrateMessages(profile.messages),
-    relays: homeRelay ? [homeRelay] : [],
-    seenEnvelopeIds: [], seenEnvelopeReceipts: {}, quarantinedTransportEnvelopes: [],
-    pendingInboxRetirements: [], identityDeletionPending: false,
-    settings: { autoFetch: true }, lastSyncAt: null
-  };
-}
-
-function migrateMessages(messages) {
-  if (!Array.isArray(messages)) return messages;
-  return messages.map((message) => {
-    if (message?.direction !== "out" || !message.envelope || typeof message.envelope !== "object") {
-      return message;
-    }
-    const envelopeId = message.envelope.id ?? message.envelopeId;
-    const eventId = message.envelope.authenticatedContext?.directV4?.eventId ?? message.id ?? envelopeId;
-    return {
-      ...message,
-      id: eventId,
-      envelopeId,
-      clientTransactionId: message.clientTransactionId ?? eventId,
-      status: message.status ?? "failed"
-    };
-  });
-}
-
 function envelopeReceiptKey(sourceScope, logicalId) {
   return `${sourceScope}|${logicalId}`;
 }
 
-function migrateEnvelopeReceipts(receipts) {
-  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) return receipts;
-  return Object.fromEntries(Object.entries(receipts).map(([key, receipt]) => {
-    if (receipt?.sourceScope != null && receipt?.logicalId != null) return [key, receipt];
-    return [key, { ...receipt, sourceScope: null, logicalId: key }];
-  }));
-}
-
 function validateProfile(profile) {
-  if (!profile || profile.version !== 2 || !Array.isArray(profile.contacts) || !Array.isArray(profile.messages) ||
+  if (!profile || profile.stateSchema !== "nw.browser-profile.v1" || profile.version !== 1 ||
+      !Array.isArray(profile.contacts) || !Array.isArray(profile.messages) ||
       !Array.isArray(profile.relays) || !Array.isArray(profile.seenEnvelopeIds) ||
       !Array.isArray(profile.quarantinedTransportEnvelopes) ||
       !Array.isArray(profile.pendingInboxRetirements) ||
+      typeof profile.onboardingComplete !== "boolean" ||
       typeof profile.identityDeletionPending !== "boolean" ||
+      typeof profile.selectedContactFingerprint !== "string" ||
+      !profile.settings || typeof profile.settings !== "object" ||
+      typeof profile.settings.autoFetch !== "boolean" ||
+      (profile.lastSyncAt !== null && !Number.isFinite(Date.parse(profile.lastSyncAt))) ||
       !profile.seenEnvelopeReceipts || typeof profile.seenEnvelopeReceipts !== "object" ||
       Array.isArray(profile.seenEnvelopeReceipts) || !profile.conversations || typeof profile.conversations !== "object") {
     throw new Error("The encrypted browser profile has an unsupported format.");
@@ -328,6 +273,21 @@ function validateProfile(profile) {
       profile.seenEnvelopeIds.length > 40_000 || Object.keys(profile.seenEnvelopeReceipts).length > 40_000 ||
       profile.quarantinedTransportEnvelopes.length > 512 || profile.pendingInboxRetirements.length > 32) {
     throw new Error("The encrypted browser profile exceeds supported collection limits.");
+  }
+  const contactFingerprints = new Set();
+  for (const contact of profile.contacts) {
+    if (!isCertifiedNativeContact(contact) || typeof contact.fingerprint !== "string" ||
+        contactFingerprints.has(contact.fingerprint)) {
+      throw new Error("The encrypted browser profile contains an unsupported contact record.");
+    }
+    contactFingerprints.add(contact.fingerprint);
+  }
+  for (const [key, conversation] of Object.entries(profile.conversations)) {
+    if (!key.startsWith("direct-v4:") || !conversation || typeof conversation !== "object" ||
+        Array.isArray(conversation) || !conversation.endpointSession ||
+        typeof conversation.endpointSession !== "object") {
+      throw new Error("The encrypted browser profile contains an unsupported session record.");
+    }
   }
   const messageIds = new Set();
   for (const message of profile.messages) {
@@ -361,11 +321,9 @@ function validateProfile(profile) {
   for (const [key, receipt] of Object.entries(profile.seenEnvelopeReceipts)) {
     const logicalId = receipt?.logicalId;
     const sourceScope = receipt?.sourceScope;
-    const legacyUnscoped = sourceScope === null;
     if (!/^[0-9a-f-]{36}$/u.test(logicalId) ||
-        (!legacyUnscoped && (typeof sourceScope !== "string" || sourceScope.length < 1 ||
-          sourceScope.length > 160 || key !== envelopeReceiptKey(sourceScope, logicalId))) ||
-        (legacyUnscoped && key !== logicalId) || !receipt || typeof receipt !== "object" ||
+        typeof sourceScope !== "string" || sourceScope.length < 1 || sourceScope.length > 160 ||
+        key !== envelopeReceiptKey(sourceScope, logicalId) || !receipt || typeof receipt !== "object" ||
         !/^[0-9a-f-]{36}$/u.test(receipt.envelopeId) ||
         typeof receipt.digest !== "string" || receipt.digest.length !== 44 ||
         receiptEnvelopeIds.has(receipt.envelopeId)) {
@@ -398,6 +356,13 @@ function validateProfile(profile) {
   }
   if (profile.pendingInboxRetirements.length > 0 && !profile.identityDeletionPending) {
     throw new Error("The encrypted browser profile contains an unbound inbox-retirement journal.");
+  }
+  if (profile.identity != null) {
+    validateBrowserIdentityState(profile.identity);
+    if (Object.values(profile.identity.localInstallation.mailboxRoutes).some((route) =>
+      route.mode !== "v2" || route.registration?.state !== "active")) {
+      throw new Error("The encrypted browser profile identity has an inactive mailbox route.");
+    }
   }
 }
 
@@ -627,13 +592,13 @@ async function syncMessages() {
     const identity = runtime.profile.identity;
     const localInstallation = identity.localInstallation;
     if (identity.architectureVersion !== 2 || !localInstallation) {
-      throw new Error("Mailbox v2 local-endpoint migration is required before synchronization.");
+      throw new Error("The identity does not use the current mailbox-v2 endpoint state.");
     }
     const relay = runtime.profile.relay;
     const routeKey = browserMailboxRouteKey(relay.address, identity.inboxId);
     const route = localInstallation.mailboxRoutes?.[routeKey];
     if (route?.mode !== "v2" || route.registration?.state !== "active") {
-      throw new Error("Mailbox v2 registration is not active; legacy fetch is disabled.");
+      throw new Error("Mailbox v2 registration is not active.");
     }
     consumerKey = deserializeKeypair(route.signing);
     const client = makeRelayClient(relay.address, { authToken: relay.authToken });
@@ -866,17 +831,11 @@ async function decodeEnvelope(envelope) {
     conversation,
     envelope
   };
-  let text;
-  let silent = false;
-  if (contact.version === 4) {
-    const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
-    silent = decoded.projection.disposition === "silent";
-    text = decoded.projection.kind === "text"
-      ? decoded.projection.text
-      : decoded.projection.fallbackText;
-  } else {
-    text = await decryptNativeEnvelope(decryptOptions);
-  }
+  const decoded = await decryptNativeApplicationEnvelope(decryptOptions);
+  const silent = decoded.projection.disposition === "silent";
+  const text = decoded.projection.kind === "text"
+    ? decoded.projection.text
+    : decoded.projection.fallbackText;
   runtime.profile.conversations[key] = conversation;
   return {
     id: envelope.authenticatedContext?.directV4?.eventId ?? envelope.id,
