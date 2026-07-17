@@ -42,8 +42,8 @@ test("browser identity setup verifies relay and registers a post-quantum inbox",
   assert.equal(result.identity.contactOffer.inboxId, result.identity.inboxId);
   assert.equal(result.identity.contactOffer.version, 4);
   assert.equal(
-    result.identity.contactOffer.preferredInstallationEndpoint.installationId,
-    result.identity.localInstallation.id
+    result.identity.contactOffer.preferredGenerationEndpoint.endpointId,
+    result.identity.localEndpoint.id
   );
   assert.equal(result.relay.endpoint.useTLS, true);
   assert.equal(result.relay.relayInfo.relayName, "Test Relay");
@@ -60,7 +60,7 @@ test("browser identity setup verifies relay and registers a post-quantum inbox",
     "displayName",
     "signingPublicKey",
     "agreementPublicKey",
-    "installationManifest",
+    "endpointSetManifest",
     "endpointCertificate",
     "prekey"
   ]) {
@@ -68,30 +68,30 @@ test("browser identity setup verifies relay and registers a post-quantum inbox",
   }
   assert.equal(registrationJSON.includes(result.identity.signing.publicKey), false);
   assert.equal(registrationJSON.includes(result.identity.agreement.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.localInstallation.signing.publicKey), false);
-  assert.equal(registrationJSON.includes(result.identity.localInstallation.agreement.publicKey), false);
+  assert.equal(registrationJSON.includes(result.identity.localEndpoint.signing.publicKey), false);
+  assert.equal(registrationJSON.includes(result.identity.localEndpoint.agreement.publicKey), false);
   assert.equal(registrationJSON.includes(result.identity.identityGenerationId), false);
-  assert.equal(registrationJSON.includes(result.identity.localInstallation.id), false);
+  assert.equal(registrationJSON.includes(result.identity.localEndpoint.id), false);
   assert.equal(
-    registrationJSON.includes(result.identity.localInstallation.prekeys.signedPrekeyPublicKey),
+    registrationJSON.includes(result.identity.localEndpoint.prekeys.signedPrekeyPublicKey),
     false
   );
   assert.equal(requests[1].type, "registerMailboxConsumer");
   assert.equal(requests[1].registerMailboxConsumer.sponsorConsumerId, undefined);
-  const mailboxRoute = Object.values(result.identity.localInstallation.mailboxRoutes)[0];
+  const mailboxRoute = Object.values(result.identity.localEndpoint.mailboxRoutes)[0];
   assert.equal(
     requests[1].registerMailboxConsumer.consumerSigningPublicKey,
     mailboxRoute.signing.publicKey
   );
   assert.notEqual(
     mailboxRoute.signing.publicKey,
-    result.identity.localInstallation.signing.publicKey
+    result.identity.localEndpoint.signing.publicKey
   );
-  assert.notEqual(result.identity.localInstallation.signing.publicKey, result.identity.signing.publicKey);
-  assert.notEqual(result.identity.localInstallation.agreement.publicKey, result.identity.agreement.publicKey);
+  assert.notEqual(result.identity.localEndpoint.signing.publicKey, result.identity.signing.publicKey);
+  assert.notEqual(result.identity.localEndpoint.agreement.publicKey, result.identity.agreement.publicKey);
   assert.equal(mailboxRoute.mode, "v2");
   assert.equal(result.identity.stateSchema, browserIdentityStateSchema);
-  assert.equal(Object.hasOwn(result.identity.localInstallation, "mailboxConsumerIdsByRoute"), false);
+  assert.equal(Object.hasOwn(result.identity.localEndpoint, "mailboxConsumerIdsByRoute"), false);
   assert.equal(Object.hasOwn(mailboxRoute, "legacySponsorConsumerId"), false);
   assert.equal(mailboxRoute.cursor, null);
   assert.equal(mailboxRoute.pendingCommit, null);

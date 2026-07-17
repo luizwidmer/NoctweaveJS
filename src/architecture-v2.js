@@ -37,7 +37,7 @@ const deliveryStateOrder = Object.freeze([
 
 export const noctweaveArchitectureV2 = Object.freeze({
   version: 2,
-  maximumInstallations: 16,
+  maximumEndpoints: 16,
   maximumMailboxConsumerHistory: 64,
   maximumMailboxPage: MAXIMUM_MAILBOX_PAGE,
   maximumLongPollTimeoutSeconds: MAXIMUM_LONG_POLL_SECONDS,
@@ -75,7 +75,7 @@ const directV4Requirements = Object.freeze([
     module: "nw.endpoints",
     versions: [2],
     // Direct-v4 currently addresses one certified preferred peer endpoint.
-    // maximumInstallations is a structural manifest bound, not fan-out support.
+    // maximumEndpoints is a structural manifest bound, not fan-out support.
     limits: { maxActiveEndpoints: 1 },
     minimums: { maxActiveEndpoints: 1 }
   },
@@ -319,35 +319,35 @@ export const defaultActiveEndpointModules = Object.freeze([
   }
 ].map(validateProtocolModuleCapability));
 
-export function createRelationshipInstallationHandle(rawValue) {
-  return validateRelationshipInstallationHandle(
+export function createRelationshipEndpointHandle(rawValue) {
+  return validateRelationshipEndpointHandle(
     typeof rawValue === "string" ? { rawValue } : rawValue
   );
 }
 
-export function validateRelationshipInstallationHandle(value) {
-  requireRecord(value, "Relationship installation handle");
-  const rawValue = canonicalBase64(value.rawValue, "Relationship installation handle", 32);
+export function validateRelationshipEndpointHandle(value) {
+  requireRecord(value, "Relationship endpoint handle");
+  const rawValue = canonicalBase64(value.rawValue, "Relationship endpoint handle", 32);
   return freezeRecord({ rawValue });
 }
 
-export async function generateRelationshipInstallationHandle({
+export async function generateRelationshipEndpointHandle({
   identityGenerationId,
-  installationId,
+  endpointId,
   relationshipId,
   nonce = swiftUUID(),
   crypto = globalThis.crypto
 }) {
-  const ids = [identityGenerationId, installationId, relationshipId, nonce]
+  const ids = [identityGenerationId, endpointId, relationshipId, nonce]
     .map((value, index) => normalizeUUID(value, [
       "identityGenerationId",
-      "installationId",
+      "endpointId",
       "relationshipId",
       "nonce"
     ][index]).toLowerCase());
-  const material = encoder.encode(`Noctweave/relationship-installation-handle/v2${ids.join("")}`);
+  const material = encoder.encode(`Noctweave/relationship-endpoint-handle/v2${ids.join("")}`);
   const digest = await new WebCryptoPrimitives({ crypto }).sha256(material);
-  return createRelationshipInstallationHandle(base64(digest));
+  return createRelationshipEndpointHandle(base64(digest));
 }
 
 export function createMailboxConsumerId(rawValue) {
@@ -1114,7 +1114,7 @@ export function createConversationEvent({
   id = swiftUUID(),
   clientTransactionId = swiftUUID(),
   conversationId,
-  authorInstallationHandle,
+  authorEndpointHandle,
   createdAt = new Date(),
   kind,
   content,
@@ -1125,7 +1125,7 @@ export function createConversationEvent({
     id,
     clientTransactionId,
     conversationId,
-    authorInstallationHandle,
+    authorEndpointHandle,
     createdAt,
     kind,
     content,
@@ -1156,7 +1156,7 @@ export function validateConversationEvent(value) {
       maximumBytes: 256,
       controls: false
     }),
-    authorInstallationHandle: validateRelationshipInstallationHandle(value.authorInstallationHandle),
+    authorEndpointHandle: validateRelationshipEndpointHandle(value.authorEndpointHandle),
     createdAt,
     kind: value.kind,
     content
@@ -1228,11 +1228,11 @@ export function validateMailboxCursor(value) {
 
 export function createDeliveryStateRecord({
   eventId,
-  destinationInstallation,
+  destinationEndpoint,
   state,
   updatedAt = new Date()
 }) {
-  return validateDeliveryStateRecord({ eventId, destinationInstallation, state, updatedAt });
+  return validateDeliveryStateRecord({ eventId, destinationEndpoint, state, updatedAt });
 }
 
 export function validateDeliveryStateRecord(value) {
@@ -1242,7 +1242,7 @@ export function validateDeliveryStateRecord(value) {
   }
   return freezeRecord({
     eventId: normalizeUUID(value.eventId, "Delivery state eventId"),
-    destinationInstallation: validateRelationshipInstallationHandle(value.destinationInstallation),
+    destinationEndpoint: validateRelationshipEndpointHandle(value.destinationEndpoint),
     state: value.state,
     updatedAt: normalizeDate(value.updatedAt, "Delivery state updatedAt")
   });

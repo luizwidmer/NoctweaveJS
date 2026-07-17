@@ -17,7 +17,7 @@ import {
   createTextEncodedContent,
   defaultActiveEndpointModules,
   generateMailboxConsumerId,
-  generateRelationshipInstallationHandle,
+  generateRelationshipEndpointHandle,
   inboxIdForAccessPublicKey,
   inboxRetirementProofPayload,
   mayMutateControlState,
@@ -46,7 +46,7 @@ import {
 
 const ids = Object.freeze({
   identityGenerationId: "25D6B258-9C3D-43B9-A6AB-F654B3089B4B",
-  installationId: "A12AA310-613D-4F86-8F45-28DC0D410F9F",
+  endpointId: "A12AA310-613D-4F86-8F45-28DC0D410F9F",
   relationshipId: "4A2D4951-C0CA-4B9D-94A4-2DC80B4AE8E0",
   nonce: "E141680A-06A0-4E36-B2D7-5AE72B6013CD",
   eventId: "2F942443-C62C-4D16-93C9-A38DFCB2D69C",
@@ -195,20 +195,20 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
 });
 
 test("relationship endpoint handles match the Swift v2 derivation and remain opaque", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
-  assert.equal(handle.rawValue, "DwJGzuzXU2cCN2GRkyDQbpsIX3FSSpgu/rH1/BrTskg=");
+  const handle = await generateRelationshipEndpointHandle(ids);
+  assert.equal(handle.rawValue, "03kx4/LQ+FBjGnQG/B/NTnX7Sj13lp5+O9NUKj2/ZBk=");
   assert.equal(Object.keys(handle).join(","), "rawValue");
   assert.equal(Object.isFrozen(handle), true);
 });
 
 test("content and conversation events use immutable bounded Swift-compatible wire records", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
+  const handle = await generateRelationshipEndpointHandle(ids);
   const content = createTextEncodedContent("hello from v2");
   const event = createConversationEvent({
     id: ids.eventId,
     clientTransactionId: ids.transactionId,
     conversationId: "relationship:test",
-    authorInstallationHandle: handle,
+    authorEndpointHandle: handle,
     createdAt: "2026-07-16T12:34:56Z",
     kind: "application",
     content,
@@ -227,13 +227,13 @@ test("content and conversation events use immutable bounded Swift-compatible wir
 });
 
 test("standard relations, reactions, truthful retractions, and receipts match Swift vectors", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
+  const handle = await generateRelationshipEndpointHandle(ids);
   const targetEventId = "11111111-2222-4333-8444-555555555555";
   const base = {
     id: ids.eventId,
     clientTransactionId: ids.transactionId,
     conversationId: "relationship:test",
-    authorInstallationHandle: handle,
+    authorEndpointHandle: handle,
     createdAt: "2026-07-16T12:34:56Z"
   };
 
@@ -288,12 +288,12 @@ test("standard relations, reactions, truthful retractions, and receipts match Sw
 });
 
 test("reserved relation and receipt semantics reject mismatch, self-reference, controls, and bad bounds", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
+  const handle = await generateRelationshipEndpointHandle(ids);
   const base = {
     id: ids.eventId,
     clientTransactionId: ids.transactionId,
     conversationId: "relationship:test",
-    authorInstallationHandle: handle,
+    authorEndpointHandle: handle,
     createdAt: "2026-07-16T12:34:56Z",
     kind: "application"
   };
@@ -341,7 +341,7 @@ test("reserved relation and receipt semantics reject mismatch, self-reference, c
 });
 
 test("unknown application types survive while unsupported control types fail closed", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
+  const handle = await generateRelationshipEndpointHandle(ids);
   const customType = createContentTypeId({ authority: "dev.example", name: "poll", major: 1, minor: 0 });
   assert.throws(
     () => createContentTypeId({ authority: "dev/example", name: "poll:spoof", major: 1 }),
@@ -358,7 +358,7 @@ test("unknown application types survive while unsupported control types fail clo
     id: ids.eventId,
     clientTransactionId: ids.transactionId,
     conversationId: "relationship:test",
-    authorInstallationHandle: handle,
+    authorEndpointHandle: handle,
     createdAt: "2026-07-16T12:34:56Z",
     kind: "application",
     content
@@ -386,14 +386,14 @@ test("unknown application types survive while unsupported control types fail clo
 });
 
 test("opaque mailbox cursors are bounded and delivery state never regresses", async () => {
-  const handle = await generateRelationshipInstallationHandle(ids);
+  const handle = await generateRelationshipEndpointHandle(ids);
   const cursor = createMailboxCursor("opaque-relay-token:00042");
   assert.equal(cursor, "opaque-relay-token:00042");
   assert.throws(() => createMailboxCursor(`cursor:${"x".repeat(506)}`), /protocol bounds/);
 
   const local = createDeliveryStateRecord({
     eventId: ids.eventId,
-    destinationInstallation: handle,
+    destinationEndpoint: handle,
     state: "locallyPersisted",
     updatedAt: "2026-07-16T12:34:56Z"
   });

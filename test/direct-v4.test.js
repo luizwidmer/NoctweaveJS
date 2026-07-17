@@ -12,14 +12,14 @@ import {
   contactFromNativeOffer,
   createContentTypeId,
   createEncodedContent,
-  createInstallationEndpointRevocationV4,
+  createEndpointRemovalProofV4,
   createProtocolCapabilityManifest,
   createNativeInboundSession,
   createNativeOutboundSession,
   decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
   deriveNativeDirectV4Binding,
-  derivePairwiseInstallationBindingV4,
+  derivePairwiseEndpointBindingV4,
   directV4ConversationId,
   encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
@@ -42,7 +42,7 @@ test("direct-v4 renews endpoint prekeys without changing stable authorization", 
   const bob = await makeV4Identity({ crypto, pqc, displayName: "Bob" });
   const aliceContact = contactFromNativeOffer(alice.contactOffer);
   const bobContact = contactFromNativeOffer(bob.contactOffer);
-  const originalEndpoint = bob.certifiedInstallationEndpoint;
+  const originalEndpoint = bob.certifiedGenerationEndpoint;
   const originalPrekey = originalEndpoint.prekeyBundle.signedPrekey;
   const originalAuthorizationDigest = await certifiedEndpointAuthorizationDigest({
     crypto,
@@ -63,11 +63,11 @@ test("direct-v4 renews endpoint prekeys without changing stable authorization", 
     identity: bob,
     now: renewalTime
   }), true);
-  assert.notEqual(bob.localInstallation.prekeys.signedPrekeyId, originalPrekey.id);
-  assert.equal(bob.localInstallation.prekeys.retiredSignedPrekeys.length, 1);
+  assert.notEqual(bob.localEndpoint.prekeys.signedPrekeyId, originalPrekey.id);
+  assert.equal(bob.localEndpoint.prekeys.retiredSignedPrekeys.length, 1);
   assert.equal(await certifiedEndpointAuthorizationDigest({
     crypto,
-    endpoint: bob.certifiedInstallationEndpoint
+    endpoint: bob.certifiedGenerationEndpoint
   }), originalAuthorizationDigest);
 
   const inbound = await createNativeInboundSession({
@@ -84,7 +84,7 @@ test("direct-v4 renews endpoint prekeys without changing stable authorization", 
   const renewedOffer = makeNativeContactOffer({ pqc, identity: bob, relayEndpoint: relay });
   await verifyCertifiedNativeContactOffer({ crypto, pqc, offer: renewedOffer, now: renewalTime });
   const tamperedOffer = structuredClone(renewedOffer);
-  tamperedOffer.preferredInstallationEndpoint.prekeyPackageSignature = base64(
+  tamperedOffer.preferredGenerationEndpoint.prekeyPackageSignature = base64(
     new Uint8Array(3_309)
   );
   await assert.rejects(
@@ -139,8 +139,8 @@ test("direct-v4 uses a certified local endpoint and survives persisted-session r
   assert.equal(envelope.authenticatedContext.purpose, "directV4");
   assert.equal(envelope.authenticatedContext.directV4.payloadFormat, "nw.wire-payload.v2");
   assert.notEqual(envelope.senderFingerprint, alice.signingFingerprint);
-  assert.notEqual(envelope.senderFingerprint, alice.localInstallation.signingFingerprint);
-  assert.equal(envelope.prekey.id, bob.localInstallation.prekeys.signedPrekeyId);
+  assert.notEqual(envelope.senderFingerprint, alice.localEndpoint.signingFingerprint);
+  assert.equal(envelope.prekey.id, bob.localEndpoint.prekeys.signedPrekeyId);
 
   const inbound = await createNativeInboundSession({
     crypto,
@@ -163,7 +163,7 @@ test("direct-v4 uses a certified local endpoint and survives persisted-session r
     "direct v4 after restart"
   );
   assert.equal(
-    restartedConversation.endpointSession.peerInstallationHandle.rawValue,
+    restartedConversation.endpointSession.peerEndpointHandle.rawValue,
     envelope.senderFingerprint
   );
 });
@@ -551,7 +551,7 @@ test("direct-v4 rejects authenticated-context tampering without advancing the ra
     mutate(tampered.authenticatedContext.directV4);
     tampered.signature = base64(pqc.sign(
       canonicalEnvelopeBytes(tampered),
-      Buffer.from(alice.localInstallation.signing.secretKey, "base64")
+      Buffer.from(alice.localEndpoint.signing.secretKey, "base64")
     ));
     await assert.rejects(
       decryptNativeEnvelope({
@@ -569,9 +569,9 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and uncer
   const alice = await makeV4Identity({ crypto, pqc, displayName: "Alice" });
   const bob = await makeV4Identity({ crypto, pqc, displayName: "Bob" });
   const bobContact = contactFromNativeOffer(bob.contactOffer);
-  const defaultCapabilities = bobContact.preferredInstallationEndpoint.capabilities;
+  const defaultCapabilities = bobContact.preferredGenerationEndpoint.capabilities;
 
-  bobContact.preferredInstallationEndpoint.capabilities = {
+  bobContact.preferredGenerationEndpoint.capabilities = {
     ...defaultCapabilities,
     modules: defaultCapabilities.modules.filter(({ module }) => module !== "nw.events")
   };
@@ -580,7 +580,7 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and uncer
     /requires nw\.events/
   );
 
-  bobContact.preferredInstallationEndpoint.capabilities = {
+  bobContact.preferredGenerationEndpoint.capabilities = {
     ...defaultCapabilities,
     modules: defaultCapabilities.modules.map((module) => module.module === "nw.events"
       ? { ...module, versions: [3] }
@@ -591,11 +591,11 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and uncer
     /no shared nw\.events version/
   );
 
-  bobContact.preferredInstallationEndpoint.capabilities = defaultCapabilities;
+  bobContact.preferredGenerationEndpoint.capabilities = defaultCapabilities;
   const outbound = await createNativeOutboundSession({
     crypto, pqc, identity: alice, contact: bobContact
   });
-  bobContact.preferredInstallationEndpoint.capabilities = {
+  bobContact.preferredGenerationEndpoint.capabilities = {
     ...defaultCapabilities,
     modules: defaultCapabilities.modules.map((module) => module.module === "nw.events"
       ? { ...module, limits: { maxContentPayloadBytes: 1_024 } }
@@ -614,7 +614,7 @@ test("direct-v4 refuses missing modules, version gaps, altered limits, and uncer
       crypto,
       pqc,
       identity: alice,
-      contact: { ...bobContact, preferredInstallationEndpoint: undefined }
+      contact: { ...bobContact, preferredGenerationEndpoint: undefined }
     }),
     /certified direct-v4 endpoint is required/
   );
@@ -643,11 +643,11 @@ test("direct-v4 endpoint revocation fails closed", async () => {
   const alice = await makeV4Identity({ crypto, pqc, displayName: "Alice" });
   const bob = await makeV4Identity({ crypto, pqc, displayName: "Bob" });
   const aliceContact = contactFromNativeOffer(alice.contactOffer);
-  aliceContact.endpointRevocation = await createInstallationEndpointRevocationV4({
+  aliceContact.endpointRevocation = await createEndpointRemovalProofV4({
     crypto,
     pqc,
     identity: alice,
-    issuedAt: new Date(Date.parse(alice.certifiedInstallationEndpoint.issuedAt) + 1_000).toISOString()
+    issuedAt: new Date(Date.parse(alice.certifiedGenerationEndpoint.issuedAt) + 1_000).toISOString()
   });
   await assert.rejects(
     createNativeOutboundSession({ crypto, pqc, identity: bob, contact: aliceContact }),
@@ -671,10 +671,10 @@ test("direct-v4 pairwise handles and certificate references are unlinkable acros
   });
 
   assert.equal(aliceBob.relationshipId, bobAlice.relationshipId);
-  assert.equal(aliceBob.localInstallationHandle.rawValue, bobAlice.peerInstallationHandle.rawValue);
+  assert.equal(aliceBob.localEndpointHandle.rawValue, bobAlice.peerEndpointHandle.rawValue);
   assert.equal(aliceBob.localCertificateReferenceDigest, bobAlice.peerCertificateReferenceDigest);
   assert.notEqual(aliceBob.relationshipId, aliceCarol.relationshipId);
-  assert.notEqual(aliceBob.localInstallationHandle.rawValue, aliceCarol.localInstallationHandle.rawValue);
+  assert.notEqual(aliceBob.localEndpointHandle.rawValue, aliceCarol.localEndpointHandle.rawValue);
   assert.notEqual(aliceBob.localCertificateReferenceDigest, aliceCarol.localCertificateReferenceDigest);
 });
 
@@ -700,18 +700,18 @@ test("direct-v4 relay context contains no global endpoint or identity material",
   );
   for (const forbidden of [
     alice.signing.publicKey,
-    alice.localInstallation.signing.publicKey,
-    alice.localInstallation.agreement.publicKey,
-    alice.certifiedInstallationEndpoint.prekeyBundle.signedPrekey.publicKey,
-    alice.localInstallation.id,
+    alice.localEndpoint.signing.publicKey,
+    alice.localEndpoint.agreement.publicKey,
+    alice.certifiedGenerationEndpoint.prekeyBundle.signedPrekey.publicKey,
+    alice.localEndpoint.id,
     alice.identityGenerationId,
     alice.signingFingerprint,
-    "preferredInstallationEndpoint",
+    "preferredGenerationEndpoint",
     "prekeyBundle",
     "identityAuthorityPublicKey",
     "signingPublicKey",
     "agreementPublicKey",
-    "installationId"
+    "endpointId"
   ]) {
     assert.equal(relayContext.includes(forbidden), false, forbidden);
   }
@@ -725,7 +725,7 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
   )));
   const localEndpoint = vectorEndpoint(vector.local, vector.issuedAt);
   const peerEndpoint = vectorEndpoint(vector.peer, vector.issuedAt);
-  const binding = await derivePairwiseInstallationBindingV4({
+  const binding = await derivePairwiseEndpointBindingV4({
     crypto,
     localIdentityGenerationId: vector.local.identityGenerationId,
     localIdentitySigningPublicKey: repeatedBase64(vector.local.identitySigningByte, 1_952),
@@ -736,8 +736,8 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
   });
   assert.deepEqual(binding, {
     relationshipId: vector.expected.relationshipId,
-    localInstallationHandle: { rawValue: vector.expected.localInstallationHandle },
-    peerInstallationHandle: { rawValue: vector.expected.peerInstallationHandle },
+    localEndpointHandle: { rawValue: vector.expected.localEndpointHandle },
+    peerEndpointHandle: { rawValue: vector.expected.peerEndpointHandle },
     localCertificateReferenceDigest: vector.expected.localCertificateReferenceDigest,
     peerCertificateReferenceDigest: vector.expected.peerCertificateReferenceDigest,
     cipherSuite: vector.expected.cipherSuite,
@@ -756,9 +756,9 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
       cipherSuite: vector.expected.cipherSuite,
       negotiatedCapabilitiesDigest: vector.expected.negotiatedCapabilitiesDigest,
       eventId: vector.wire.eventId,
-      senderInstallationHandle: binding.localInstallationHandle.rawValue,
+      senderEndpointHandle: binding.localEndpointHandle.rawValue,
       senderCertificateDigest: binding.localCertificateReferenceDigest,
-      recipientInstallationHandle: binding.peerInstallationHandle.rawValue,
+      recipientEndpointHandle: binding.peerEndpointHandle.rawValue,
       senderManifestEpoch: vector.local.manifestEpoch,
       recipientManifestEpoch: vector.peer.manifestEpoch,
       recipientCertificateDigest: binding.peerCertificateReferenceDigest
@@ -774,7 +774,7 @@ test("direct-v4 pairwise binding matches the shared Swift and JavaScript vector"
     id: vector.wire.envelopeId,
     conversationId: vector.wire.conversationId,
     sessionId: vector.wire.sessionId,
-    senderFingerprint: binding.localInstallationHandle.rawValue,
+    senderFingerprint: binding.localEndpointHandle.rawValue,
     sentAt: vector.wire.sentAt,
     messageCounter: vector.wire.messageCounter,
     authenticatedContext,
@@ -880,7 +880,7 @@ function vectorEndpoint(value, issuedAt) {
     identityAuthorityPublicKey: repeatedBase64(value.identitySigningByte, 1_952),
     manifestEpoch: value.manifestEpoch,
     manifestDigest: repeatedBase64(value.manifestDigestByte, 32),
-    installationId: value.installationId,
+    endpointId: value.endpointId,
     signingPublicKey: repeatedBase64(value.endpointSigningByte, 1_952),
     agreementPublicKey: repeatedBase64(value.endpointAgreementByte, 1_184),
     capabilities,

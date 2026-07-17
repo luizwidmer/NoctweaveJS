@@ -42,10 +42,10 @@ export {
   createMailboxConsumerId,
   createMailboxConsumerProof,
   createProtocolCapabilityManifest,
-  createRelationshipInstallationHandle,
+  createRelationshipEndpointHandle,
   createTextEncodedContent,
   defaultActiveEndpointModules,
-  generateRelationshipInstallationHandle,
+  generateRelationshipEndpointHandle,
   generateMailboxConsumerId,
   inboxRetirementProofPayload,
   mailboxConsumerProofPayload,
@@ -75,7 +75,7 @@ export {
   verifyInboxRetirementProof,
   validateProtocolCapabilityManifest,
   validateProtocolModuleCapability,
-  validateRelationshipInstallationHandle
+  validateRelationshipEndpointHandle
 } from "./architecture-v2.js";
 export { NoctweaveOQSWasmAdapter, OQSWasmError } from "./crypto/oqs-wasm-adapter.js";
 export { NoctweaveCryptoSuite } from "./crypto/noctweave-crypto-suite.js";
@@ -104,9 +104,9 @@ export {
   certifiedEndpointAuthorizationDigest,
   certifiedEndpointDigest,
   contactFromNativeOffer,
-  createInstallationEndpointRevocationV4,
+  createEndpointRemovalProofV4,
   deriveNativeDirectV4Binding,
-  derivePairwiseInstallationBindingV4,
+  derivePairwiseEndpointBindingV4,
   directV4ConversationId,
   directV4EndpointSession,
   inboxIdForAccessPublicKey,
@@ -118,5 +118,5 @@ export {
   renewNativeDirectV4PrekeyIfNeeded,
   validateInboundDirectV4Context,
   verifyCertifiedNativeContactOffer,
-  verifyInstallationEndpointRevocationV4
+  verifyEndpointRemovalProofV4
 } from "./crypto/direct-v4.js";

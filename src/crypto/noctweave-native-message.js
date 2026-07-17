@@ -54,9 +54,9 @@ const PREKEY_FUTURE_SKEW_MS = 5 * 60_000;
 export async function createNativeOutboundSession({ crypto, pqc, identity, contact, now = Date.now() }) {
   requireCertifiedDirectV4Contact(contact);
   await assertContactEndpointActive({ crypto, pqc, contact });
-  const peerEndpoint = contact.preferredInstallationEndpoint;
+  const peerEndpoint = contact.preferredGenerationEndpoint;
   assertCertifiedEndpointPrekeyFresh({ endpoint: peerEndpoint, now });
-  const localEndpoint = identity.certifiedInstallationEndpoint;
+  const localEndpoint = identity.certifiedGenerationEndpoint;
   const binding = await deriveNativeDirectV4Binding({ crypto, identity, contact });
   const negotiation = await validateCurrentDirectV4Negotiation({
     crypto,
@@ -76,8 +76,8 @@ export async function createNativeOutboundSession({ crypto, pqc, identity, conta
     ML_KEM_PUBLIC_KEY_BYTES
   );
   const ownAgreementKey = fromBase64(
-    identity.localInstallation.agreement.publicKey,
-    "local installation agreement key",
+    identity.localEndpoint.agreement.publicKey,
+    "local endpoint agreement key",
     ML_KEM_PUBLIC_KEY_BYTES,
     ML_KEM_PUBLIC_KEY_BYTES
   );
@@ -129,9 +129,9 @@ export async function createNativeInboundSession({
 }) {
   requireCertifiedDirectV4Contact(contact);
   await assertContactEndpointActive({ crypto, pqc, contact });
-  const local = identity.localInstallation;
-  const localEndpoint = identity.certifiedInstallationEndpoint;
-  const peerEndpoint = contact.preferredInstallationEndpoint;
+  const local = identity.localEndpoint;
+  const localEndpoint = identity.certifiedGenerationEndpoint;
+  const peerEndpoint = contact.preferredGenerationEndpoint;
   if (prekey?.kind !== "signed") {
     throw new Error("Direct-v4 bootstrap does not target the local signed prekey.");
   }
@@ -143,7 +143,7 @@ export async function createNativeInboundSession({
   });
   const prekeySecret = fromBase64(
     prekeyRecord.privateKey,
-    "local installation signed prekey",
+    "local endpoint signed prekey",
     ML_KEM_SECRET_KEY_BYTES,
     ML_KEM_SECRET_KEY_BYTES
   );
@@ -171,7 +171,7 @@ export async function createNativeInboundSession({
       sharedSecret,
       ownAgreementPublicKey: fromBase64(
         local.agreement.publicKey,
-        "local installation agreement key",
+        "local endpoint agreement key",
         ML_KEM_PUBLIC_KEY_BYTES,
         ML_KEM_PUBLIC_KEY_BYTES
       ),
@@ -290,11 +290,11 @@ async function encryptNativeEnvelopePayload({
   });
   await assertContactEndpointActive({ crypto, pqc, contact });
   const ownSigning = deserializeKeypair(
-    identity.localInstallation.signing,
+    identity.localEndpoint.signing,
     {
     publicKeyBytes: ML_DSA_PUBLIC_KEY_BYTES,
     secretKeyBytes: ML_DSA_SECRET_KEY_BYTES,
-    label: "local installation signing keypair"
+    label: "local endpoint signing keypair"
   });
   const candidateSendChain = cloneChain(conversation.sendChain);
   const prepared = await nextMessageKey(crypto, candidateSendChain);
@@ -303,7 +303,7 @@ async function encryptNativeEnvelopePayload({
     id: eventId,
     clientTransactionId,
     conversationId: conversation.id,
-    authorInstallationHandle: conversation.endpointSession.localInstallationHandle,
+    authorEndpointHandle: conversation.endpointSession.localEndpointHandle,
     createdAt: canonicalSentAt,
     kind: eventKind,
     content: content ?? createTextEncodedContent(text),
@@ -340,7 +340,7 @@ async function encryptNativeEnvelopePayload({
       id: swiftUUID(),
       conversationId: conversation.id,
       sessionId: conversation.sessionId,
-      senderFingerprint: conversation.endpointSession.localInstallationHandle.rawValue,
+      senderFingerprint: conversation.endpointSession.localEndpointHandle.rawValue,
       sentAt: canonicalSentAt,
       messageCounter: prepared.counter,
       payload: {
@@ -383,8 +383,8 @@ export async function verifyNativeEnvelope({ crypto, pqc, contact, conversation,
     ML_DSA_SIGNATURE_BYTES
   );
   const signingPublicKey = fromBase64(
-    contact.preferredInstallationEndpoint.signingPublicKey,
-    "contact installation signing key",
+    contact.preferredGenerationEndpoint.signingPublicKey,
+    "contact endpoint signing key",
     ML_DSA_PUBLIC_KEY_BYTES,
     ML_DSA_PUBLIC_KEY_BYTES
   );
@@ -481,7 +481,7 @@ export async function verifyNativeContactOffer({ crypto, pqc, offer }) {
 }
 
 export function makeNativeContactOffer({ pqc, identity, relayEndpoint }) {
-  if (identity?.certifiedInstallationEndpoint == null) {
+  if (identity?.certifiedGenerationEndpoint == null) {
     throw new Error("A certified direct-v4 endpoint is required.");
   }
   return makeCertifiedNativeContactOffer({ pqc, identity, relayEndpoint });
@@ -507,8 +507,8 @@ export function decodeNativeContactCode(code) {
 
 export function nativeConversationKey(contact) {
   requireCertifiedDirectV4Contact(contact);
-  const endpoint = contact.preferredInstallationEndpoint;
-  return `direct-v4:${contact.fingerprint}:${endpoint.installationId}:${endpoint.manifestEpoch}`;
+  const endpoint = contact.preferredGenerationEndpoint;
+  return `direct-v4:${contact.fingerprint}:${endpoint.endpointId}:${endpoint.manifestEpoch}`;
 }
 
 export async function findNativeContactForEnvelope({ crypto, identity, contacts, envelope }) {
@@ -521,9 +521,9 @@ export async function findNativeContactForEnvelope({ crypto, identity, contacts,
   for (const contact of contacts) {
     if (!isCertifiedNativeContact(contact)) continue;
     const binding = await deriveNativeDirectV4Binding({ crypto, identity, contact });
-    if (binding.peerInstallationHandle.rawValue === envelope.senderFingerprint &&
-        binding.localInstallationHandle.rawValue ===
-          envelope.authenticatedContext.directV4?.recipientInstallationHandle) {
+    if (binding.peerEndpointHandle.rawValue === envelope.senderFingerprint &&
+        binding.localEndpointHandle.rawValue ===
+          envelope.authenticatedContext.directV4?.recipientEndpointHandle) {
       return contact;
     }
   }
@@ -586,8 +586,8 @@ async function validateNativeEnvelope({ crypto, contact, conversation, envelope 
     context: envelope.authenticatedContext,
     endpointSession: conversation.endpointSession
   });
-  if (envelope.senderFingerprint !== conversation.endpointSession.peerInstallationHandle.rawValue) {
-    throw new Error("Envelope sender does not match the pairwise installation handle.");
+  if (envelope.senderFingerprint !== conversation.endpointSession.peerEndpointHandle.rawValue) {
+    throw new Error("Envelope sender does not match the pairwise endpoint handle.");
   }
   if (envelope.kemCiphertext != null &&
       (envelope.prekey?.kind !== "signed" || !isCanonicalSwiftUUID(envelope.prekey?.id))) {
@@ -643,7 +643,7 @@ function validateContactOfferStructure(offer) {
     throw new Error("Contact offer is malformed.");
   }
   if (!isCanonicalSwiftUUID(offer.identityGenerationId) ||
-      offer.installationCheckpoint == null || offer.preferredInstallationEndpoint == null) {
+      offer.endpointSetCheckpoint == null || offer.preferredGenerationEndpoint == null) {
     throw new Error("Certified contact offer is malformed.");
   }
   const fields = [
@@ -674,8 +674,8 @@ async function validateCurrentDirectV4Negotiation({
   binding = null,
   endpointSession = null
 }) {
-  const localEndpoint = identity?.certifiedInstallationEndpoint;
-  const peerEndpoint = contact?.preferredInstallationEndpoint;
+  const localEndpoint = identity?.certifiedGenerationEndpoint;
+  const peerEndpoint = contact?.preferredGenerationEndpoint;
   if (!localEndpoint || !peerEndpoint) {
     throw new Error("Certified direct-v4 endpoints are required for negotiation.");
   }
@@ -965,7 +965,7 @@ function decodePaddedDirectV4Application(data, envelope) {
   const direct = envelope.authenticatedContext?.directV4;
   if (event.id !== direct?.eventId ||
       event.conversationId !== envelope.conversationId ||
-      event.authorInstallationHandle.rawValue !== direct.senderInstallationHandle ||
+      event.authorEndpointHandle.rawValue !== direct.senderEndpointHandle ||
       event.createdAt !== envelope.sentAt ||
       (event.kind !== "application" && event.kind !== "receipt")) {
     throw new Error("Direct-v4 wire payload does not match its authenticated context.");

@@ -359,7 +359,7 @@ function validateProfile(profile) {
   }
   if (profile.identity != null) {
     validateBrowserIdentityState(profile.identity);
-    if (Object.values(profile.identity.localInstallation.mailboxRoutes).some((route) =>
+    if (Object.values(profile.identity.localEndpoint.mailboxRoutes).some((route) =>
       route.mode !== "v2" || route.registration?.state !== "active")) {
       throw new Error("The encrypted browser profile identity has an inactive mailbox route.");
     }
@@ -590,13 +590,13 @@ async function syncMessages() {
   $("#syncNow").classList.add("spinning");
   try {
     const identity = runtime.profile.identity;
-    const localInstallation = identity.localInstallation;
-    if (identity.architectureVersion !== 2 || !localInstallation) {
+    const localEndpoint = identity.localEndpoint;
+    if (identity.architectureVersion !== 2 || !localEndpoint) {
       throw new Error("The identity does not use the current mailbox-v2 endpoint state.");
     }
     const relay = runtime.profile.relay;
     const routeKey = browserMailboxRouteKey(relay.address, identity.inboxId);
-    const route = localInstallation.mailboxRoutes?.[routeKey];
+    const route = localEndpoint.mailboxRoutes?.[routeKey];
     if (route?.mode !== "v2" || route.registration?.state !== "active") {
       throw new Error("Mailbox v2 registration is not active.");
     }

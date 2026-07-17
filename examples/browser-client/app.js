@@ -1113,7 +1113,7 @@ async function validatePersistedState(saved) {
   const fingerprints = new Set();
   for (const contact of saved.contacts) {
     if (contact?.version !== 4 || !contact.identityGenerationId ||
-        !contact.installationCheckpoint || !contact.preferredInstallationEndpoint) {
+        !contact.endpointSetCheckpoint || !contact.preferredGenerationEndpoint) {
       throw new Error("Encrypted profile contains an unsupported contact record.");
     }
     validateBoundedString(contact?.displayName, "contact display name", 1, 128);

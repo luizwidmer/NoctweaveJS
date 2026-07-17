@@ -2,6 +2,9 @@
 
 NoctweaveJS is the JavaScript implementation and reference browser client for Noctweave. It includes relay transport, bounded storage adapters, browser-safe cryptography, post-quantum liboqs WASM bindings, and a working encrypted direct-messaging application. The library targets browsers, workers, and Node-backed web apps.
 
+Noctweave 1.0 is a clean protocol origin. Pre-1.0 persisted shapes and wire
+paths are rejected rather than upgraded or retained as runtime fallbacks.
+
 The WASM surface is intentionally narrow: ML-KEM-768 for KEM and ML-DSA-65 for signatures. WebCrypto provides AES-256-GCM, HKDF, HMAC, hashing, and secure randomness.
 
 ## Install
@@ -39,8 +42,8 @@ const info = await relay.info();
 
 const request = await buildSyncMailboxRequest({
   inboxId: identity.inboxId,
-  consumerId: identity.localInstallation.mailboxRoutes[routeKey].consumerId,
-  cursor: identity.localInstallation.mailboxRoutes[routeKey].cursor,
+  consumerId: identity.localEndpoint.mailboxRoutes[routeKey].consumerId,
+  cursor: identity.localEndpoint.mailboxRoutes[routeKey].cursor,
   maxCount: 20,
   longPollTimeoutSeconds: 10,
   // Decrypt this route-only credential from application storage. It is not
@@ -52,9 +55,8 @@ const request = await buildSyncMailboxRequest({
 const response = await relay.syncMailbox(request);
 ```
 
-`localInstallation` is a pre-1.0 persisted-schema compatibility name for the
-current generation's local endpoint. It is not a durable device record and is
-never authorized outside that identity generation.
+`localEndpoint` belongs only to the current disposable identity generation. It
+is not a durable device record and is never authorized across generations.
 
 Mailbox v2 uses an opaque route-scoped consumer ID and an independent
 route-only ML-DSA key. Registration requires both the inbox authority proof
@@ -63,8 +65,8 @@ active consumer sponsor proof; an all-revoked mailbox requires the explicit
 creation of a fresh inbox and identity generation rather than an account-style
 recovery flow. Use `buildRegisterMailboxConsumerRequest`,
 `buildCommitMailboxCursorRequest`, and `buildRevokeMailboxConsumerRequest` for
-the other authenticated operations. Once a mailbox has a v2 binding, clients
-must not fall back to destructive legacy fetch/acknowledgement calls.
+the other authenticated operations. Mailbox-v2 cursor synchronization is the
+1.0 path; destructive inbox-wide fetch/acknowledgement is not a fallback.
 Consumer IDs and relay-issued cursors are canonical JSON strings on the wire,
 matching Swift `RawRepresentable` encoding; `{ rawValue: ... }` is not an
 accepted request, response, or proof-transcript shape.
@@ -101,8 +103,8 @@ npm run smoke:relay -- --relay http://127.0.0.1:9339
 ```
 
 This verifies HTTP relay connectivity, creates a WASM-signed inbox registration, submits an encoded envelope, fetches the inbox, and checks that the encoded payload round-trips.
-This low-level smoke script intentionally remains a legacy compatibility probe;
-the production `client/` uses mailbox v2 exclusively after binding.
+This is a low-level relay-transport probe, not 1.0 mailbox-sync conformance.
+The production `client/` uses mailbox v2.
 
 ## Certified Direct-v4
 
@@ -113,12 +115,11 @@ and one preferred certified endpoint. The endpoint owns independent ML-DSA signi
 ML-KEM agreement, and signed-prekey material; active ratchet state is keyed by
 that endpoint rather than shared across the identity generation.
 
-The current signed contact code is reusable compatibility pairing material,
-not a one-time unlinkable rendezvous. It exposes the same identity generation,
-preferred endpoint authorization, inbox, and relay details to every recipient;
-recipients who compare codes can correlate that generation. Private keys never
-leave local encrypted storage, but that does not remove this public-metadata
-linkability.
+Reusable signed contact codes are not the 1.0 pairing surface because repeated
+use exposes correlatable generation, endpoint, inbox, and relay material. The
+one-use, expiring, purpose-bound PQ rendezvous model avoids those fields in its
+public offer; wiring that rendezvous into the client pairing flow remains
+unfinished.
 
 Each relationship derives different opaque endpoint handles and
 relationship-blinded certificate references. Those values, both manifest
@@ -141,9 +142,8 @@ an endpoint validates package-publication integrity, and an
 already established endpoint-bound ratchet is not destroyed by later prekey
 publication expiry.
 
-Persisted v2/v3 contacts remain available through an explicit NPAD-v1 legacy
-path. Direct-v4 never probes that decoder and never silently falls back to
-identity-key messaging. This first slice intentionally supports one preferred
+Pre-v4 contacts and NPAD-v1 direct frames are rejected. Direct-v4 never probes
+an obsolete decoder or falls back to identity-key messaging. This first slice intentionally supports one preferred
 endpoint per contact. Endpoint manifests therefore advertise
 `maxActiveEndpoints: 1` even though local endpoint-set storage has a larger
 structural bound. Direct-v4 negotiates and transcript-binds `nw.core:2`,
@@ -206,13 +206,12 @@ Each endpoint's route cursor advances only after successful verification,
 decryption, and durable local persistence. Replay receipts scope logical event
 IDs to the authenticated relationship, so unrelated contacts cannot collide in
 a global event namespace. Cursor commits are journaled locally and retried
-without reverting to legacy acknowledgement. Envelopes interrupted
+without switching to an inbox-wide acknowledgement path. Envelopes interrupted
 by local state, storage, or crypto-runtime failure remain
 available for a later safe retry. Permanently invalid remote envelopes use a
 bounded plaintext-free dead-letter receipt so they cannot block later ordered
-events. Existing encrypted JS profiles are migrated in place by creating a
-fresh generation-bounded endpoint and, separately, a fresh route-specific
-consumer ID and signing key before relay binding is attempted. Active ratchet
+events. A new 1.0 profile creates a fresh generation-bounded endpoint and a
+separate route-specific consumer ID and signing key before relay binding. Active ratchet
 state is never copied between endpoints, and endpoint signing keys are never
 reused for fresh relay authentication. Each route also
 persists its numeric
@@ -227,10 +226,9 @@ Test a real encrypted round trip against a running HTTP relay:
 npm run smoke:client -- --relay http://127.0.0.1:9340
 ```
 
-The smoke test creates two identities, verifies their pairing material, sends
-and decrypts in both directions, and acknowledges both messages.
-It is retained as a bounded legacy-wire regression test rather than the mailbox
-v2 client reference.
+The smoke test creates two identities, verifies their pairing material, and
+sends and decrypts in both directions. It is a narrow transport/crypto probe,
+not the mailbox-v2 or rendezvous reference flow.
 
 ## Desktop Client
 
@@ -309,8 +307,8 @@ To test two browser clients on one machine, open:
 - `http://127.0.0.1:5173/examples/browser-client/?profile=bob`
 
 Create an inbox in each profile, copy Alice's contact code into Bob and Bob's into Alice, then send from one profile and press `Fetch` on the other or enable `Auto-fetch`.
-This protocol demo exercises the legacy mailbox adapter. Use `client/` for the
-endpoint-scoped mailbox v2 flow.
+This protocol demo is not the 1.0 reference flow. Use `client/` for the
+endpoint-scoped mailbox-v2 path; rendezvous pairing integration remains open.
 
 ## Storage Choices
 

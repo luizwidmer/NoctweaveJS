@@ -57,7 +57,7 @@ export class NoctweaveBrowserIdentityService {
     }
     if (!capabilities.modules.some((module) =>
       module.module === "nw.mailbox" && module.versions.includes(2))) {
-      throw new Error("The relay does not support installation-scoped mailbox v2 synchronization.");
+      throw new Error("The relay does not support endpoint-scoped mailbox v2 synchronization.");
     }
     return { endpoint: parsed, health, info };
   }
@@ -160,7 +160,7 @@ export class NoctweaveBrowserIdentityService {
       inboxId,
       accessFingerprint: base64(await this.crypto.sha256(access.publicKey)),
       signingFingerprint: base64(await this.crypto.sha256(signing.publicKey)),
-      localInstallation: {
+      localEndpoint: {
         id: swiftUUID(),
         identityGenerationId,
         signing: serializeKeypair(endpointSigning),
@@ -198,7 +198,7 @@ export class NoctweaveBrowserIdentityService {
     validateBrowserIdentityState(identityValue);
     const identity = cloneIdentity(identityValue);
     const routeKey = browserMailboxRouteKey(normalizedEndpoint, identity.inboxId);
-    const route = identity.localInstallation.mailboxRoutes[routeKey];
+    const route = identity.localEndpoint.mailboxRoutes[routeKey];
     if (!route) {
       throw new Error("The browser identity has no route for this relay.");
     }
@@ -235,7 +235,7 @@ export class NoctweaveBrowserIdentityService {
         registration.state !== "active") {
       throw new Error("The relay returned a mismatched mailbox consumer registration.");
     }
-    identity.localInstallation.mailboxRoutes[routeKey] = {
+    identity.localEndpoint.mailboxRoutes[routeKey] = {
       mode: "v2",
       consumerId: route.consumerId,
       signing: route.signing,
@@ -321,8 +321,8 @@ export function validateBrowserIdentityState(identity) {
   assertKnownKeys(identity, new Set([
     "stateSchema", "architectureVersion", "identityGenerationId", "displayName", "signing",
     "agreement", "access", "inboxId", "accessFingerprint", "signingFingerprint",
-    "localInstallation", "installationManifest", "installationCheckpoint",
-    "certifiedInstallationEndpoint", "contactOffer"
+    "localEndpoint", "endpointSetManifest", "endpointSetCheckpoint",
+    "certifiedGenerationEndpoint", "contactOffer"
   ]), "browser identity");
   validateBrowserDisplayName(identity.displayName);
   validateSerializedKeypair(identity.signing, "identity signing key", 1_952, 4_032);
@@ -335,11 +335,11 @@ export function validateBrowserIdentityState(identity) {
   }
   decodeBase64(identity.accessFingerprint, "inbox access fingerprint", 32);
   decodeBase64(identity.signingFingerprint, "identity signing fingerprint", 32);
-  validateLocalInstallation(identity.localInstallation, identity.identityGenerationId, identity);
+  validateLocalEndpoint(identity.localEndpoint, identity.identityGenerationId, identity);
   for (const required of [
-    "installationManifest",
-    "installationCheckpoint",
-    "certifiedInstallationEndpoint"
+    "endpointSetManifest",
+    "endpointSetCheckpoint",
+    "certifiedGenerationEndpoint"
   ]) {
     if (!identity[required] || typeof identity[required] !== "object" || Array.isArray(identity[required])) {
       throw new Error("The browser identity direct-v4 state is incomplete.");
@@ -348,37 +348,37 @@ export function validateBrowserIdentityState(identity) {
   return identity;
 }
 
-function validateLocalInstallation(local, identityGenerationId, identity) {
+function validateLocalEndpoint(local, identityGenerationId, identity) {
   if (!local || typeof local !== "object" || Array.isArray(local) ||
-      normalizedUUID(local.id, "installation ID") !== local.id.toUpperCase() ||
-      normalizedUUID(local.identityGenerationId, "installation identity generation ID") !== identityGenerationId) {
-    throw new Error("The browser installation state is malformed.");
+      normalizedUUID(local.id, "endpoint ID") !== local.id.toUpperCase() ||
+      normalizedUUID(local.identityGenerationId, "endpoint identity generation ID") !== identityGenerationId) {
+    throw new Error("The browser endpoint state is malformed.");
   }
   assertKnownKeys(local, new Set([
     "id", "identityGenerationId", "signing", "agreement", "signingFingerprint",
     "mailboxRoutes", "createdAt", "prekeys"
   ]), "browser endpoint state");
-  validateSerializedKeypair(local.signing, "installation signing key", 1_952, 4_032);
-  validateSerializedKeypair(local.agreement, "installation agreement key", 1_184, 2_400);
+  validateSerializedKeypair(local.signing, "endpoint signing key", 1_952, 4_032);
+  validateSerializedKeypair(local.agreement, "endpoint agreement key", 1_184, 2_400);
   decodeBase64(local.signingFingerprint, "endpoint signing fingerprint", 32);
   if (!local.prekeys || typeof local.prekeys !== "object" || Array.isArray(local.prekeys)) {
     throw new Error("The browser endpoint prekey state is incomplete.");
   }
   if (local.signing.publicKey === identity.signing.publicKey ||
       local.agreement.publicKey === identity.agreement.publicKey) {
-    throw new Error("An installation must not reuse the identity's live cryptographic keys.");
+    throw new Error("An endpoint must not reuse the identity's live cryptographic keys.");
   }
   if (!local.mailboxRoutes || typeof local.mailboxRoutes !== "object" ||
       Array.isArray(local.mailboxRoutes) || Object.keys(local.mailboxRoutes).length < 1 ||
       Object.keys(local.mailboxRoutes).length > 8) {
-    throw new Error("The browser installation mailbox state is malformed.");
+    throw new Error("The browser endpoint mailbox state is malformed.");
   }
   for (const route of Object.values(local.mailboxRoutes)) {
     validateLocalMailboxRoute(route);
   }
-  normalizedUUID(local.id, "installation ID");
+  normalizedUUID(local.id, "endpoint ID");
   if (!Number.isFinite(new Date(local.createdAt).getTime())) {
-    throw new Error("The browser installation creation date is malformed.");
+    throw new Error("The browser endpoint creation date is malformed.");
   }
 }
 
@@ -388,7 +388,7 @@ function validateLocalMailboxRoute(route) {
       !["pending-v2-registration", "v2"].includes(route.mode) ||
       !Number.isSafeInteger(route.committedSequence) || route.committedSequence < 0 ||
       !Object.hasOwn(route, "cursor") || !Object.hasOwn(route, "pendingCommit")) {
-    throw new Error("The browser installation mailbox route is malformed.");
+    throw new Error("The browser endpoint mailbox route is malformed.");
   }
   assertKnownKeys(route, new Set([
     "mode", "consumerId", "signing", "signingFingerprint", "registration", "cursor",
@@ -396,7 +396,7 @@ function validateLocalMailboxRoute(route) {
   ]), "browser mailbox route");
   validateSerializedKeypair(route.signing, "mailbox route signing key", 1_952, 4_032);
   if (typeof route.signingFingerprint !== "string" || route.signingFingerprint.length === 0) {
-    throw new Error("The browser installation mailbox route fingerprint is malformed.");
+    throw new Error("The browser endpoint mailbox route fingerprint is malformed.");
   }
   if (route.cursor != null) validateMailboxCursor(route.cursor);
   if (route.mode === "v2") {
@@ -404,11 +404,11 @@ function validateLocalMailboxRoute(route) {
     if (registration.state !== "active" || registration.consumerId !== consumerId ||
         registration.consumerSigningPublicKey !== route.signing.publicKey ||
         registration.committedSequence !== route.committedSequence) {
-      throw new Error("The browser installation mailbox registration is not active.");
+      throw new Error("The browser endpoint mailbox registration is not active.");
     }
   } else if (route.registration != null || route.committedSequence !== 0 ||
       route.cursor !== null || route.pendingCommit !== null) {
-    throw new Error("The browser installation pending mailbox route is malformed.");
+    throw new Error("The browser endpoint pending mailbox route is malformed.");
   }
   if (route.pendingCommit != null) {
     const pending = route.pendingCommit;
@@ -416,7 +416,7 @@ function validateLocalMailboxRoute(route) {
         validateMailboxCursor(pending.cursor).length === 0 ||
         !Number.isSafeInteger(pending.sequence) || pending.sequence < route.committedSequence ||
         !Number.isFinite(Date.parse(pending.preparedAt))) {
-      throw new Error("The browser installation mailbox pending commit is malformed.");
+      throw new Error("The browser endpoint mailbox pending commit is malformed.");
     }
   }
 }

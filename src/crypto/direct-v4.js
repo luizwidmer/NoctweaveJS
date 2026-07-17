@@ -59,10 +59,10 @@ export async function prepareNativeDirectV4Identity({
   if (!canonicalUUID(identity.identityGenerationId)) {
     identity.identityGenerationId = swiftUUID();
   }
-  if (!identity.localInstallation) {
+  if (!identity.localEndpoint) {
     const signing = pqc.generateSigningKeypair();
     const agreement = pqc.generateKemKeypair();
-    identity.localInstallation = {
+    identity.localEndpoint = {
       id: swiftUUID(),
       identityGenerationId: identity.identityGenerationId,
       signing: serializeKeypair(signing),
@@ -72,12 +72,12 @@ export async function prepareNativeDirectV4Identity({
       createdAt: issuedAt
     };
   }
-  const local = identity.localInstallation;
-  validateLocalInstallation(local, identity.identityGenerationId);
+  const local = identity.localEndpoint;
+  validateLocalEndpoint(local, identity.identityGenerationId);
   const artifactNames = [
-    "installationManifest",
-    "installationCheckpoint",
-    "certifiedInstallationEndpoint"
+    "endpointSetManifest",
+    "endpointSetCheckpoint",
+    "certifiedGenerationEndpoint"
   ];
   const artifactCount = artifactNames.filter((name) => identity[name] != null).length;
   if (artifactCount !== 0 && artifactCount !== artifactNames.length) {
@@ -97,7 +97,7 @@ export async function prepareNativeDirectV4Identity({
     throw new Error("Direct-v4 prekey state exists without its certified endpoint.");
   }
   const prekeyPair = pqc.generateKemKeypair();
-  validateGeneratedKeypair(prekeyPair, "installation signed prekey");
+  validateGeneratedKeypair(prekeyPair, "endpoint signed prekey");
   const prekeyId = swiftUUID();
   const prekeyExpiresAt = swiftISODate(new Date(Date.parse(issuedAt) + PREKEY_MAX_AGE_MS));
   const signedPrekeyPayload = {
@@ -110,7 +110,7 @@ export async function prepareNativeDirectV4Identity({
     pqc,
     signedPrekeyPayload,
     local.signing.secretKey,
-    "installation signed prekey"
+    "endpoint signed prekey"
   );
   local.prekeys = {
     signedPrekeyId: prekeyId,
@@ -124,7 +124,7 @@ export async function prepareNativeDirectV4Identity({
   };
 
   const capabilities = createProtocolCapabilityManifest();
-  const installationRecord = {
+  const endpointRecord = {
     id: local.id,
     identityGenerationId: identity.identityGenerationId,
     signingPublicKey: local.signing.publicKey,
@@ -138,19 +138,19 @@ export async function prepareNativeDirectV4Identity({
     identityGenerationId: identity.identityGenerationId,
     identityFingerprint: identity.signingFingerprint,
     epoch: 0,
-    installations: [installationRecord],
+    endpoints: [endpointRecord],
     issuedAt
   };
-  const installationManifest = {
+  const endpointSetManifest = {
     ...manifestPayload,
     signature: signCanonical(
       pqc,
       manifestPayload,
       identity.signing.secretKey,
-      "installation manifest"
+      "endpoint manifest"
     )
   };
-  const manifestDigest = base64(await crypto.sha256(canonicalJsonBytes(installationManifest)));
+  const manifestDigest = base64(await crypto.sha256(canonicalJsonBytes(endpointSetManifest)));
   const prekeyBundle = {
     version: ARCHITECTURE_VERSION,
     identityFingerprint: local.signingFingerprint,
@@ -170,7 +170,7 @@ export async function prepareNativeDirectV4Identity({
     identityAuthorityPublicKey: identity.signing.publicKey,
     manifestEpoch: 0,
     manifestDigest,
-    installationId: local.id,
+    endpointId: local.id,
     signingPublicKey: local.signing.publicKey,
     agreementPublicKey: local.agreement.publicKey,
     capabilities,
@@ -185,7 +185,7 @@ export async function prepareNativeDirectV4Identity({
   const possessionPayload = {
     authoritySignature,
     endpoint: endpointPayload,
-    purpose: "Noctweave/certified-installation-endpoint-possession/v4"
+    purpose: "Noctweave/certified-generation-endpoint-possession/v4"
   };
   const possessionSignature = signCanonical(
       pqc,
@@ -219,15 +219,15 @@ export async function prepareNativeDirectV4Identity({
     manifestDigest,
     issuedAt
   };
-  identity.installationManifest = installationManifest;
-  identity.certifiedInstallationEndpoint = endpoint;
-  identity.installationCheckpoint = {
+  identity.endpointSetManifest = endpointSetManifest;
+  identity.certifiedGenerationEndpoint = endpoint;
+  identity.endpointSetCheckpoint = {
     ...checkpointPayload,
     signature: signCanonical(
       pqc,
       checkpointPayload,
       identity.signing.secretKey,
-      "installation manifest checkpoint"
+      "endpoint manifest checkpoint"
     )
   };
   return identity;
@@ -240,10 +240,10 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
   now = Date.now()
 }) {
   requireCrypto(crypto, pqc);
-  const local = identity?.localInstallation;
-  const endpoint = identity?.certifiedInstallationEndpoint;
+  const local = identity?.localEndpoint;
+  const endpoint = identity?.certifiedGenerationEndpoint;
   const prekeys = local?.prekeys;
-  if (!local || !endpoint || !prekeys || endpoint.installationId !== local.id ||
+  if (!local || !endpoint || !prekeys || endpoint.endpointId !== local.id ||
       endpoint.identityGenerationId !== identity.identityGenerationId) {
     throw new Error("A prepared local direct-v4 endpoint is required for prekey renewal.");
   }
@@ -273,7 +273,7 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
       signedPrekeyPayload(record),
       record.signature,
       local.signing.publicKey,
-      "retained installation signed prekey"
+      "retained endpoint signed prekey"
     );
   }
   const currentExpiryMs = Date.parse(prekeys.signedPrekeyExpiresAt);
@@ -300,7 +300,7 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
   const issuedAt = swiftISODate(new Date(nowMs));
   const expiresAt = swiftISODate(new Date(nowMs + PREKEY_MAX_AGE_MS));
   const keypair = pqc.generateKemKeypair();
-  validateGeneratedKeypair(keypair, "renewed installation signed prekey");
+  validateGeneratedKeypair(keypair, "renewed endpoint signed prekey");
   const id = swiftUUID();
   const publicKey = base64(keypair.publicKey);
   const privateKey = base64(keypair.secretKey);
@@ -309,7 +309,7 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
     pqc,
     signedPrekeyPayload({ id, publicKey, issuedAt, expiresAt }),
     local.signing.secretKey,
-    "renewed installation signed prekey"
+    "renewed endpoint signed prekey"
   );
   prekeys.signedPrekeyId = id;
   prekeys.signedPrekeyPublicKey = publicKey;
@@ -329,7 +329,7 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
     crypto,
     endpoint
   });
-  identity.certifiedInstallationEndpoint = {
+  identity.certifiedGenerationEndpoint = {
     ...endpoint,
     prekeyBundle: bundle,
     prekeyPackageSignature: signCanonical(
@@ -344,8 +344,8 @@ export async function renewNativeDirectV4PrekeyIfNeeded({
 
 export function makeCertifiedNativeContactOffer({ pqc, identity, relayEndpoint }) {
   requireRecord(identity, "Native identity");
-  const endpoint = identity.certifiedInstallationEndpoint;
-  const checkpoint = identity.installationCheckpoint;
+  const endpoint = identity.certifiedGenerationEndpoint;
+  const checkpoint = identity.endpointSetCheckpoint;
   if (!endpoint || !checkpoint || !canonicalUUID(identity.identityGenerationId)) {
     throw new Error("Identity is not prepared for certified direct-v4 contacts.");
   }
@@ -358,8 +358,8 @@ export function makeCertifiedNativeContactOffer({ pqc, identity, relayEndpoint }
     agreementPublicKey: identity.agreement.publicKey,
     inboxAccessPublicKey: identity.access?.publicKey,
     identityGenerationId: identity.identityGenerationId,
-    installationCheckpoint: checkpoint,
-    preferredInstallationEndpoint: endpoint,
+    endpointSetCheckpoint: checkpoint,
+    preferredGenerationEndpoint: endpoint,
     fingerprint: identity.signingFingerprint
   };
   if (unsigned.inboxAccessPublicKey == null) {
@@ -396,15 +396,15 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
     offer.signingPublicKey,
     "contact offer"
   );
-  const checkpoint = offer.installationCheckpoint;
-  const endpoint = offer.preferredInstallationEndpoint;
+  const checkpoint = offer.endpointSetCheckpoint;
+  const endpoint = offer.preferredGenerationEndpoint;
   validateCheckpointStructure(checkpoint);
   verifyCanonical(
     pqc,
     checkpointPayload(checkpoint),
     checkpoint.signature,
     offer.signingPublicKey,
-    "installation manifest checkpoint"
+    "endpoint manifest checkpoint"
   );
   if (checkpoint.identityFingerprint !== offer.fingerprint ||
       checkpoint.identityGenerationId !== offer.identityGenerationId ||
@@ -428,7 +428,7 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
     {
       authoritySignature: endpoint.authoritySignature,
       endpoint: endpointPayloadValue,
-      purpose: "Noctweave/certified-installation-endpoint-possession/v4"
+      purpose: "Noctweave/certified-generation-endpoint-possession/v4"
     },
     endpoint.possessionSignature,
     endpoint.signingPublicKey,
@@ -453,7 +453,7 @@ export async function verifyCertifiedNativeContactOffer({ crypto, pqc, offer, no
     signedPrekeyPayload(endpoint.prekeyBundle.signedPrekey),
     endpoint.prekeyBundle.signedPrekey.signature,
     endpoint.signingPublicKey,
-    "installation signed prekey"
+    "endpoint signed prekey"
   );
   const endpointFingerprint = base64(await crypto.sha256(decodeBase64(
     endpoint.signingPublicKey,
@@ -481,8 +481,8 @@ export function contactFromNativeOffer(offer, alias) {
     inboxAccessPublicKey: offer.inboxAccessPublicKey,
     version: DIRECT_VERSION,
     identityGenerationId: offer.identityGenerationId,
-    installationCheckpoint: offer.installationCheckpoint,
-    preferredInstallationEndpoint: offer.preferredInstallationEndpoint
+    endpointSetCheckpoint: offer.endpointSetCheckpoint,
+    preferredGenerationEndpoint: offer.preferredGenerationEndpoint
   };
   return contact;
 }
@@ -490,8 +490,8 @@ export function contactFromNativeOffer(offer, alias) {
 export function isCertifiedNativeContact(contact) {
   return contact?.version === DIRECT_VERSION &&
     canonicalUUID(contact.identityGenerationId) &&
-    contact.installationCheckpoint != null &&
-    contact.preferredInstallationEndpoint != null;
+    contact.endpointSetCheckpoint != null &&
+    contact.preferredGenerationEndpoint != null;
 }
 
 export async function certifiedEndpointDigest({ crypto, endpoint }) {
@@ -507,7 +507,7 @@ export async function certifiedEndpointAuthorizationDigest({ crypto, endpoint })
   return base64(await crypto.sha256(canonicalJsonBytes(reference)));
 }
 
-export async function derivePairwiseInstallationBindingV4({
+export async function derivePairwiseEndpointBindingV4({
   crypto,
   localIdentityGenerationId,
   localIdentitySigningPublicKey,
@@ -532,7 +532,7 @@ export async function derivePairwiseInstallationBindingV4({
     ML_DSA_PUBLIC_KEY_BYTES
   );
   // A continuity rotation changes the identity signing key but not the
-  // identity generation. Pairwise relationship and installation handles must
+  // identity generation. Pairwise relationship and endpoint handles must
   // therefore remain stable within that generation; burn creates fresh IDs.
   const localDescriptor = encoder.encode(localIdentityGenerationId.toLowerCase());
   const peerDescriptor = encoder.encode(peerIdentityGenerationId.toLowerCase());
@@ -562,16 +562,16 @@ export async function derivePairwiseInstallationBindingV4({
   });
   return {
     relationshipId,
-    localInstallationHandle: {
-      rawValue: base64(await installationHandleDigest({
+    localEndpointHandle: {
+      rawValue: base64(await endpointHandleDigest({
         crypto,
         relationshipId,
         generationId: localIdentityGenerationId,
         endpoint: localEndpoint
       }))
     },
-    peerInstallationHandle: {
-      rawValue: base64(await installationHandleDigest({
+    peerEndpointHandle: {
+      rawValue: base64(await endpointHandleDigest({
         crypto,
         relationshipId,
         generationId: peerIdentityGenerationId,
@@ -606,33 +606,33 @@ export async function negotiateNativeDirectV4({ crypto, localEndpoint, peerEndpo
 }
 
 export async function deriveNativeDirectV4Binding({ crypto, identity, contact }) {
-  if (!isCertifiedNativeContact(contact) || !identity?.certifiedInstallationEndpoint) {
+  if (!isCertifiedNativeContact(contact) || !identity?.certifiedGenerationEndpoint) {
     throw new Error("Certified direct-v4 endpoints are required.");
   }
-  return derivePairwiseInstallationBindingV4({
+  return derivePairwiseEndpointBindingV4({
     crypto,
     localIdentityGenerationId: identity.identityGenerationId,
     localIdentitySigningPublicKey: identity.signing.publicKey,
-    localEndpoint: identity.certifiedInstallationEndpoint,
+    localEndpoint: identity.certifiedGenerationEndpoint,
     peerIdentityGenerationId: contact.identityGenerationId,
     peerIdentitySigningPublicKey: contact.signingPublicKey,
-    peerEndpoint: contact.preferredInstallationEndpoint
+    peerEndpoint: contact.preferredGenerationEndpoint
   });
 }
 
 export async function directV4ConversationId({ crypto, localEndpoint, peerEndpoint, binding }) {
   validateBindingNegotiation(binding);
   const localEntry = concatBytes(
-    encoder.encode(binding.localInstallationHandle.rawValue),
+    encoder.encode(binding.localEndpointHandle.rawValue),
     decodeBase64(localEndpoint.agreementPublicKey, "local endpoint agreement key", ML_KEM_PUBLIC_KEY_BYTES)
   );
   const peerEntry = concatBytes(
-    encoder.encode(binding.peerInstallationHandle.rawValue),
+    encoder.encode(binding.peerEndpointHandle.rawValue),
     decodeBase64(peerEndpoint.agreementPublicKey, "peer endpoint agreement key", ML_KEM_PUBLIC_KEY_BYTES)
   );
   const ordered = compareBytes(localEntry, peerEntry) < 0 ? [localEntry, peerEntry] : [peerEntry, localEntry];
   return base64(await crypto.sha256(concatBytes(
-    encoder.encode("Noctweave/direct-installation-conversation/v4"),
+    encoder.encode("Noctweave/direct-endpoint-conversation/v4"),
     directV4SessionBindingBytes(binding),
     ordered[0],
     ordered[1]
@@ -640,16 +640,16 @@ export async function directV4ConversationId({ crypto, localEndpoint, peerEndpoi
 }
 
 export function directV4EndpointSession({ contact, identity, binding }) {
-  const local = identity.certifiedInstallationEndpoint;
-  const peer = contact.preferredInstallationEndpoint;
+  const local = identity.certifiedGenerationEndpoint;
+  const peer = contact.preferredGenerationEndpoint;
   return {
     contactFingerprint: contact.fingerprint,
-    localInstallationId: local.installationId,
-    localInstallationHandle: binding.localInstallationHandle,
+    localEndpointId: local.endpointId,
+    localEndpointHandle: binding.localEndpointHandle,
     localCertificateReferenceDigest: binding.localCertificateReferenceDigest,
     localManifestEpoch: local.manifestEpoch,
-    peerInstallationId: peer.installationId,
-    peerInstallationHandle: binding.peerInstallationHandle,
+    peerEndpointId: peer.endpointId,
+    peerEndpointHandle: binding.peerEndpointHandle,
     peerCertificateReferenceDigest: binding.peerCertificateReferenceDigest,
     peerManifestEpoch: peer.manifestEpoch,
     cipherSuite: binding.cipherSuite,
@@ -670,9 +670,9 @@ export function makeDirectV4AuthenticatedContext({ eventId = swiftUUID(), endpoi
       cipherSuite: endpointSession.cipherSuite,
       negotiatedCapabilitiesDigest: endpointSession.negotiatedCapabilitiesDigest,
       eventId,
-      senderInstallationHandle: endpointSession.localInstallationHandle.rawValue,
+      senderEndpointHandle: endpointSession.localEndpointHandle.rawValue,
       senderCertificateDigest: endpointSession.localCertificateReferenceDigest,
-      recipientInstallationHandle: endpointSession.peerInstallationHandle.rawValue,
+      recipientEndpointHandle: endpointSession.peerEndpointHandle.rawValue,
       senderManifestEpoch: endpointSession.localManifestEpoch,
       recipientManifestEpoch: endpointSession.peerManifestEpoch,
       recipientCertificateDigest: endpointSession.peerCertificateReferenceDigest
@@ -687,9 +687,9 @@ export function validateInboundDirectV4Context({ context, endpointSession }) {
       direct.payloadFormat !== nativeDirectV4.payloadFormat || !canonicalUUID(direct.eventId) ||
       direct.cipherSuite !== endpointSession.cipherSuite ||
       direct.negotiatedCapabilitiesDigest !== endpointSession.negotiatedCapabilitiesDigest ||
-      direct.senderInstallationHandle !== endpointSession.peerInstallationHandle.rawValue ||
+      direct.senderEndpointHandle !== endpointSession.peerEndpointHandle.rawValue ||
       direct.senderCertificateDigest !== endpointSession.peerCertificateReferenceDigest ||
-      direct.recipientInstallationHandle !== endpointSession.localInstallationHandle.rawValue ||
+      direct.recipientEndpointHandle !== endpointSession.localEndpointHandle.rawValue ||
       direct.recipientCertificateDigest !== endpointSession.localCertificateReferenceDigest ||
       direct.senderManifestEpoch !== endpointSession.peerManifestEpoch ||
       direct.recipientManifestEpoch !== endpointSession.localManifestEpoch) {
@@ -698,19 +698,19 @@ export function validateInboundDirectV4Context({ context, endpointSession }) {
   return direct;
 }
 
-export async function createInstallationEndpointRevocationV4({
+export async function createEndpointRemovalProofV4({
   crypto,
   pqc,
   identity,
   issuedAt = swiftISODate()
 }) {
-  const endpoint = identity?.certifiedInstallationEndpoint;
-  const manifest = identity?.installationManifest;
+  const endpoint = identity?.certifiedGenerationEndpoint;
+  const manifest = identity?.endpointSetManifest;
   if (!endpoint || !manifest || manifest.epoch !== endpoint.manifestEpoch) {
     throw new Error("A current certified endpoint is required for revocation.");
   }
   const revokedEpoch = endpoint.manifestEpoch + 1;
-  const installations = manifest.installations.map((record) => record.id === endpoint.installationId
+  const endpoints = manifest.endpoints.map((record) => record.id === endpoint.endpointId
     ? { ...record, revokedEpoch, revokedAt: issuedAt }
     : record);
   const revokedPayload = {
@@ -719,7 +719,7 @@ export async function createInstallationEndpointRevocationV4({
     identityFingerprint: manifest.identityFingerprint,
     epoch: revokedEpoch,
     previousManifestDigest: await certifiedEndpointDigest({ crypto, endpoint: manifest }),
-    installations,
+    endpoints,
     issuedAt
   };
   const revokedManifest = {
@@ -728,7 +728,7 @@ export async function createInstallationEndpointRevocationV4({
   };
   const payload = {
     identityGenerationId: endpoint.identityGenerationId,
-    installationId: endpoint.installationId,
+    endpointId: endpoint.endpointId,
     certificateDigest: await certifiedEndpointAuthorizationDigest({ crypto, endpoint }),
     manifestEpoch: revokedEpoch,
     manifestDigest: base64(await crypto.sha256(canonicalJsonBytes(revokedManifest))),
@@ -740,11 +740,11 @@ export async function createInstallationEndpointRevocationV4({
   };
 }
 
-export async function verifyInstallationEndpointRevocationV4({ crypto, pqc, contact, revocation }) {
+export async function verifyEndpointRemovalProofV4({ crypto, pqc, contact, revocation }) {
   requireRecord(revocation, "Endpoint revocation");
-  const endpoint = contact?.preferredInstallationEndpoint;
+  const endpoint = contact?.preferredGenerationEndpoint;
   if (!endpoint || revocation.identityGenerationId !== endpoint.identityGenerationId ||
-      revocation.installationId !== endpoint.installationId ||
+      revocation.endpointId !== endpoint.endpointId ||
       revocation.manifestEpoch <= endpoint.manifestEpoch ||
       Date.parse(revocation.issuedAt) < Date.parse(endpoint.issuedAt) ||
       revocation.certificateDigest !== await certifiedEndpointAuthorizationDigest({
@@ -776,7 +776,7 @@ export async function assertContactEndpointActive({
   if (!verifySignature || !pqc) {
     throw new Error("Certified endpoint has been revoked.");
   }
-  await verifyInstallationEndpointRevocationV4({
+  await verifyEndpointRemovalProofV4({
     crypto,
     pqc,
     contact,
@@ -802,7 +802,7 @@ function certifiedEndpointPayload(endpoint) {
     identityAuthorityPublicKey: endpoint.identityAuthorityPublicKey,
     manifestEpoch: endpoint.manifestEpoch,
     manifestDigest: endpoint.manifestDigest,
-    installationId: endpoint.installationId,
+    endpointId: endpoint.endpointId,
     signingPublicKey: endpoint.signingPublicKey,
     agreementPublicKey: endpoint.agreementPublicKey,
     capabilities: endpoint.capabilities,
@@ -847,8 +847,8 @@ function unsignedCertifiedOffer(offer) {
     signingPublicKey: offer.signingPublicKey,
     agreementPublicKey: offer.agreementPublicKey,
     identityGenerationId: offer.identityGenerationId,
-    installationCheckpoint: offer.installationCheckpoint,
-    preferredInstallationEndpoint: offer.preferredInstallationEndpoint,
+    endpointSetCheckpoint: offer.endpointSetCheckpoint,
+    preferredGenerationEndpoint: offer.preferredGenerationEndpoint,
     fingerprint: offer.fingerprint
   };
   if (offer.inboxAccessPublicKey != null) {
@@ -860,7 +860,7 @@ function unsignedCertifiedOffer(offer) {
 function revocationPayload(revocation) {
   return {
     identityGenerationId: revocation.identityGenerationId,
-    installationId: revocation.installationId,
+    endpointId: revocation.endpointId,
     certificateDigest: revocation.certificateDigest,
     manifestEpoch: revocation.manifestEpoch,
     manifestDigest: revocation.manifestDigest,
@@ -869,9 +869,9 @@ function revocationPayload(revocation) {
 }
 
 async function validatePreparedIdentity({ crypto, pqc, identity }) {
-  const local = identity.localInstallation;
-  const endpoint = identity.certifiedInstallationEndpoint;
-  if (endpoint.installationId !== local.id ||
+  const local = identity.localEndpoint;
+  const endpoint = identity.certifiedGenerationEndpoint;
+  if (endpoint.endpointId !== local.id ||
       endpoint.identityGenerationId !== identity.identityGenerationId ||
       endpoint.signingPublicKey !== local.signing.publicKey ||
       endpoint.agreementPublicKey !== local.agreement.publicKey ||
@@ -880,7 +880,7 @@ async function validatePreparedIdentity({ crypto, pqc, identity }) {
       endpoint.prekeyBundle?.signedPrekey?.signature !== local.prekeys?.signedPrekeySignature ||
       endpoint.prekeyBundle?.signedPrekey?.issuedAt !== local.prekeys?.signedPrekeyIssuedAt ||
       endpoint.prekeyBundle?.signedPrekey?.expiresAt !== local.prekeys?.signedPrekeyExpiresAt) {
-    throw new Error("Persisted certified endpoint does not match the local installation.");
+    throw new Error("Persisted certified endpoint does not match the local endpoint.");
   }
   const offer = makeCertifiedNativeContactOffer({
     pqc,
@@ -896,12 +896,12 @@ async function validatePreparedIdentity({ crypto, pqc, identity }) {
 }
 
 function validateCheckpointStructure(checkpoint) {
-  requireRecord(checkpoint, "Installation manifest checkpoint");
+  requireRecord(checkpoint, "Endpoint manifest checkpoint");
   if (checkpoint.version !== DIRECT_VERSION ||
       !canonicalUUID(checkpoint.identityGenerationId) ||
       !Number.isSafeInteger(checkpoint.epoch) || checkpoint.epoch < 0 ||
       !Number.isFinite(Date.parse(checkpoint.issuedAt))) {
-    throw new Error("Installation manifest checkpoint is malformed.");
+    throw new Error("Endpoint manifest checkpoint is malformed.");
   }
   decodeBase64(checkpoint.identityFingerprint, "checkpoint identity fingerprint", DIGEST_BYTES);
   decodeBase64(checkpoint.manifestDigest, "checkpoint manifest digest", DIGEST_BYTES);
@@ -913,7 +913,7 @@ function validateCertifiedOfferShape(offer) {
   if (offer.version !== DIRECT_VERSION || !boundedString(offer.displayName, 512) ||
       !boundedString(offer.inboxId, 256) || !canonicalUUID(offer.identityGenerationId) ||
       !offer.relay || typeof offer.relay !== "object" ||
-      offer.installationCheckpoint == null || offer.preferredInstallationEndpoint == null) {
+      offer.endpointSetCheckpoint == null || offer.preferredGenerationEndpoint == null) {
     throw new Error("Certified contact offer is malformed.");
   }
   decodeBase64(offer.signingPublicKey, "identity signing public key", ML_DSA_PUBLIC_KEY_BYTES);
@@ -926,11 +926,11 @@ function validateCertifiedOfferShape(offer) {
 }
 
 function validateEndpointStructure(endpoint, now) {
-  requireRecord(endpoint, "Certified installation endpoint");
-  if (!canonicalUUID(endpoint.identityGenerationId) || !canonicalUUID(endpoint.installationId) ||
+  requireRecord(endpoint, "Certified generation endpoint");
+  if (!canonicalUUID(endpoint.identityGenerationId) || !canonicalUUID(endpoint.endpointId) ||
       !Number.isSafeInteger(endpoint.manifestEpoch) || endpoint.manifestEpoch < 0 ||
       !Number.isFinite(Date.parse(endpoint.issuedAt))) {
-    throw new Error("Certified installation endpoint is malformed.");
+    throw new Error("Certified generation endpoint is malformed.");
   }
   decodeBase64(endpoint.identityAuthorityPublicKey, "endpoint identity authority", ML_DSA_PUBLIC_KEY_BYTES);
   decodeBase64(endpoint.manifestDigest, "endpoint manifest digest", DIGEST_BYTES);
@@ -972,25 +972,25 @@ function validateEndpointStructure(endpoint, now) {
   }
 }
 
-function validateLocalInstallation(local, generationId) {
-  requireRecord(local, "Local installation");
+function validateLocalEndpoint(local, generationId) {
+  requireRecord(local, "Local endpoint");
   if (!canonicalUUID(local.id) || local.identityGenerationId !== generationId ||
       !Number.isFinite(Date.parse(local.createdAt))) {
-    throw new Error("Local installation is malformed.");
+    throw new Error("Local endpoint is malformed.");
   }
-  validateKeypair(local.signing, "installation signing", ML_DSA_PUBLIC_KEY_BYTES, ML_DSA_SECRET_KEY_BYTES);
-  validateKeypair(local.agreement, "installation agreement", ML_KEM_PUBLIC_KEY_BYTES, ML_KEM_SECRET_KEY_BYTES);
+  validateKeypair(local.signing, "endpoint signing", ML_DSA_PUBLIC_KEY_BYTES, ML_DSA_SECRET_KEY_BYTES);
+  validateKeypair(local.agreement, "endpoint agreement", ML_KEM_PUBLIC_KEY_BYTES, ML_KEM_SECRET_KEY_BYTES);
 }
 
 function validateEndpointSession(session) {
   requireRecord(session, "Direct-v4 endpoint session");
-  if (!canonicalUUID(session.localInstallationId) || !canonicalUUID(session.peerInstallationId) ||
+  if (!canonicalUUID(session.localEndpointId) || !canonicalUUID(session.peerEndpointId) ||
       !Number.isSafeInteger(session.localManifestEpoch) || session.localManifestEpoch < 0 ||
       !Number.isSafeInteger(session.peerManifestEpoch) || session.peerManifestEpoch < 0) {
     throw new Error("Direct-v4 endpoint session is malformed.");
   }
-  for (const handle of [session.localInstallationHandle, session.peerInstallationHandle]) {
-    decodeBase64(handle?.rawValue, "pairwise installation handle", DIGEST_BYTES);
+  for (const handle of [session.localEndpointHandle, session.peerEndpointHandle]) {
+    decodeBase64(handle?.rawValue, "pairwise endpoint handle", DIGEST_BYTES);
   }
   for (const digest of [
     session.localCertificateReferenceDigest,
@@ -1028,12 +1028,12 @@ export function directV4SessionBindingBytes(binding) {
   );
 }
 
-async function installationHandleDigest({ crypto, relationshipId, generationId, endpoint }) {
+async function endpointHandleDigest({ crypto, relationshipId, generationId, endpoint }) {
   return crypto.sha256(concatBytes(
-    encoder.encode("Noctweave/pairwise-installation-handle/v4"),
+    encoder.encode("Noctweave/pairwise-endpoint-handle/v4"),
     encoder.encode(relationshipId.toLowerCase()),
     encoder.encode(generationId.toLowerCase()),
-    encoder.encode(endpoint.installationId.toLowerCase()),
+    encoder.encode(endpoint.endpointId.toLowerCase()),
     decodeBase64(endpoint.signingPublicKey, "endpoint signing key", ML_DSA_PUBLIC_KEY_BYTES)
   ));
 }
