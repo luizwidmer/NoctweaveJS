@@ -1,12 +1,21 @@
 import { parseRelayEndpoint } from "./endpoint.js";
 import { NoctweaveRelayClient } from "./relay-client.js";
 import {
+  acknowledgeContactPairingOutboundV2,
+  cancelContactPairingV2,
+  contactPairingStateSchemaV2,
   createContactPairingInvitationV2,
-  establishContactPairingV2,
+  finalizeContactPairingV2,
   prepareContactPairingParticipantV2,
+  prepareContactPairingOffererV2,
+  prepareContactPairingResponderV2,
+  processContactPairingTransportFrameV2,
+  resumeContactPairingV2,
+  validateContactPairingStateShapeV2,
   validatePairwiseRelationshipV2,
   validatePreparedContactParticipantV2
 } from "./contact-pairing-v2.js";
+import { createRendezvousRelayAdapterV2 } from "./rendezvous-relay-v2.js";
 import { swiftISODate } from "./crypto/swift-canonical.js";
 import { validateProtocolCapabilityManifest } from "./architecture-v2.js";
 import {
@@ -134,49 +143,186 @@ export class NoctweaveBrowserPairingService {
     return activated;
   }
 
-  async establishPairing({
+  async prepareOffererPairing({
     persona: personaValue,
-    pending,
+    relay,
+    relationshipPseudonym = defaultRelationshipPseudonymV2,
+    createdAt = swiftISODate(),
+    expiresAt,
+    ledger
+  }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const endpoint = typeof relay === "string" ? parseBrowserRelayEndpoint(relay) : relay;
+    const expiry = expiresAt ?? swiftISODate(new Date(Date.parse(createdAt) + 10 * 60 * 1_000));
+    const made = await this.createPairingInvitation({ createdAt, expiresAt: expiry });
+    const participant = await this.preparePairingParticipant({
+      persona,
+      relay: endpoint,
+      relationshipPseudonym,
+      createdAt
+    });
+    const pairing = await prepareContactPairingOffererV2({
+      crypto: this.crypto,
+      pqc: this.pqc,
+      pending: made.pending,
+      invitation: made.invitation,
+      participant,
+      ledger,
+      at: createdAt
+    });
+    const adapter = await createRendezvousRelayAdapterV2({
+      crypto: this.crypto,
+      offer: made.invitation.offer
+    });
+    const relayClient = this.relayClientFactory(endpoint, { crypto: this.crypto });
+    if (typeof relayClient.registerRendezvousTransportV2 !== "function") {
+      throw new TypeError("The relay client does not support rendezvous transport registration.");
+    }
+    await relayClient.registerRendezvousTransportV2(adapter.registrationRequest);
+    storePendingPairing(persona, pairing);
+    return {
+      persona: validateBrowserPersonaState(persona),
+      pairingID: pairing.pairingID,
+      invitation: made.invitation,
+      outboundTransportFrames: pairing.outboundTransportFrames
+    };
+  }
+
+  async prepareResponderPairing({
+    persona: personaValue,
     invitation,
-    localParticipant,
-    peerParticipant,
-    ledger,
+    relay,
+    relationshipPseudonym = defaultRelationshipPseudonymV2,
+    at = swiftISODate()
+  }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const endpoint = typeof relay === "string" ? parseBrowserRelayEndpoint(relay) : relay;
+    const participant = await this.preparePairingParticipant({
+      persona,
+      relay: endpoint,
+      relationshipPseudonym,
+      createdAt: at
+    });
+    const pairing = await prepareContactPairingResponderV2({
+      crypto: this.crypto,
+      pqc: this.pqc,
+      invitation,
+      participant,
+      at
+    });
+    storePendingPairing(persona, pairing);
+    return {
+      persona: validateBrowserPersonaState(persona),
+      pairingID: pairing.pairingID,
+      outboundTransportFrames: pairing.outboundTransportFrames
+    };
+  }
+
+  async resumePairing({ persona: personaValue, pairingID }) {
+    const persona = validateBrowserPersonaState(personaValue);
+    const pairing = await resumeContactPairingV2({
+      crypto: this.crypto,
+      pqc: this.pqc,
+      state: requirePendingPairing(persona, pairingID)
+    });
+    return { pairing, outboundTransportFrames: pairing.outboundTransportFrames };
+  }
+
+  async processPairingFrame({
+    persona: personaValue,
+    pairingID,
+    transportFrame,
+    at = swiftISODate()
+  }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const index = pendingPairingIndex(persona, pairingID);
+    const pairing = await processContactPairingTransportFrameV2({
+      crypto: this.crypto,
+      pqc: this.pqc,
+      state: persona.pendingPairings[index],
+      transportFrame,
+      at
+    });
+    persona.pendingPairings[index] = pairing;
+    return {
+      persona: validateBrowserPersonaState(persona),
+      pairingID,
+      phase: pairing.phase,
+      outboundTransportFrames: pairing.outboundTransportFrames
+    };
+  }
+
+  async acknowledgePairingOutbound({ persona: personaValue, pairingID, frameIDs }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const index = pendingPairingIndex(persona, pairingID);
+    const pairing = await acknowledgeContactPairingOutboundV2({
+      crypto: this.crypto,
+      pqc: this.pqc,
+      state: persona.pendingPairings[index],
+      frameIDs
+    });
+    persona.pendingPairings[index] = pairing;
+    return {
+      persona: validateBrowserPersonaState(persona),
+      pairingID,
+      outboundTransportFrames: pairing.outboundTransportFrames
+    };
+  }
+
+  async finalizePairing({
+    persona: personaValue,
+    pairingID,
     at = swiftISODate(),
-    role = "offerer",
     consent = "accepted"
   }) {
     const persona = structuredClone(validateBrowserPersonaState(personaValue));
-    const result = await establishContactPairingV2({
+    const index = pendingPairingIndex(persona, pairingID);
+    const pairing = persona.pendingPairings[index];
+    const finalized = await finalizeContactPairingV2({
       crypto: this.crypto,
       pqc: this.pqc,
-      pending,
-      invitation,
-      offerer: role === "offerer" ? localParticipant : peerParticipant,
-      responder: role === "offerer" ? peerParticipant : localParticipant,
-      ledger,
+      state: pairing,
       at
     });
-    const establishedRelationship = role === "offerer"
-      ? result.offererRelationship
-      : result.responderRelationship;
     const relationship = Object.freeze({
-      ...establishedRelationship,
+      ...finalized.relationship,
       localPolicy: createRelationshipLocalPolicyV2({
-        ...establishedRelationship.localPolicy,
+        ...finalized.relationship.localPolicy,
         consent
       })
     });
     if (persona.relationships.some(({ relationshipID }) => relationshipID === relationship.relationshipID)) {
       throw new Error("This one-use rendezvous relationship is already stored.");
     }
-    await validatePairwiseRelationshipV2({
+    await validatePairwiseRelationshipV2({ crypto: this.crypto, pqc: this.pqc, relationship });
+    const adapter = await createRendezvousRelayAdapterV2({ crypto: this.crypto, offer: pairing.offer });
+    persona.pendingPairings.splice(index, 1);
+    persona.relationships.push(relationship);
+    return {
+      persona: validateBrowserPersonaState(persona),
+      relationship,
+      receipt: finalized.receipt,
+      rendezvousDeletionRequests: adapter.deletionRequests()
+    };
+  }
+
+  async cancelPairing({ persona: personaValue, pairingID, at = swiftISODate() }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const index = pendingPairingIndex(persona, pairingID);
+    const pairing = persona.pendingPairings[index];
+    const receipt = await cancelContactPairingV2({
       crypto: this.crypto,
       pqc: this.pqc,
-      relationship
+      state: pairing,
+      at
     });
-    persona.relationships.push(relationship);
-    validateBrowserPersonaState(persona);
-    return { persona, relationship, handshake: result };
+    const adapter = await createRendezvousRelayAdapterV2({ crypto: this.crypto, offer: pairing.offer });
+    persona.pendingPairings.splice(index, 1);
+    return {
+      persona: validateBrowserPersonaState(persona),
+      receipt,
+      rendezvousDeletionRequests: adapter.deletionRequests()
+    };
   }
 
   setRelationshipLocalPolicy({ persona: personaValue, relationshipID, policy }) {
@@ -216,12 +362,19 @@ export function validateBrowserPersonaState(value) {
     validateRelationshipLocalPolicyV2(relationship.localPolicy);
     relationshipIDs.add(relationship.relationshipID);
   }
+  const pendingPairingIDs = new Set();
   for (const pending of value.pendingPairings) {
-    if (!pending || typeof pending !== "object" || Array.isArray(pending) ||
-        pending.version !== 2 || typeof pending.createdAt !== "string" ||
-        typeof pending.expiresAt !== "string") {
+    try {
+      validateContactPairingStateShapeV2(pending);
+    } catch {
       throw new Error("The browser persona contains invalid pending pairing state.");
     }
+    if (pending.stateSchema !== contactPairingStateSchemaV2 ||
+        pending.participant?.localIdentity?.scope !== "pairwise" ||
+        pendingPairingIDs.has(pending.pairingID)) {
+      throw new Error("The browser persona contains invalid pending pairing state.");
+    }
+    pendingPairingIDs.add(pending.pairingID);
   }
   return value;
 }
@@ -250,6 +403,27 @@ function normalizedOptionalSecret(value) {
     throw new TypeError("Relay access password must not exceed 4096 UTF-8 bytes.");
   }
   return value;
+}
+
+function storePendingPairing(persona, pairing) {
+  validateContactPairingStateShapeV2(pairing);
+  if (persona.pendingPairings.some(({ pairingID }) => pairingID === pairing.pairingID)) {
+    throw new Error("This one-use rendezvous pairing is already pending.");
+  }
+  persona.pendingPairings.push(pairing);
+}
+
+function pendingPairingIndex(persona, pairingID) {
+  if (typeof pairingID !== "string" || pairingID.length === 0) {
+    throw new TypeError("A pairing ID is required.");
+  }
+  const index = persona.pendingPairings.findIndex((pairing) => pairing.pairingID === pairingID);
+  if (index < 0) throw new Error("Pending pairwise pairing was not found.");
+  return index;
+}
+
+function requirePendingPairing(persona, pairingID) {
+  return persona.pendingPairings[pendingPairingIndex(persona, pairingID)];
 }
 
 function requireExactRecord(value, fields, label) {

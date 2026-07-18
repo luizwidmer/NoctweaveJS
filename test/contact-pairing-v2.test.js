@@ -9,10 +9,10 @@ import {
   createContactPairingInvitationV2,
   decodeContactPairingInvitationV2,
   encodeContactPairingInvitationV2,
-  establishContactPairingV2,
   prepareContactPairingParticipantV2,
   validatePairwiseRelationshipV2
 } from "../src/index.js";
+import { runContactPairingConformanceV2 } from "../test-support/contact-pairing-conformance.js";
 
 const createdAt = "2026-07-16T12:00:00Z";
 const openedAt = "2026-07-16T12:01:00Z";
@@ -38,7 +38,7 @@ test("one-use pairing mints unrelated PQ authorities and stores only pairwise st
     relay,
     createdAt
   });
-  const result = await establishContactPairingV2({
+  const result = await runContactPairingConformanceV2({
     crypto,
     pqc,
     pending: made.pending,
@@ -74,7 +74,7 @@ test("one-use pairing mints unrelated PQ authorities and stores only pairwise st
   }
 
   await assert.rejects(
-    () => establishContactPairingV2({
+    () => runContactPairingConformanceV2({
       crypto,
       pqc,
       pending: result.pending,

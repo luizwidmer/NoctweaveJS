@@ -19,7 +19,6 @@ import {
   defaultContentTypeCapabilities,
   encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
-  establishContactPairingV2,
   findPairwiseRelationshipForEnvelope,
   pairwiseConversationKey,
   prepareContactPairingParticipantV2,
@@ -27,6 +26,7 @@ import {
   renewPairwiseDirectV4PrekeyIfNeeded,
 } from "../src/index.js";
 import { createReadReceiptEncodedContent } from "../src/architecture-v2.js";
+import { runContactPairingConformanceV2 } from "../test-support/contact-pairing-conformance.js";
 
 const createdAt = "2026-07-16T12:00:00Z";
 const openedAt = "2026-07-16T12:01:00Z";
@@ -334,7 +334,7 @@ async function paired(localName, peerName, {
     endpointCapabilities,
     createdAt
   });
-  const established = await establishContactPairingV2({
+  const established = await runContactPairingConformanceV2({
     crypto,
     pqc,
     pending: invitation.pending,
