@@ -317,12 +317,39 @@ function testRelayInfo() {
   const capabilities = createProtocolCapabilityManifest();
   return {
     kind: "standard",
+    federation: { mode: "solo", name: null, description: null },
+    temporalBucketSeconds: 300,
+    temporalBucketScheduleSeconds: null,
+    attachmentDefaultTTLSeconds: null,
+    attachmentMaxTTLSeconds: null,
+    attachmentsEnabled: null,
+    attachmentStorageBackend: null,
+    hiddenRetrieval: null,
+    onionTransport: null,
+    mixnetTransport: null,
+    wakeSupport: null,
+    relayName: null,
+    operatorNote: null,
+    softwareVersion: null,
     protocolCapabilities: {
       ...capabilities,
       modules: [
         ...capabilities.modules,
         { module: "nw.opaque-route", versions: [2], status: "stable", limits: {} }
       ]
-    }
+    },
+    requiresPassword: null,
+    tlsEnabled: null,
+    transport: null,
+    federationCoordinatorEndpoints: null,
+    coordinatorReportedRelayCount: null,
+    coordinatorRegistrationAuthRequired: null,
+    curatedStrictPolicyEnabled: null,
+    curatedCoordinatorQuorum: null,
+    curatedRequireSignedDirectory: null,
+    federationDirectoryPublicKey: null,
+    knownOpenPeers: null,
+    openFederationDiscovery: null,
+    advertisedAt: "2026-07-18T12:00:00Z"
   };
 }

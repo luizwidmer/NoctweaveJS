@@ -79,6 +79,14 @@ test("relay info responses require the exact bounded recursive current shape", (
 
   const { advertisedAt: _advertisedAt, ...missingRequired } = current;
   assert.throws(() => validate(missingRequired), /Relay info.*current protocol fields/);
+  const { wakeSupport: _wakeSupport, ...missingNullable } = current;
+  assert.throws(() => validate(missingNullable), /Relay info.*current protocol fields/);
+
+  const { name: _name, ...missingFederationNullable } = current.federation;
+  assert.throws(
+    () => validate({ ...current, federation: missingFederationNullable }),
+    /Federation descriptor.*current protocol fields/
+  );
   assert.throws(
     () => validate({ ...current, federation: { ...current.federation, legacy: true } }),
     /Federation descriptor.*current protocol fields/
@@ -125,6 +133,38 @@ test("relay info responses require the exact bounded recursive current shape", (
       }
     }),
     /capability manifest.*protocol bounds/
+  );
+
+  const hiddenRetrieval = {
+    mode: "coverQuery",
+    defaultCoverSetSize: 8,
+    maxCoverSetSize: 32,
+    replicatedXorPIRReplicas: null
+  };
+  assert.deepEqual(validate({ ...current, hiddenRetrieval }).relayInfo.hiddenRetrieval, hiddenRetrieval);
+  const { replicatedXorPIRReplicas: _replicas, ...missingReplicaField } = hiddenRetrieval;
+  assert.throws(
+    () => validate({ ...current, hiddenRetrieval: missingReplicaField }),
+    /Hidden retrieval support.*current protocol fields/
+  );
+
+  const endpoint = {
+    host: "coordinator.example",
+    port: 443,
+    useTLS: true,
+    transport: "http",
+    tlsCertificateFingerprintSHA256: null,
+    directorySigningPublicKey: null
+  };
+  assert.deepEqual(
+    validate({ ...current, federationCoordinatorEndpoints: [endpoint] })
+      .relayInfo.federationCoordinatorEndpoints,
+    [endpoint]
+  );
+  const { directorySigningPublicKey: _directoryKey, ...missingEndpointNullable } = endpoint;
+  assert.throws(
+    () => validate({ ...current, federationCoordinatorEndpoints: [missingEndpointNullable] }),
+    /Relay endpoint.*current protocol fields/
   );
 });
 
@@ -731,14 +771,19 @@ function relaySuccess(request, body) {
 function relayInfoFixture() {
   return {
     kind: "standard",
-    federation: { mode: "solo" },
+    federation: { mode: "solo", name: null, description: null },
     temporalBucketSeconds: 300,
     temporalBucketScheduleSeconds: [300, 600],
     attachmentDefaultTTLSeconds: 3_600,
     attachmentMaxTTLSeconds: 21_600,
     attachmentsEnabled: true,
     attachmentStorageBackend: "inline",
+    hiddenRetrieval: null,
+    onionTransport: null,
+    mixnetTransport: null,
+    wakeSupport: null,
     relayName: "Test",
+    operatorNote: null,
     softwareVersion: "noctweave-relay/1.0",
     protocolCapabilities: {
       architectureVersion: 2,
@@ -750,6 +795,15 @@ function relayInfoFixture() {
     requiresPassword: false,
     tlsEnabled: true,
     transport: "http",
+    federationCoordinatorEndpoints: null,
+    coordinatorReportedRelayCount: null,
+    coordinatorRegistrationAuthRequired: null,
+    curatedStrictPolicyEnabled: null,
+    curatedCoordinatorQuorum: null,
+    curatedRequireSignedDirectory: null,
+    federationDirectoryPublicKey: null,
+    knownOpenPeers: null,
+    openFederationDiscovery: null,
     advertisedAt: "2026-07-18T12:00:00Z"
   };
 }

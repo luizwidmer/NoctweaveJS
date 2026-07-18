@@ -206,8 +206,10 @@ function validateResponseBody(binding, body, request) {
 function validateRelayInfoV2(value) {
   requireExactRecord(
     value,
-    ["kind", "federation", "temporalBucketSeconds", "advertisedAt"],
     [
+      "kind",
+      "federation",
+      "temporalBucketSeconds",
       "temporalBucketScheduleSeconds",
       "attachmentDefaultTTLSeconds",
       "attachmentMaxTTLSeconds",
@@ -232,8 +234,10 @@ function validateRelayInfoV2(value) {
       "curatedRequireSignedDirectory",
       "federationDirectoryPublicKey",
       "knownOpenPeers",
-      "openFederationDiscovery"
+      "openFederationDiscovery",
+      "advertisedAt"
     ],
+    [],
     "Relay info"
   );
   if (!["standard", "discovery", "bridge", "privateRelay", "coordinator"].includes(value.kind)) {
@@ -243,7 +247,7 @@ function validateRelayInfoV2(value) {
   requireInteger(value.temporalBucketSeconds, "Relay temporal bucket", 0, 86_400);
   requireCanonicalTimestamp(value.advertisedAt, "Relay advertisedAt");
 
-  if (Object.hasOwn(value, "temporalBucketScheduleSeconds")) {
+  if (value.temporalBucketScheduleSeconds !== null) {
     validateCanonicalIntegerList(
       value.temporalBucketScheduleSeconds,
       "Relay temporal bucket schedule",
@@ -253,12 +257,12 @@ function validateRelayInfoV2(value) {
       86_400
     );
   }
-  if (Object.hasOwn(value, "attachmentDefaultTTLSeconds")) {
+  if (value.attachmentDefaultTTLSeconds !== null) {
     requireInteger(value.attachmentDefaultTTLSeconds, "Attachment default TTL", 60, 2_592_000);
   }
-  if (Object.hasOwn(value, "attachmentMaxTTLSeconds")) {
+  if (value.attachmentMaxTTLSeconds !== null) {
     requireInteger(value.attachmentMaxTTLSeconds, "Attachment maximum TTL", 60, 2_592_000);
-    if (Object.hasOwn(value, "attachmentDefaultTTLSeconds") &&
+    if (value.attachmentDefaultTTLSeconds !== null &&
         value.attachmentMaxTTLSeconds < value.attachmentDefaultTTLSeconds) {
       throw new TypeError("Attachment maximum TTL must cover the default TTL.");
     }
@@ -272,47 +276,47 @@ function validateRelayInfoV2(value) {
     "curatedRequireSignedDirectory"
   ]);
   for (const field of ["attachmentStorageBackend", "relayName", "operatorNote", "softwareVersion"]) {
-    if (Object.hasOwn(value, field)) validateBoundedText(value[field], `Relay ${field}`, 1_024);
+    if (value[field] !== null) validateBoundedText(value[field], `Relay ${field}`, 1_024);
   }
-  if (Object.hasOwn(value, "hiddenRetrieval")) validateHiddenRetrievalSupport(value.hiddenRetrieval);
-  if (Object.hasOwn(value, "onionTransport")) validateOnionTransportSupport(value.onionTransport);
-  if (Object.hasOwn(value, "mixnetTransport")) validateMixnetTransportSupport(value.mixnetTransport);
-  if (Object.hasOwn(value, "wakeSupport")) validateWakeSupport(value.wakeSupport);
-  if (Object.hasOwn(value, "protocolCapabilities")) {
+  if (value.hiddenRetrieval !== null) validateHiddenRetrievalSupport(value.hiddenRetrieval);
+  if (value.onionTransport !== null) validateOnionTransportSupport(value.onionTransport);
+  if (value.mixnetTransport !== null) validateMixnetTransportSupport(value.mixnetTransport);
+  if (value.wakeSupport !== null) validateWakeSupport(value.wakeSupport);
+  if (value.protocolCapabilities !== null) {
     validateRelayCapabilityManifestV2(value.protocolCapabilities);
   }
-  if (Object.hasOwn(value, "transport") && !["tcp", "http", "websocket"].includes(value.transport)) {
+  if (value.transport !== null && !["tcp", "http", "websocket"].includes(value.transport)) {
     throw new TypeError("Relay transport is invalid.");
   }
-  if (Object.hasOwn(value, "federationCoordinatorEndpoints")) {
+  if (value.federationCoordinatorEndpoints !== null) {
     validateEndpointList(value.federationCoordinatorEndpoints, "Federation coordinator endpoints", 16);
   }
-  if (Object.hasOwn(value, "coordinatorReportedRelayCount")) {
+  if (value.coordinatorReportedRelayCount !== null) {
     requireInteger(value.coordinatorReportedRelayCount, "Coordinator relay count", 0, 1_000_000);
   }
-  if (Object.hasOwn(value, "curatedCoordinatorQuorum")) {
+  if (value.curatedCoordinatorQuorum !== null) {
     requireInteger(value.curatedCoordinatorQuorum, "Curated coordinator quorum", 1, 16);
   }
-  if (Object.hasOwn(value, "federationDirectoryPublicKey")) {
+  if (value.federationDirectoryPublicKey !== null) {
     const key = requireBase64(value.federationDirectoryPublicKey, undefined, "Federation directory public key");
     if (key.byteLength > 4_096) throw new TypeError("Federation directory public key exceeds its bound.");
   }
-  if (Object.hasOwn(value, "knownOpenPeers")) {
+  if (value.knownOpenPeers !== null) {
     validateEndpointList(value.knownOpenPeers, "Known open peers", 128);
   }
-  if (Object.hasOwn(value, "openFederationDiscovery")) {
+  if (value.openFederationDiscovery !== null) {
     validateOpenFederationDiscoverySupport(value.openFederationDiscovery);
   }
   return value;
 }
 
 function validateFederationDescriptor(value) {
-  requireExactRecord(value, ["mode"], ["name", "description"], "Federation descriptor");
+  requireExactRecord(value, ["mode", "name", "description"], [], "Federation descriptor");
   if (!["solo", "manual", "curated", "open"].includes(value.mode)) {
     throw new TypeError("Federation mode is invalid.");
   }
-  if (Object.hasOwn(value, "name")) validateBoundedText(value.name, "Federation name", 1_024);
-  if (Object.hasOwn(value, "description")) {
+  if (value.name !== null) validateBoundedText(value.name, "Federation name", 1_024);
+  if (value.description !== null) {
     validateBoundedText(value.description, "Federation description", 1_024);
   }
 }
@@ -334,8 +338,8 @@ function validateRelayCapabilityManifestV2(value) {
 function validateHiddenRetrievalSupport(value) {
   requireExactRecord(
     value,
-    ["mode", "defaultCoverSetSize", "maxCoverSetSize"],
-    ["replicatedXorPIRReplicas"],
+    ["mode", "defaultCoverSetSize", "maxCoverSetSize", "replicatedXorPIRReplicas"],
+    [],
     "Hidden retrieval support"
   );
   if (!["coverQuery", "replicatedXorPIR"].includes(value.mode)) {
@@ -343,7 +347,7 @@ function validateHiddenRetrievalSupport(value) {
   }
   requireInteger(value.defaultCoverSetSize, "Default cover set size", 2, 4_096);
   requireInteger(value.maxCoverSetSize, "Maximum cover set size", value.defaultCoverSetSize, 4_096);
-  if (Object.hasOwn(value, "replicatedXorPIRReplicas")) {
+  if (value.replicatedXorPIRReplicas !== null) {
     if (!Array.isArray(value.replicatedXorPIRReplicas) ||
         value.replicatedXorPIRReplicas.length === 0 ||
         value.replicatedXorPIRReplicas.length > 256) {
@@ -368,7 +372,7 @@ function validateHiddenRetrievalSupport(value) {
     }
   }
   if (value.mode === "replicatedXorPIR" &&
-      (!Object.hasOwn(value, "replicatedXorPIRReplicas") || value.replicatedXorPIRReplicas.length < 2)) {
+      (value.replicatedXorPIRReplicas === null || value.replicatedXorPIRReplicas.length < 2)) {
     throw new TypeError("Replicated XOR-PIR requires at least two replicas.");
   }
 }
@@ -455,7 +459,7 @@ function validateOpenFederationDiscoverySupport(value) {
 }
 
 function validateEndpointList(value, label, maximum) {
-  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
+  if (!Array.isArray(value) || value.length > maximum) {
     throw new TypeError(`${label} exceed their protocol bounds.`);
   }
   const endpointKeys = value.map(validateRelayEndpoint);
@@ -467,17 +471,23 @@ function validateEndpointList(value, label, maximum) {
 function validateRelayEndpoint(value) {
   requireExactRecord(
     value,
-    ["host", "port", "useTLS", "transport"],
-    ["tlsCertificateFingerprintSHA256", "directorySigningPublicKey"],
+    [
+      "host",
+      "port",
+      "useTLS",
+      "transport",
+      "tlsCertificateFingerprintSHA256",
+      "directorySigningPublicKey"
+    ],
+    [],
     "Relay endpoint"
   );
   const normalized = normalizeRelayEndpoint(value);
   validateBoundedText(normalized.host, "Relay endpoint host", 255);
-  if (Object.hasOwn(value, "tlsCertificateFingerprintSHA256") &&
-      value.tlsCertificateFingerprintSHA256 !== null) {
+  if (value.tlsCertificateFingerprintSHA256 !== null) {
     requireBase64(value.tlsCertificateFingerprintSHA256, 32, "TLS certificate fingerprint");
   }
-  if (Object.hasOwn(value, "directorySigningPublicKey") && value.directorySigningPublicKey !== null) {
+  if (value.directorySigningPublicKey !== null) {
     const key = requireBase64(value.directorySigningPublicKey, undefined, "Directory signing public key");
     if (key.byteLength > 4_096) throw new TypeError("Directory signing public key exceeds its bound.");
   }
@@ -507,7 +517,7 @@ function validateCanonicalIntegerList(value, label, minimumCount, maximumCount, 
 
 function validateOptionalBooleanFields(value, fields) {
   for (const field of fields) {
-    if (Object.hasOwn(value, field)) validateBoolean(value[field], `Relay ${field}`);
+    if (value[field] !== null) validateBoolean(value[field], `Relay ${field}`);
   }
 }
 
