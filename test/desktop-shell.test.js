@@ -23,7 +23,7 @@ test("Electrobun desktop shell packages the existing client and PQ WASM", async 
   assert.match(view, /dataset\.runtime\s*=\s*"desktop"/);
   assert.match(view, /await import\("\.\.\/\.\.\/client\/app\.js"\)/);
   assert.match(html, /src="\.\/index\.js"/);
-  assert.match(html, /Pairwise Messenger/);
+  assert.match(html, /Pairwise Protocol Shell/);
   assert.match(html, /One-use pairing/);
 
   const [macIcon, linuxIcon, windowsIcon] = await Promise.all([

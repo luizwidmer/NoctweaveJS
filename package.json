@@ -1,7 +1,7 @@
 {
   "name": "@noctweave/js-client",
   "version": "0.1.0",
-  "description": "Noctweave JavaScript protocol library, encrypted storage adapters, and working browser messaging client.",
+  "description": "Noctweave JavaScript protocol library, encrypted storage adapters, and browser integration shell.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
