@@ -134,7 +134,7 @@ export const relayRequests = Object.freeze({
   uploadAttachment(request, authToken) {
     requireExactRecord(
       request,
-      ["attachmentId", "chunkIndex", "payload"],
+      ["attachmentId", "chunkIndex", "payload", "idempotencyKey"],
       ["ttlSeconds"],
       "Attachment upload request"
     );
@@ -142,7 +142,8 @@ export const relayRequests = Object.freeze({
       attachmentId: request.attachmentId,
       chunkIndex: request.chunkIndex,
       payload: request.payload,
-      ttlSeconds: request.ttlSeconds ?? null
+      ttlSeconds: request.ttlSeconds ?? null,
+      idempotencyKey: request.idempotencyKey
     }, authToken);
   },
   fetchAttachment(request, authToken) {
@@ -776,10 +777,11 @@ function validateRequestBody(binding, body) {
   case "nw.rendezvous-transport/sync": validateSyncRendezvousTransportV2Request(body); break;
   case "nw.rendezvous-transport/delete": validateDeleteRendezvousTransportV2Request(body); break;
   case "nw.blobs/upload":
-    requireExactRecord(body, ["attachmentId", "chunkIndex", "payload", "ttlSeconds"], [],
+    requireExactRecord(body, ["attachmentId", "chunkIndex", "payload", "ttlSeconds", "idempotencyKey"], [],
       "Attachment upload body");
     validateAttachmentCoordinates(body);
     validateEncryptedAttachmentPayload(body.payload);
+    requireBase64(body.idempotencyKey, 32, "Attachment upload idempotency key");
     if (body.ttlSeconds !== null) {
       requireInteger(body.ttlSeconds, "Attachment TTL", 60, 2_592_000);
     }

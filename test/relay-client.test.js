@@ -211,7 +211,12 @@ test("attachment success chunks are exact, bounded, and request-correlated", () 
   const attachmentId = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE";
   const payload = encryptedPayloadFixture();
   const requests = [
-    relayRequests.uploadAttachment({ attachmentId, chunkIndex: 7, payload }),
+    relayRequests.uploadAttachment({
+      attachmentId,
+      chunkIndex: 7,
+      payload,
+      idempotencyKey: base64(new Uint8Array(32).fill(0x47))
+    }),
     relayRequests.fetchAttachment({ attachmentId, chunkIndex: 7 })
   ];
   for (const request of requests) {
@@ -815,10 +820,12 @@ test("attachment upload requires an exact bounded encrypted payload", () => {
   const input = {
     attachmentId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
     chunkIndex: 0,
-    payload
+    payload,
+    idempotencyKey: base64(new Uint8Array(32).fill(0x44))
   };
   const request = relayRequests.uploadAttachment(input);
   assert.deepEqual(request.body.payload, payload);
+  assert.equal(request.body.idempotencyKey, input.idempotencyKey);
   assert.equal(request.body.ttlSeconds, null);
   assert.equal(
     relayRequests.fetchAttachment({
@@ -857,6 +864,13 @@ test("attachment upload requires an exact bounded encrypted payload", () => {
   assert.throws(
     () => relayRequests.uploadAttachment({ ...input, ttlSeconds: 2_592_001 }),
     /Attachment TTL.*60 through 2592000/
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({
+      ...input,
+      idempotencyKey: base64(new Uint8Array(31).fill(0x44))
+    }),
+    /Attachment upload idempotency key.*invalid encoding or length/
   );
 
   assert.throws(
@@ -1038,7 +1052,8 @@ test("relay client enforces bounded response and request allocation", async () =
         nonce: base64(new Uint8Array(12).fill(0x11)),
         ciphertext: base64(new Uint8Array(2_048).fill(0x22)),
         tag: base64(new Uint8Array(16).fill(0x33))
-      }
+      },
+      idempotencyKey: base64(new Uint8Array(32).fill(0x55))
     })),
     /request exceeds client size limit/
   );

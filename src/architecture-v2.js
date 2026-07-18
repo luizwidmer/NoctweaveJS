@@ -414,14 +414,14 @@ export function validateDirectV4NegotiatedCapabilityManifest(value) {
 }
 
 const knownModuleValues = [
-  { module: "nw.core", versions: [2], status: "stable" },
-  { module: "nw.direct", versions: [4], status: "stable" },
-  { module: "nw.opaque-route", versions: [2], status: "stable" },
-  { module: "nw.rendezvous-transport", versions: [2], status: "stable" },
-  { module: "nw.blobs", versions: [1], status: "stable" },
+  { module: "nw.core", versions: [2], status: "provisional" },
+  { module: "nw.direct", versions: [4], status: "provisional" },
+  { module: "nw.opaque-route", versions: [2], status: "provisional" },
+  { module: "nw.rendezvous-transport", versions: [2], status: "provisional" },
+  { module: "nw.blobs", versions: [1], status: "provisional" },
   { module: "nw.groups", versions: [2], status: "experimental" },
   { module: "nw.wake", versions: [1], status: "experimental" },
-  { module: "nw.federation", versions: [1], status: "stable" },
+  { module: "nw.federation", versions: [1], status: "provisional" },
   { module: "nw.open-discovery", versions: [1], status: "experimental" },
   { module: "nw.privacy.hidden-retrieval", versions: [1], status: "experimental" },
   { module: "nw.privacy.onion", versions: [1], status: "experimental" },
@@ -438,7 +438,7 @@ export const defaultActiveEndpointModules = Object.freeze([
   {
     module: "nw.core",
     versions: [2],
-    status: "stable",
+    status: "provisional",
     limits: {
       maxContentParameterBytes: 256,
       maxContentParameters: 32,
@@ -449,7 +449,7 @@ export const defaultActiveEndpointModules = Object.freeze([
   {
     module: "nw.direct",
     versions: [4],
-    status: "stable",
+    status: "provisional",
     limits: { maxCiphertextBytes: 65_536, maxPrekeyAgeSeconds: 691_200 }
   }
 ].map(validateProtocolModuleCapability).sort((left, right) =>

@@ -5,7 +5,7 @@ base. It provides bounded HTTP/WebSocket relay access, post-quantum pairwise
 contact establishment, direct-message cryptography, opaque route packets, and
 encrypted local storage.
 
-The protocol has no network-visible persona or reusable account identity. A
+The protocol has no network-visible persona or reusable global identity. A
 persona is only a local UI/storage label. Every contact pairing creates fresh
 ML-DSA, ML-KEM, endpoint, prekey, payload-key, and route material scoped to
 that one relationship.
@@ -51,6 +51,20 @@ One-use contact rendezvous uses the separate identity-blind
 - `appendRendezvousTransportV2`
 - `syncRendezvousTransportV2`
 - `deleteRendezvousTransportV2`
+
+Encrypted attachment storage uses the exact `nw.blobs@1` request builders:
+
+- `relayRequests.uploadAttachment`
+- `relayRequests.fetchAttachment`
+
+An upload requires a base64-encoded 32-byte `idempotencyKey`. Keep the complete
+request unchanged for retries. While the relay retains an
+`(attachmentId, chunkIndex)` coordinate, the same key and canonical body
+returns the original chunk without refreshing TTL or rewriting blob storage;
+any key, payload, or requested-TTL change is a non-retryable conflict. Use a
+fresh attachment UUID for replacement content. The payload must already be
+end-to-end encrypted; the relay request never carries plaintext or its content
+key.
 
 Route creation returns relay-authoritative state. Enqueue accepts independently
 padded, end-to-end encrypted packets. Every synchronized packet carries a
@@ -161,8 +175,8 @@ I/O.
 Relay operators can use the bounded `nw.federation@1` methods
 `registerFederationNode` and `listFederationNodes`. Their exact directories
 contain relay endpoints and operator metadata only; they carry no persona,
-relationship, or account identity. Federation coordinates relay discovery and
-policy. Stable user-message delivery remains direct to the endpoint selected
+relationship, or global identity. Federation coordinates relay discovery and
+policy. Ordinary user-message delivery remains direct to the endpoint selected
 from the peer's relationship-encrypted route set and is never forwarded between
 relays.
 
@@ -179,8 +193,8 @@ rendezvous. The invitation discloses no relationship identity or receive
 route. After the encrypted rendezvous is established, both sides exchange
 fresh relationship-scoped introductions and mutually confirm the transcript.
 Each introduction carries one disposable relationship authority, one
-`RelationshipEndpointBindingV4`, and pairwise routes. There is no endpoint
-set, device registry, generation log, checkpoint, or endpoint-revocation API.
+`RelationshipEndpointBindingV4`, and pairwise routes. There is no global
+endpoint registry, generation log, checkpoint, or endpoint-revocation API.
 
 `NoctweaveBrowserPairingService.preparePairingParticipant` registers the fresh
 opaque receive route and retains all read, renewal, teardown, and payload

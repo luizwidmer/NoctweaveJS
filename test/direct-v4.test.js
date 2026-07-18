@@ -72,6 +72,15 @@ test("direct-v4 uses only rendezvous-established pairwise identity state", async
   }), "pairwise direct-v4 survives restart");
   assert.equal(outbound.conversation.relationshipID, alice.relationshipID);
   assert.equal(outbound.conversation.id, alice.relationshipID.toLowerCase());
+  assert.deepEqual(Object.keys(outbound.conversation).sort(), [
+    "endpointSession",
+    "id",
+    "receiveChain",
+    "relationshipID",
+    "rootKey",
+    "sendChain",
+    "sessionId"
+  ]);
   assert.deepEqual(Object.keys(outbound.conversation.endpointSession).sort(), [
     "localBindingReferenceDigest",
     "localEndpointHandle",
@@ -85,6 +94,18 @@ test("direct-v4 uses only rendezvous-established pairwise identity state", async
     await findPairwiseRelationshipForEnvelope({ crypto, relationships: [bob], envelope }),
     bob
   );
+
+  const obsoleteConversation = structuredClone(outbound.conversation);
+  obsoleteConversation.rootCounter = 0;
+  await assert.rejects(() => encryptNativeTextEnvelope({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    conversation: obsoleteConversation,
+    text: "obsolete persisted shape",
+    sentAt: openedAt
+  }), /fields must match the current schema exactly/);
 });
 
 test("typed application payloads remain extensible while authenticated known semantics fail closed", async () => {

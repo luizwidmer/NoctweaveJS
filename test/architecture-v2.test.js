@@ -62,8 +62,8 @@ test("capability negotiation selects highest common versions and lower shared li
   });
   const peer = createProtocolCapabilityManifest({
     modules: [
-      { module: "nw.core", versions: [2], status: "stable", limits: {} },
-      { module: "nw.opaque-route", versions: [2, 3], status: "stable", limits: { maxPage: 64 } },
+      { module: "nw.core", versions: [2], status: "provisional", limits: {} },
+      { module: "nw.opaque-route", versions: [2, 3], status: "provisional", limits: { maxPage: 64 } },
       { module: "nw.example-b", versions: [2], status: "provisional", limits: {} }
     ],
     contentTypes: [...defaultContentTypeCapabilities, pollPeer]
@@ -201,7 +201,41 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
   assert.deepEqual(Object.keys(defaults), ["architectureVersion", "modules", "contentTypes"]);
   assert.deepEqual(
     protocolKnownModuleCatalog.find(({ module }) => module === "nw.direct"),
-    { module: "nw.direct", versions: [4], status: "stable", limits: {} }
+    { module: "nw.direct", versions: [4], status: "provisional", limits: {} }
+  );
+  assert.deepEqual(
+    protocolKnownModuleCatalog
+      .filter(({ status }) => status === "provisional")
+      .map(({ module }) => module),
+    [
+      "nw.core",
+      "nw.direct",
+      "nw.opaque-route",
+      "nw.rendezvous-transport",
+      "nw.blobs",
+      "nw.federation"
+    ]
+  );
+  assert.deepEqual(
+    protocolKnownModuleCatalog
+      .filter(({ status }) => status === "experimental")
+      .map(({ module }) => module),
+    [
+      "nw.groups",
+      "nw.wake",
+      "nw.open-discovery",
+      "nw.privacy.hidden-retrieval",
+      "nw.privacy.onion",
+      "nw.privacy.mixnet"
+    ]
+  );
+  assert.equal(protocolKnownModuleCatalog.some(({ status }) => status === "stable"), false);
+  assert.deepEqual(
+    defaultActiveEndpointModules.map(({ module, status }) => ({ module, status })),
+    [
+      { module: "nw.core", status: "provisional" },
+      { module: "nw.direct", status: "provisional" }
+    ]
   );
   assert.deepEqual(
     protocolKnownModuleCatalog.find(({ module }) => module === "nw.open-discovery"),
@@ -211,7 +245,7 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
     () => validateProtocolModuleCapability({
       module: "nw.core",
       versions: [2],
-      status: "stable",
+      status: "provisional",
       limits: null
     }),
     /limits must be an object/
@@ -221,7 +255,7 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
       () => validateProtocolModuleCapability({
         module: "nw.core",
         versions: [2],
-        status: "stable",
+        status: "provisional",
         limits: { [key]: 256 }
       }),
       /limit name.*protocol bounds/

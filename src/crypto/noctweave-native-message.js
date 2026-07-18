@@ -38,6 +38,22 @@ import {
 } from "../relationship-control-v2.js";
 
 const encoder = new TextEncoder();
+const directV4ConversationKeys = Object.freeze([
+  "endpointSession",
+  "id",
+  "receiveChain",
+  "relationshipID",
+  "rootKey",
+  "sendChain",
+  "sessionId"
+]);
+const directV4EndpointSessionKeys = Object.freeze([
+  "localBindingReferenceDigest",
+  "localEndpointHandle",
+  "peerBindingReferenceDigest",
+  "peerEndpointHandle",
+  "relationshipID"
+]);
 const strictUTF8Decoder = new TextDecoder("utf-8", { fatal: true });
 const unsafeDisplayControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const NPAD_V2_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x02]);
@@ -296,6 +312,7 @@ async function encryptNativeEnvelopePayload({
   sentAt = swiftISODate()
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
+  validateDirectV4Conversation(conversation);
   const negotiated = await validateCurrentDirectV4Negotiation({
     crypto,
     localIdentity,
@@ -406,6 +423,7 @@ export async function verifyNativeEnvelope({
   binding = null
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
+  validateDirectV4Conversation(conversation);
   const currentBinding = binding ?? (await validateCurrentDirectV4Negotiation({
     crypto,
     localIdentity,
@@ -745,6 +763,44 @@ function validateChain(chain) {
   }
 }
 
+function validateDirectV4Conversation(conversation) {
+  if (!conversation || typeof conversation !== "object" || Array.isArray(conversation) ||
+      JSON.stringify(Object.keys(conversation).sort()) !== JSON.stringify(directV4ConversationKeys)) {
+    throw new Error("Direct-v4 conversation fields must match the current schema exactly.");
+  }
+  const endpointSession = conversation.endpointSession;
+  if (!endpointSession || typeof endpointSession !== "object" || Array.isArray(endpointSession) ||
+      JSON.stringify(Object.keys(endpointSession).sort()) !== JSON.stringify(directV4EndpointSessionKeys) ||
+      !isCanonicalSwiftUUID(conversation.relationshipID) ||
+      conversation.id !== conversation.relationshipID.toLowerCase() ||
+      endpointSession.relationshipID !== conversation.relationshipID ||
+      !isBoundedString(conversation.sessionId, 256)) {
+    throw new Error("Direct-v4 conversation binding is invalid.");
+  }
+  const rootKey = fromBase64(conversation.rootKey, "direct-v4 root key", 32, 32);
+  const localBindingDigest = fromBase64(
+    endpointSession.localBindingReferenceDigest,
+    "local endpoint binding digest",
+    32,
+    32
+  );
+  const peerBindingDigest = fromBase64(
+    endpointSession.peerBindingReferenceDigest,
+    "peer endpoint binding digest",
+    32,
+    32
+  );
+  try {
+    validateChain(conversation.sendChain);
+    validateChain(conversation.receiveChain);
+  } finally {
+    wipeBytes(rootKey);
+    wipeBytes(localBindingDigest);
+    wipeBytes(peerBindingDigest);
+  }
+  return conversation;
+}
+
 function cloneChain(chain) {
   validateChain(chain);
   return {
@@ -823,7 +879,6 @@ async function conversationFromSharedSecret({
       relationshipID,
       sessionId: base64(sessionHash),
       rootKey: base64(rootKey),
-      rootCounter: 0,
       sendChain: serializeChain(sendKey),
       receiveChain: serializeChain(receiveKey)
     };
