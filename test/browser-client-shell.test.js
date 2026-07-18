@@ -20,7 +20,7 @@ test("production browser client binds only present one-use pairing controls", as
 test("browser secret state stays encrypted and old global schemas are rejected", async () => {
   const [script, identityService] = await Promise.all([
     readFile(new URL("../client/app.js", import.meta.url), "utf8"),
-    readFile(new URL("../src/browser-identity.js", import.meta.url), "utf8")
+    readFile(new URL("../src/browser-pairing-service.js", import.meta.url), "utf8")
   ]);
   assert.match(script, /EncryptedNoctweaveStore/);
   assert.match(script, /iterations:\s*310_000/);

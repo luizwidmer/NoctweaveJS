@@ -18,7 +18,7 @@ export {
   parseBrowserRelayEndpoint,
   validateBrowserDisplayName,
   validateBrowserPersonaState
-} from "./browser-identity.js";
+} from "./browser-pairing-service.js";
 export {
   BrowserLocalStorageStore,
   DatabaseNoctweaveStore,
