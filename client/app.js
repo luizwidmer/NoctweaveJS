@@ -87,15 +87,16 @@ function makeRelayClient(endpoint, options = {}) {
 
 function proxyFetch(endpoint) {
   return async (url, init) => {
-    const route = new URL(url).pathname === "/health" ? "health" : "relay";
+    if (new URL(url).pathname !== "/relay" || init?.method !== "POST") {
+      throw new Error("The Noctweave proxy accepts only modular relay requests.");
+    }
     if (typeof globalThis.__noctweaveDesktopRelayFetch === "function") {
       return globalThis.__noctweaveDesktopRelayFetch({
         endpoint,
-        route,
-        body: typeof init?.body === "string" ? init.body : undefined
+        body: typeof init?.body === "string" ? init.body : ""
       });
     }
-    return fetch(`/proxy/${route}`, {
+    return fetch("/proxy/relay", {
       ...init,
       headers: { ...(init?.headers ?? {}), "x-relay-endpoint": endpoint }
     });
@@ -245,7 +246,7 @@ function renderPersona() {
   elements.relationshipList.replaceChildren(...state.persona.relationships.map((relationship) => {
     const item = document.createElement("article");
     const name = document.createElement("strong");
-    name.textContent = relationship.peerIdentity.displayName;
+    name.textContent = relationship.peerIdentity.relationshipPseudonym;
     const detail = document.createElement("span");
     detail.textContent = "Pairwise-only relationship";
     item.append(name, detail);

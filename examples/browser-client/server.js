@@ -52,9 +52,8 @@ async function proxyRelay(request, response) {
     return;
   }
 
-  const isHealth = request.url === "/proxy/health";
   const isRelay = request.url === "/proxy/relay";
-  if ((!isHealth && !isRelay) || (isHealth && request.method !== "GET") || (isRelay && request.method !== "POST")) {
+  if (!isRelay || request.method !== "POST") {
     writeJSON(response, 404, { type: "error", error: "Not found" });
     return;
   }
@@ -70,9 +69,8 @@ async function proxyRelay(request, response) {
     return;
   }
 
-  const path = isHealth ? "/health" : "/relay";
-  const target = relayEndpointURL(parsedEndpoint, path);
-  const body = request.method === "POST" ? await readBody(request) : undefined;
+  const target = relayEndpointURL(parsedEndpoint, "/relay");
+  const body = await readBody(request);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
   try {

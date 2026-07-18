@@ -27,14 +27,14 @@ test("one-use pairing mints unrelated PQ authorities and stores only pairwise st
   const offerer = await prepareContactPairingParticipantV2({
     crypto,
     pqc,
-    displayName: "Alice for Bob",
+    relationshipPseudonym: "Alice for Bob",
     relay,
     createdAt
   });
   const responder = await prepareContactPairingParticipantV2({
     crypto,
     pqc,
-    displayName: "Bob for Alice",
+    relationshipPseudonym: "Bob for Alice",
     relay,
     createdAt
   });
@@ -50,8 +50,8 @@ test("one-use pairing mints unrelated PQ authorities and stores only pairwise st
 
   assert.equal(result.offererRelationship.relationshipID, result.relationshipID);
   assert.equal(result.responderRelationship.relationshipID, result.relationshipID);
-  assert.equal(result.offererRelationship.peerIdentity.displayName, "Bob for Alice");
-  assert.equal(result.responderRelationship.peerIdentity.displayName, "Alice for Bob");
+  assert.equal(result.offererRelationship.peerIdentity.relationshipPseudonym, "Bob for Alice");
+  assert.equal(result.responderRelationship.peerIdentity.relationshipPseudonym, "Alice for Bob");
   assert.notEqual(
     result.offererRelationship.localIdentity.signing.publicKey,
     result.responderRelationship.localIdentity.signing.publicKey
@@ -63,10 +63,14 @@ test("one-use pairing mints unrelated PQ authorities and stores only pairwise st
   for (const relationship of [result.offererRelationship, result.responderRelationship]) {
     await validatePairwiseRelationshipV2({ crypto, pqc, relationship });
     const persisted = JSON.stringify(relationship);
-    for (const forbidden of ["reusableAddress", "accessFingerprint", "profileSigningKey", "publicRoute"]) {
+    for (const forbidden of [
+      "reusableAddress",
+      "accessFingerprint",
+      "profileSigningKey",
+      "publicRoute"
+    ]) {
       assert.equal(persisted.includes(forbidden), false, forbidden);
     }
-    assert.equal(relationship.peerIdentity.allowContinuity, false);
   }
 
   await assert.rejects(

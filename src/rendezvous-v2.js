@@ -25,13 +25,7 @@ const ML_KEM_768_PUBLIC_KEY_BYTES = 1_184;
 const ML_KEM_768_SECRET_KEY_BYTES = 2_400;
 const ML_KEM_768_CIPHERTEXT_BYTES = 1_088;
 const ML_KEM_SHARED_SECRET_BYTES = 32;
-const rendezvousPurposes = new Set([
-  "contactPairing",
-  "endpointAdmission",
-  "routeRollover",
-  "groupInvitation",
-  "historyTransfer"
-]);
+const rendezvousPurpose = "contactPairing";
 const rendezvousRoles = new Set(["offerer", "responder"]);
 const rendezvousMessageKinds = new Set([
   "introduction",
@@ -54,11 +48,7 @@ export const noctweaveRendezvousV2 = Object.freeze({
 });
 
 export const rendezvousPurposeV2 = Object.freeze({
-  contactPairing: "contactPairing",
-  endpointAdmission: "endpointAdmission",
-  routeRollover: "routeRollover",
-  groupInvitation: "groupInvitation",
-  historyTransfer: "historyTransfer"
+  contactPairing: rendezvousPurpose
 });
 
 export const rendezvousLimitsV2 = Object.freeze({
@@ -115,7 +105,7 @@ export function validateRendezvousLimitsV2(value) {
 
 export function validateRendezvousOfferV2(value) {
   requireRecord(value, "Rendezvous offer");
-  if (value.version !== noctweaveRendezvousV2.version || !rendezvousPurposes.has(value.purpose)) {
+  if (value.version !== noctweaveRendezvousV2.version || value.purpose !== rendezvousPurpose) {
     throw new RendezvousV2Error("invalidOffer", "Rendezvous offer version or purpose is invalid.");
   }
   const transportCapability = validateRendezvousTransportCapabilityV2(value.transportCapability);
@@ -165,11 +155,11 @@ export async function createPendingRendezvousOfferV2({
   crypto,
   transportCapability,
   createdAt,
-  purpose = rendezvousPurposeV2.contactPairing,
-  limits = rendezvousLimitsV2.contactPairing
+  limits = rendezvousLimitsV2.contactPairing,
+  ...unsupported
 }) {
-  if (purpose !== rendezvousPurposeV2.contactPairing) {
-    throw new RendezvousV2Error("purposeDisabled", "Only contact pairing rendezvous is enabled.");
+  if (Object.keys(unsupported).length !== 0) {
+    throw new RendezvousV2Error("invalidOffer", "Rendezvous offer parameters are invalid.");
   }
   assertKemProfile(crypto);
   const capability = validateRendezvousTransportCapabilityV2(transportCapability);
@@ -184,7 +174,7 @@ export async function createPendingRendezvousOfferV2({
   const tokenDigest = await cryptoSha256(crypto, oneTimeToken);
   const offer = validateRendezvousOfferV2({
     version: noctweaveRendezvousV2.version,
-    purpose,
+    purpose: rendezvousPurpose,
     transportCapability: capability,
     oneTimeTokenDigest: encodeBase64(tokenDigest),
     ephemeralAgreementPublicKey: encodeBase64(publicKey),
@@ -289,11 +279,14 @@ export async function createRendezvousOpenV2({
   crypto,
   offer: offerValue,
   redemptionSecret,
-  expectedPurpose = rendezvousPurposeV2.contactPairing,
-  at
+  at,
+  ...unsupported
 }) {
+  if (Object.keys(unsupported).length !== 0) {
+    throw new RendezvousV2Error("invalidOpen", "Rendezvous open parameters are invalid.");
+  }
   assertKemProfile(crypto);
-  const offer = validateOfferUse(offerValue, expectedPurpose, at);
+  const offer = validateOfferUse(offerValue, at);
   requireRecord(redemptionSecret, "Rendezvous redemption secret");
   const token = requireBase64(redemptionSecret.oneTimeToken, 32, "Rendezvous redemption token");
   const tokenDigest = await cryptoSha256(crypto, token);
@@ -382,7 +375,7 @@ export async function acceptRendezvousOpenV2({ crypto, pending: pendingValue, re
   if (pending.redeemedAt !== undefined) {
     throw new RendezvousV2Error("alreadyRedeemed");
   }
-  const offer = validateOfferUse(pending.offer, pending.offer.purpose, at);
+  const offer = validateOfferUse(pending.offer, at);
   const request = validateRendezvousOpenV2(requestValue, offer);
   const expectedOfferDigest = await rendezvousOfferDigestV2(crypto, offer);
   if (!equalBytes(expectedOfferDigest, requireBase64(request.offerDigest, 32, "Request offer digest"))) {
@@ -554,7 +547,7 @@ export function validateRendezvousFrameV2(value) {
   requireRecord(value, "Rendezvous frame");
   requireRecord(value.sessionId, "Rendezvous session ID");
   requireRecord(value.payload, "Rendezvous encrypted payload");
-  if (value.version !== 2 || !rendezvousPurposes.has(value.purpose) ||
+  if (value.version !== 2 || value.purpose !== rendezvousPurpose ||
       !rendezvousRoles.has(value.senderRole) || !rendezvousMessageKinds.has(value.messageKind)) {
     throw new RendezvousV2Error("invalidFrame");
   }
@@ -583,7 +576,7 @@ export function validateRendezvousFrameV2(value) {
 
 function validateOpenShape(value) {
   requireRecord(value, "Rendezvous open");
-  if (value.version !== 2 || !rendezvousPurposes.has(value.purpose)) {
+  if (value.version !== 2 || value.purpose !== rendezvousPurpose) {
     throw new RendezvousV2Error("invalidOpen");
   }
   requireBase64(value.offerDigest, 32, "Rendezvous offer digest");
@@ -602,14 +595,8 @@ function validateOpenShape(value) {
   });
 }
 
-function validateOfferUse(value, expectedPurpose, at) {
+function validateOfferUse(value, at) {
   const offer = validateRendezvousOfferV2(value);
-  if (offer.purpose !== expectedPurpose) {
-    throw new RendezvousV2Error("wrongPurpose");
-  }
-  if (offer.purpose !== rendezvousPurposeV2.contactPairing) {
-    throw new RendezvousV2Error("purposeDisabled");
-  }
   const instant = timestampMilliseconds(at, "Rendezvous use time");
   if (instant < timestampMilliseconds(offer.createdAt) || instant >= timestampMilliseconds(offer.expiresAt)) {
     throw new RendezvousV2Error("expired");
@@ -671,8 +658,8 @@ function validateSession(value) {
   requireRecord(value, "Rendezvous session");
   requireBase64(value.sessionId, 32, "Rendezvous session ID");
   requireBase64(value.transcriptDigest, 32, "Rendezvous transcript digest");
-  if (value.purpose !== "contactPairing" || !rendezvousRoles.has(value.localRole)) {
-    throw new RendezvousV2Error("purposeDisabled");
+  if (value.purpose !== rendezvousPurpose || !rendezvousRoles.has(value.localRole)) {
+    throw new RendezvousV2Error("invalidOpen");
   }
   const sendKey = bytes(value.sendKey, "Rendezvous send key");
   const receiveKey = bytes(value.receiveKey, "Rendezvous receive key");

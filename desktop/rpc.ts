@@ -1,11 +1,8 @@
 import type { RPCSchema } from "electrobun/bun";
 
-export type DesktopRelayRoute = "health" | "relay";
-
 export type DesktopRelayRequest = {
   endpoint: string;
-  route: DesktopRelayRoute;
-  body?: string;
+  body: string;
 };
 
 export type DesktopRelayResponse = {

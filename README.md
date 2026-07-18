@@ -27,7 +27,15 @@ npm run build:oqs-wasm
 
 ## Relay client
 
-The current relay delivery surface is opaque-route v2:
+Every relay operation uses one exact correlated envelope:
+
+```text
+request:  requestID, module, version, method, body, authToken
+response: requestID, module, version, method, status, body, error
+```
+
+There is no alternate health endpoint, tagged legacy body, or uncorrelated
+response form. Relationship delivery uses opaque-route v2:
 
 - `createOpaqueRoute`
 - `renewOpaqueRoute`
@@ -36,10 +44,31 @@ The current relay delivery surface is opaque-route v2:
 - `syncOpaqueRoute`
 - `commitOpaqueRoute`
 
+One-use contact rendezvous uses the separate identity-blind
+`nw.rendezvous-transport@2` surface:
+
+- `registerRendezvousTransportV2`
+- `appendRendezvousTransportV2`
+- `syncRendezvousTransportV2`
+- `deleteRendezvousTransportV2`
+
 Route creation returns relay-authoritative state. Enqueue accepts independently
-padded, end-to-end encrypted packets. Synchronization returns an ordered batch
-and opaque cursors. Committing a cursor advances only that route's durable read
-position; it is not a plaintext receipt or a peer-read signal.
+padded, end-to-end encrypted packets. Every synchronized packet carries a
+monotonic sequence plus previous/current record digests, and every batch binds
+its start, continuation, high watermark, and retention floor. The client
+recomputes that chain and rejects omissions, reordering, substitution, and
+cursor regression before commit. `LocalOpaqueReceiveRouteV2` persists the
+opaque cursor together with `committedSequence` and `committedRecordDigest`;
+the initial values are zero and cannot be inferred from a global identity.
+
+`NoctweaveWebClient.syncOpaqueRoute(localReceiveRoute)` is the state-aware
+entry point. After the application has durably processed the returned packets,
+`commitOpaqueRoute({ localReceiveRoute, batch, durablyProcessed: true })`
+returns the advanced local route record. The lower-level
+`NoctweaveRelayClient` exposes exact relay submissions for integrations that
+already own equivalent durable state handling. Committing a cursor advances
+only that route's durable read position; it is not a plaintext receipt or a
+peer-read signal.
 
 ```js
 import {
@@ -50,6 +79,7 @@ import {
   createOpaqueRouteLeaseV2,
   createOpaqueRoutePolicyV2,
   createOpaqueRouteProofNonceV2,
+  createRendezvousRelayAdapterV2,
   makeOpaqueRouteCreateRequestV2,
   makeOpaqueRouteSyncRequestV2,
   swiftISODate
@@ -68,7 +98,7 @@ const lease = createOpaqueRouteLeaseV2({
     quotaBucket: 64
   })
 });
-const transition = await makeOpaqueRouteCreateRequestV2({
+const createRequest = await makeOpaqueRouteCreateRequestV2({
   crypto,
   capabilities,
   lease,
@@ -77,7 +107,7 @@ const transition = await makeOpaqueRouteCreateRequestV2({
 });
 
 const created = await relay.createOpaqueRoute({
-  transition,
+  request: createRequest,
   renewCapability: capabilities.renewCapability
 });
 
@@ -91,12 +121,42 @@ const batch = await relay.syncOpaqueRoute({
   readCredential: capabilities.readCredential
 });
 
-console.log(created.opaqueRouteV2.status, batch.opaqueRouteSyncV2.hasMore);
+console.log(created.status, batch.hasMore);
 ```
 
-`send()` is still available as the bounded transport primitive, but it accepts
-only request kinds in the current JavaScript protocol surface and rejects
-unknown or obsolete operation names before network I/O.
+`createRendezvousRelayAdapterV2({ crypto, offer })` deterministically derives
+one route capability and two directional lanes from the invitation's one-use
+transport capability. Publish, read, and delete authorities are independent;
+the relay receives no relationship key, endpoint binding, or contact
+identifier. The adapter wraps both the PQ open and encrypted session frames in
+authenticated outer buckets of 4096, 16384, 65536, or 131072 bytes.
+
+```js
+const transport = await createRendezvousRelayAdapterV2({ crypto, offer });
+await relay.registerRendezvousTransportV2(transport.registrationRequest);
+
+const outbound = await transport.sealOpen({ open });
+await relay.appendRendezvousTransportV2(outbound);
+
+const incoming = await relay.syncRendezvousTransportV2(
+  transport.syncRequest({ receivingAs: "offerer" })
+);
+for (const frame of incoming.frames) {
+  await transport.open({ frame, direction: "responderToOfferer" });
+}
+
+for (const request of transport.deletionRequests()) {
+  await relay.deleteRendezvousTransportV2(request);
+}
+```
+
+The application deletes both temporary lanes when pairing finishes or is
+abandoned. Registration is bounded to ten minutes; each lane accepts at most
+32 frames and 2 MiB of fixed-bucket ciphertext.
+
+`send()` is the bounded transport primitive. It accepts only the exact current
+module/version/method envelope and rejects any other field set before network
+I/O.
 
 Run a complete create/enqueue/sync/commit/teardown probe against a local relay:
 
@@ -110,6 +170,9 @@ npm run smoke:relay -- --relay http://127.0.0.1:9340
 rendezvous. The invitation discloses no relationship identity or receive
 route. After the encrypted rendezvous is established, both sides exchange
 fresh relationship-scoped introductions and mutually confirm the transcript.
+Each introduction carries one disposable relationship authority, one
+`RelationshipEndpointBindingV4`, and pairwise routes. There is no endpoint
+set, device registry, generation log, checkpoint, or endpoint-revocation API.
 
 `NoctweaveBrowserPairingService.preparePairingParticipant` registers the fresh
 opaque receive route and retains all read, renewal, teardown, and payload
@@ -160,8 +223,14 @@ const repository = new NoctweaveStateRepository(encrypted);
 - Relay errors are classified without echoing response bodies or bearer data.
 - Opaque route authority proofs are verified locally before submission.
 - Route responses are exact-field decoded and bound to the initiating request.
-- Unknown application content may be retained; unknown control semantics never
-  mutate state.
+- Endpoint manifests advertise exact module and application-content major-version
+  capabilities; two-field manifests without `contentTypes` are invalid.
+- Direct-v4 authenticates the shared content families in its session transcript
+  and refuses outbound application or receipt types the peer did not advertise.
+- Relationship route updates, targeted route probes, and endpoint-prekey updates
+  use independently signed, relationship-scoped control frames.
+- Unknown application content may be retained. Unknown authenticated controls are
+  quarantined, and malformed known controls fail closed without mutating state.
 
 Noctweave relays route and retain ciphertext. They are not plaintext processors,
 key escrow services, identity providers, or required notification providers.

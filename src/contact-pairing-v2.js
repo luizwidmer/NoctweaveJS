@@ -6,17 +6,17 @@ import {
   createOpaqueRouteLeaseV2,
   createOpaqueRoutePolicyV2,
   createOpaqueRouteProofNonceV2,
-  makeOpaqueRouteCreateRequestV2,
-  validateOpaqueReceiveRouteV2,
-  validateOpaqueRouteClientCapabilityMaterialV2
+  makeOpaqueRouteCreateRequestV2
 } from "./opaque-route-v2.js";
-import { createOpaqueRoutePayloadKeyV2, validateOpaqueRoutePayloadKeyV2 } from "./opaque-route-packet-v2.js";
+import { createOpaqueRoutePayloadKeyV2 } from "./opaque-route-packet-v2.js";
 import {
   createContactIntroductionV2,
+  createLocalOpaqueReceiveRouteV2,
   createPairwiseRouteSetV2,
-  createPairwiseSendRouteV2,
+  createOpaqueSendRouteV2,
   derivePairwiseRelationshipIDV2,
   validateContactIntroductionV2,
+  validateLocalOpaqueReceiveRouteV2,
   validatePairwiseRouteSetV2,
   verifyContactIntroductionV2,
   verifyPairwiseRouteSetV2
@@ -35,8 +35,13 @@ import {
 } from "./rendezvous-v2.js";
 import {
   preparePairwiseDirectV4Identity,
-  verifyCertifiedGenerationEndpointV4
+  verifyRelationshipEndpointBindingV4
 } from "./crypto/direct-v4.js";
+import { createProtocolCapabilityManifest } from "./architecture-v2.js";
+import {
+  createRelationshipLocalPolicyV2,
+  validateRelationshipLocalPolicyV2
+} from "./relationship-local-policy-v2.js";
 import { base64, canonicalJsonBytes, swiftISODate, swiftUUID } from "./crypto/swift-canonical.js";
 
 const encoder = new TextEncoder();
@@ -57,24 +62,25 @@ const participantFields = Object.freeze([
 ]);
 const localReceiveRouteFields = Object.freeze([
   "relay",
-  "opaqueRoute",
+  "route",
   "clientCapabilities",
-  "payloadKey"
+  "payloadKey",
+  "committedCursor",
+  "committedSequence",
+  "committedRecordDigest",
+  "gapState"
 ]);
 const preparedLocalIdentityFields = Object.freeze([
   "version",
   "scope",
   "id",
-  "identityGenerationId",
-  "displayName",
+  "relationshipPseudonym",
   "signing",
   "agreement",
   "signingFingerprint",
   "createdAt",
   "localEndpoint",
-  "endpointSetManifest",
-  "endpointSetCheckpoint",
-  "certifiedGenerationEndpoint"
+  "endpointBinding"
 ]);
 const boundLocalIdentityFields = Object.freeze([
   ...preparedLocalIdentityFields,
@@ -85,14 +91,11 @@ const peerFields = Object.freeze([
   "version",
   "id",
   "relationshipID",
-  "displayName",
-  "generationID",
+  "relationshipPseudonym",
   "signingPublicKey",
   "agreementPublicKey",
-  "endpointSetCheckpoint",
-  "preferredEndpoint",
+  "endpointBinding",
   "sendRoutes",
-  "allowContinuity",
   "createdAt"
 ]);
 const relationshipFields = Object.freeze([
@@ -103,6 +106,7 @@ const relationshipFields = Object.freeze([
   "localReceiveRoutes",
   "localAdvertisedRoutes",
   "peerIdentity",
+  "localPolicy",
   "createdAt"
 ]);
 
@@ -218,17 +222,22 @@ export async function decodeContactPairingInvitationV2({ crypto, encoded }) {
 export async function prepareContactPairingParticipantV2({
   crypto,
   pqc,
-  displayName,
+  relationshipPseudonym,
   relay,
+  endpointCapabilities = createProtocolCapabilityManifest(),
   createdAt = swiftISODate(),
   routeExpiresAt = swiftISODate(new Date(Date.parse(createdAt) + 6 * 60 * 60 * 1_000)),
   policy = createOpaqueRoutePolicyV2({
     paddingBucket: 4_096,
     retentionBucket: 21_600,
     quotaBucket: 256
-  })
+  }),
+  ...unsupported
 }) {
-  const name = validateDisplayName(displayName);
+  if (Object.keys(unsupported).length !== 0) {
+    throw new TypeError("Contact pairing participant parameters do not match the current protocol.");
+  }
+  const pseudonym = validateRelationshipPseudonym(relationshipPseudonym);
   const signing = pqc.generateSigningKeypair();
   const agreement = pqc.generateKemKeypair();
   requireGeneratedKeypair(signing, "relationship signing");
@@ -237,14 +246,19 @@ export async function prepareContactPairingParticipantV2({
     version: PAIRING_VERSION,
     scope: "pairwise",
     id: swiftUUID(),
-    identityGenerationId: swiftUUID(),
-    displayName: name,
+    relationshipPseudonym: pseudonym,
     signing: serializeKeypair(signing),
     agreement: serializeKeypair(agreement),
     signingFingerprint: base64(await crypto.sha256(signing.publicKey)),
     createdAt
   };
-  await preparePairwiseDirectV4Identity({ crypto, pqc, localIdentity, issuedAt: createdAt });
+  await preparePairwiseDirectV4Identity({
+    crypto,
+    pqc,
+    localIdentity,
+    capabilities: endpointCapabilities,
+    issuedAt: createdAt
+  });
 
   const clientCapabilities = await createOpaqueRouteClientCapabilityMaterialV2(crypto);
   const lease = createOpaqueRouteLeaseV2({ issuedAt: createdAt, expiresAt: routeExpiresAt, policy });
@@ -262,9 +276,10 @@ export async function prepareContactPairingParticipantV2({
     confidentialTransport: true,
     receivedAt: createdAt
   });
-  const localReceiveRoute = Object.freeze({
+  const localReceiveRoute = await createLocalOpaqueReceiveRouteV2({
+    crypto,
     relay: normalizeRelayEndpoint(relay),
-    opaqueRoute,
+    route: opaqueRoute,
     clientCapabilities,
     payloadKey: await createOpaqueRoutePayloadKeyV2(crypto)
   });
@@ -291,20 +306,21 @@ export async function validatePreparedContactParticipantV2({ crypto, pqc, partic
     }
     requireCanonicalBase64(value.localEndpointHandle?.rawValue, 32, "relationship endpoint handle");
     requireExactRecord(value.localReceiveRoute, localReceiveRouteFields, "Local opaque receive route");
-    const capabilities = validateOpaqueRouteClientCapabilityMaterialV2(value.localReceiveRoute.clientCapabilities);
-    const opaqueRoute = validateOpaqueReceiveRouteV2(value.localReceiveRoute.opaqueRoute);
-    validateOpaqueRoutePayloadKeyV2(value.localReceiveRoute.payloadKey);
+    const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({
+      crypto,
+      route: value.localReceiveRoute
+    });
+    const capabilities = localReceiveRoute.clientCapabilities;
+    const opaqueRoute = localReceiveRoute.route;
     if (capabilities.routeID.rawValue !== opaqueRoute.routeID.rawValue ||
         value.routeCreateRequest?.routeID?.rawValue !== opaqueRoute.routeID.rawValue) {
       throw new TypeError("Prepared participant route state is inconsistent.");
     }
-    await verifyCertifiedGenerationEndpointV4({
+    await verifyRelationshipEndpointBindingV4({
       crypto,
       pqc,
-      identityGenerationId: value.localIdentity.identityGenerationId,
-      identitySigningPublicKey: value.localIdentity.signing.publicKey,
-      endpointSetCheckpoint: value.localIdentity.endpointSetCheckpoint,
-      preferredEndpoint: value.localIdentity.certifiedGenerationEndpoint,
+      authoritySigningPublicKey: value.localIdentity.signing.publicKey,
+      endpointBinding: value.localIdentity.endpointBinding,
       now: value.createdAt
     });
     return value;
@@ -500,25 +516,20 @@ export async function validatePairwiseRelationshipV2({ crypto, pqc, relationship
         value.localIdentity?.endpointHandle?.rawValue !== value.localEndpointHandle?.rawValue ||
         value.localAdvertisedRoutes?.ownerEndpointHandle?.rawValue !== value.localEndpointHandle?.rawValue ||
         value.peerIdentity?.sendRoutes?.relationshipID !== value.relationshipID ||
-        value.peerIdentity?.allowContinuity !== false ||
         !canonicalUUID(value.localIdentity?.id) || !canonicalUUID(value.peerIdentity?.id) ||
         !Number.isFinite(Date.parse(value.createdAt)) ||
         !Number.isFinite(Date.parse(value.peerIdentity?.createdAt)) ||
-        validateDisplayName(value.peerIdentity?.displayName) !== value.peerIdentity.displayName) {
+        validateRelationshipPseudonym(value.peerIdentity?.relationshipPseudonym) !==
+          value.peerIdentity.relationshipPseudonym) {
       throw new TypeError("Pairwise relationship scope is invalid.");
     }
     requireExactRecord(value.localIdentity, boundLocalIdentityFields, "Bound local pairwise identity");
+    validateRelationshipLocalPolicyV2(value.localPolicy);
     if (!Array.isArray(value.localReceiveRoutes) || value.localReceiveRoutes.length !== 1) {
       throw new TypeError("Pairwise relationship receive routes are invalid.");
     }
     for (const route of value.localReceiveRoutes) {
-      requireExactRecord(route, localReceiveRouteFields, "Local opaque receive route");
-      const capabilities = validateOpaqueRouteClientCapabilityMaterialV2(route.clientCapabilities);
-      const opaqueRoute = validateOpaqueReceiveRouteV2(route.opaqueRoute);
-      validateOpaqueRoutePayloadKeyV2(route.payloadKey);
-      if (capabilities.routeID.rawValue !== opaqueRoute.routeID.rawValue) {
-        throw new TypeError("Pairwise relationship route authority is inconsistent.");
-      }
+      await validateLocalOpaqueReceiveRouteV2({ crypto, route });
     }
     requireExactRecord(value.peerIdentity, peerFields, "Peer pairwise identity");
     requireCanonicalBase64(value.localEndpointHandle?.rawValue, 32, "local relationship endpoint handle");
@@ -527,34 +538,30 @@ export async function validatePairwiseRelationshipV2({ crypto, pqc, relationship
     if (!verifyPairwiseRouteSetV2({
       pqc,
       routeSet: value.localAdvertisedRoutes,
-      ownerSigningPublicKey: value.localIdentity.certifiedGenerationEndpoint.signingPublicKey
+      ownerSigningPublicKey: value.localIdentity.endpointBinding.signingPublicKey
     })) {
       throw new TypeError("Local route-set signature is invalid.");
     }
     if (!verifyPairwiseRouteSetV2({
       pqc,
       routeSet: value.peerIdentity.sendRoutes,
-      ownerSigningPublicKey: value.peerIdentity.preferredEndpoint.signingPublicKey
+      ownerSigningPublicKey: value.peerIdentity.endpointBinding.signingPublicKey
     })) {
       throw new TypeError("Peer route-set signature is invalid.");
     }
-    await verifyCertifiedGenerationEndpointV4({
+    await verifyRelationshipEndpointBindingV4({
       crypto,
       pqc,
-      identityGenerationId: value.localIdentity.identityGenerationId,
-      identitySigningPublicKey: value.localIdentity.signing.publicKey,
-      endpointSetCheckpoint: value.localIdentity.endpointSetCheckpoint,
-      preferredEndpoint: value.localIdentity.certifiedGenerationEndpoint,
-      now: value.localIdentity.certifiedGenerationEndpoint.prekeyBundle.createdAt
+      authoritySigningPublicKey: value.localIdentity.signing.publicKey,
+      endpointBinding: value.localIdentity.endpointBinding,
+      now: value.localIdentity.endpointBinding.prekeyBundle.createdAt
     });
-    await verifyCertifiedGenerationEndpointV4({
+    await verifyRelationshipEndpointBindingV4({
       crypto,
       pqc,
-      identityGenerationId: value.peerIdentity.generationID,
-      identitySigningPublicKey: value.peerIdentity.signingPublicKey,
-      endpointSetCheckpoint: value.peerIdentity.endpointSetCheckpoint,
-      preferredEndpoint: value.peerIdentity.preferredEndpoint,
-      now: value.peerIdentity.preferredEndpoint.prekeyBundle.createdAt
+      authoritySigningPublicKey: value.peerIdentity.signingPublicKey,
+      endpointBinding: value.peerIdentity.endpointBinding,
+      now: value.peerIdentity.endpointBinding.prekeyBundle.createdAt
     });
     return value;
   } catch (error) {
@@ -573,10 +580,10 @@ async function makeIntroductionBundle({
   expiresAt
 }) {
   const local = participant.localIdentity;
-  const sendRoute = await createPairwiseSendRouteV2({
+  const sendRoute = await createOpaqueSendRouteV2({
     crypto,
     relay: participant.localReceiveRoute.relay,
-    opaqueRoute: participant.localReceiveRoute.opaqueRoute,
+    route: participant.localReceiveRoute.route,
     clientCapabilities: participant.localReceiveRoute.clientCapabilities,
     payloadKey: participant.localReceiveRoute.payloadKey
   });
@@ -592,13 +599,11 @@ async function makeIntroductionBundle({
   const introduction = await createContactIntroductionV2({
     crypto,
     pqc,
-    displayName: local.displayName,
-    relationshipGenerationID: local.identityGenerationId,
+    relationshipPseudonym: local.relationshipPseudonym,
     relationshipSigningPublicKey: local.signing.publicKey,
     relationshipSigningSecretKey: local.signing.secretKey,
     relationshipAgreementPublicKey: local.agreement.publicKey,
-    endpointSetCheckpoint: local.endpointSetCheckpoint,
-    preferredEndpoint: local.certifiedGenerationEndpoint,
+    endpointBinding: local.endpointBinding,
     receiveRoutes: routeSet,
     rendezvousTranscriptDigest: transcriptDigest,
     issuedAt,
@@ -621,14 +626,11 @@ async function createPairwiseRelationshipV2({
     version: PAIRING_VERSION,
     id: swiftUUID(),
     relationshipID,
-    displayName: peer.displayName,
-    generationID: peer.relationshipGenerationID,
+    relationshipPseudonym: peer.relationshipPseudonym,
     signingPublicKey: peer.relationshipSigningPublicKey,
     agreementPublicKey: peer.relationshipAgreementPublicKey,
-    endpointSetCheckpoint: peer.endpointSetCheckpoint,
-    preferredEndpoint: peer.preferredEndpoint,
+    endpointBinding: peer.endpointBinding,
     sendRoutes: peer.receiveRoutes,
-    allowContinuity: false,
     createdAt: acceptedAt
   });
   const relationship = {
@@ -643,6 +645,7 @@ async function createPairwiseRelationshipV2({
     localReceiveRoutes: [participant.localReceiveRoute],
     localAdvertisedRoutes: localBundle.routeSet,
     peerIdentity,
+    localPolicy: createRelationshipLocalPolicyV2(),
     createdAt: acceptedAt
   };
   await validatePairwiseRelationshipV2({ crypto, pqc, relationship });
@@ -699,10 +702,10 @@ function requireExactRecord(value, fields, label) {
   }
 }
 
-function validateDisplayName(value) {
+function validateRelationshipPseudonym(value) {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0 ||
       encoder.encode(value).byteLength > 512 || /[\u0000-\u001f\u007f]/u.test(value)) {
-    throw new TypeError("Pairwise display name is invalid.");
+    throw new TypeError("Relationship pseudonym is invalid.");
   }
   return value;
 }
@@ -715,7 +718,7 @@ function canonicalUUID(value) {
 function requireGeneratedKeypair(value, label) {
   if (!(value?.publicKey instanceof Uint8Array) || !(value?.secretKey instanceof Uint8Array) ||
       value.publicKey.byteLength === 0 || value.secretKey.byteLength === 0) {
-    throw new TypeError(`${label} key generation failed.`);
+    throw new TypeError(`${label} key creation failed.`);
   }
 }
 

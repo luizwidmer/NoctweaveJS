@@ -20,12 +20,10 @@ export async function proxyRelayRequest(input, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(relayEndpointURL(parsed, request.route === "health" ? "/health" : "/relay"), {
-      method: request.route === "health" ? "GET" : "POST",
-      headers: request.route === "health"
-        ? { accept: "application/json, text/plain;q=0.9" }
-        : { accept: "application/json", "content-type": "application/json" },
-      body: request.route === "relay" ? request.body : undefined,
+    const response = await fetchImpl(relayEndpointURL(parsed, "/relay"), {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: request.body,
       redirect: "error",
       signal: controller.signal
     });
@@ -48,18 +46,13 @@ function validatedRequest(input) {
   if (typeof endpoint !== "string" || endpoint.trim() === "" || byteLength(endpoint) > MAX_ENDPOINT_BYTES) {
     throw new TypeError("Desktop relay endpoint is invalid.");
   }
-  if (input.route !== "health" && input.route !== "relay") {
-    throw new TypeError("Desktop relay route is invalid.");
+  if (Object.keys(input).length !== 2 || typeof input.body !== "string") {
+    throw new TypeError("Desktop relay request must contain only endpoint and body text.");
   }
-  if (input.route === "relay") {
-    if (typeof input.body !== "string") {
-      throw new TypeError("Desktop relay request body must be text.");
-    }
-    if (byteLength(input.body) > MAX_REQUEST_BYTES) {
-      throw new Error("Desktop relay request exceeds the size limit.");
-    }
+  if (byteLength(input.body) > MAX_REQUEST_BYTES) {
+    throw new Error("Desktop relay request exceeds the size limit.");
   }
-  return { endpoint: endpoint.trim(), route: input.route, body: input.body };
+  return { endpoint: endpoint.trim(), body: input.body };
 }
 
 async function boundedResponseText(response, maximumBytes) {

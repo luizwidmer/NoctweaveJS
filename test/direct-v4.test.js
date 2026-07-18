@@ -6,25 +6,27 @@ import {
   NoctweaveOQSWasmAdapter,
   WebCryptoPrimitives,
   base64,
-  certifiedEndpointAuthorizationDigest,
   createContactPairingInvitationV2,
+  createContentTypeCapabilityV2,
   createContentTypeId,
   createEncodedContent,
-  createEndpointRemovalProofV4,
   createNativeInboundSession,
   createNativeOutboundSession,
+  createProtocolCapabilityManifest,
   decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
   derivePairwiseDirectV4Binding,
+  defaultContentTypeCapabilities,
   encryptNativeApplicationEnvelope,
   encryptNativeTextEnvelope,
   establishContactPairingV2,
   findPairwiseRelationshipForEnvelope,
   pairwiseConversationKey,
   prepareContactPairingParticipantV2,
+  relationshipEndpointAuthorizationDigestV4,
   renewPairwiseDirectV4PrekeyIfNeeded,
-  swiftISODate
 } from "../src/index.js";
+import { createReadReceiptEncodedContent } from "../src/architecture-v2.js";
 
 const createdAt = "2026-07-16T12:00:00Z";
 const openedAt = "2026-07-16T12:01:00Z";
@@ -69,6 +71,14 @@ test("direct-v4 uses only rendezvous-established pairwise identity state", async
     envelope
   }), "pairwise direct-v4 survives restart");
   assert.equal(outbound.conversation.relationshipID, alice.relationshipID);
+  assert.equal(outbound.conversation.id, alice.relationshipID.toLowerCase());
+  assert.deepEqual(Object.keys(outbound.conversation.endpointSession).sort(), [
+    "localBindingReferenceDigest",
+    "localEndpointHandle",
+    "peerBindingReferenceDigest",
+    "peerEndpointHandle",
+    "relationshipID"
+  ]);
   assert.equal(restarted.relationshipID, bob.relationshipID);
   assert.equal(pairwiseConversationKey(alice.peerIdentity).includes(alice.relationshipID), true);
   assert.equal(
@@ -78,7 +88,23 @@ test("direct-v4 uses only rendezvous-established pairwise identity state", async
 });
 
 test("typed application payloads remain extensible while authenticated known semantics fail closed", async () => {
-  const { crypto, pqc, alice, bob } = await paired("Typed Alice", "Typed Bob");
+  const customType = createContentTypeId({ authority: "org.example", name: "poll", major: 1, minor: 0 });
+  const endpointCapabilities = createProtocolCapabilityManifest({
+    contentTypes: [
+      ...defaultContentTypeCapabilities.filter(({ authority, name }) =>
+        authority !== "org.noctweave.receipt" || name !== "read"),
+      createContentTypeCapabilityV2({
+        authority: customType.authority,
+        name: customType.name,
+        majorVersions: [customType.major]
+      })
+    ]
+  });
+  const { crypto, pqc, alice, bob } = await paired(
+    "Typed Alice",
+    "Typed Bob",
+    { endpointCapabilities }
+  );
   const outbound = await createNativeOutboundSession({
     crypto,
     pqc,
@@ -87,7 +113,7 @@ test("typed application payloads remain extensible while authenticated known sem
     now: Date.parse(openedAt)
   });
   const custom = createEncodedContent({
-    type: createContentTypeId({ authority: "org.example", name: "poll", major: 1, minor: 0 }),
+    type: customType,
     payload: new TextEncoder().encode('{"question":"Tea?"}'),
     fallbackText: "Unsupported poll",
     disposition: "visible"
@@ -121,6 +147,38 @@ test("typed application payloads remain extensible while authenticated known sem
   assert.equal(decoded.projection.kind, "unsupported");
   assert.equal(decoded.projection.fallbackText, "Unsupported poll");
   assert.equal(decoded.event.content.payload, custom.payload);
+
+  const beforeRejectedSend = structuredClone(outbound.conversation.sendChain);
+  await assert.rejects(() => encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    conversation: outbound.conversation,
+    content: createEncodedContent({
+      type: createContentTypeId({
+        authority: "org.example",
+        name: "unadvertised",
+        major: 1,
+        minor: 0
+      }),
+      payload: new Uint8Array([1]),
+      fallbackText: "Unsupported extension",
+      disposition: "visible"
+    }),
+    sentAt: openedAt
+  }), /did not advertise org\.example\/unadvertised:1\.0/);
+  await assert.rejects(() => encryptNativeApplicationEnvelope({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    conversation: outbound.conversation,
+    eventKind: "receipt",
+    content: createReadReceiptEncodedContent(decoded.event.id),
+    sentAt: openedAt
+  }), /did not advertise org\.noctweave\.receipt\/read:1\.0/);
+  assert.deepEqual(outbound.conversation.sendChain, beforeRejectedSend);
 });
 
 test("authenticated-header tampering never advances a receive ratchet", async () => {
@@ -166,10 +224,10 @@ test("authenticated-header tampering never advances a receive ratchet", async ()
 
 test("prekey renewal retains an in-flight pairwise bootstrap without creating reusable public state", async () => {
   const { crypto, pqc, alice, bob } = await paired("Alice", "Bob");
-  const original = bob.localIdentity.certifiedGenerationEndpoint.prekeyBundle.signedPrekey;
-  const authorization = await certifiedEndpointAuthorizationDigest({
+  const original = bob.localIdentity.endpointBinding.prekeyBundle.signedPrekey;
+  const authorization = await relationshipEndpointAuthorizationDigestV4({
     crypto,
-    endpoint: bob.localIdentity.certifiedGenerationEndpoint
+    endpointBinding: bob.localIdentity.endpointBinding
   });
   const renewalTime = Date.parse(original.expiresAt) - 2 * 86_400_000;
   const outbound = await createNativeOutboundSession({
@@ -186,9 +244,9 @@ test("prekey renewal retains an in-flight pairwise bootstrap without creating re
     now: renewalTime
   }), true);
   assert.equal(bob.localIdentity.localEndpoint.prekeys.retiredSignedPrekeys.length, 1);
-  assert.equal(await certifiedEndpointAuthorizationDigest({
+  assert.equal(await relationshipEndpointAuthorizationDigestV4({
     crypto,
-    endpoint: bob.localIdentity.certifiedGenerationEndpoint
+    endpointBinding: bob.localIdentity.endpointBinding
   }), authorization);
   const inbound = await createNativeInboundSession({
     crypto,
@@ -201,22 +259,28 @@ test("prekey renewal retains an in-flight pairwise bootstrap without creating re
   assert.equal(inbound.id, outbound.conversation.id);
 });
 
-test("endpoint revocation is relationship-local and fails closed", async () => {
+test("relationship endpoint binding tampering fails closed", async () => {
   const { crypto, pqc, alice, bob } = await paired("Alice", "Bob");
-  const revocation = await createEndpointRemovalProofV4({
-    crypto,
-    pqc,
-    localIdentity: bob.localIdentity,
-    issuedAt: swiftISODate(new Date(Date.parse(openedAt) + 1_000))
-  });
-  alice.peerIdentity = { ...alice.peerIdentity, endpointRevocation: revocation };
+  alice.peerIdentity.endpointBinding.authoritySignature = base64(new Uint8Array(3_309).fill(0x7f));
   await assert.rejects(() => createNativeOutboundSession({
     crypto,
     pqc,
     localIdentity: alice.localIdentity,
     peerIdentity: alice.peerIdentity,
-    now: Date.parse(openedAt) + 2_000
-  }), /revoked/);
+    now: Date.parse(openedAt)
+  }), /signature failed verification/);
+
+  const retired = await paired("Retired Alice", "Retired Bob");
+  const bundle = retired.alice.peerIdentity.endpointBinding.prekeyBundle;
+  bundle[["identity", "Fingerprint"].join("")] = bundle.relationshipSigningKeyDigest;
+  delete bundle.relationshipSigningKeyDigest;
+  await assert.rejects(() => createNativeOutboundSession({
+    crypto: retired.crypto,
+    pqc: retired.pqc,
+    localIdentity: retired.alice.localIdentity,
+    peerIdentity: retired.alice.peerIdentity,
+    now: Date.parse(openedAt)
+  }), /fields do not match the current protocol/);
 });
 
 test("separate pairings cannot correlate a local persona through keys, handles, or routes", async () => {
@@ -245,25 +309,29 @@ test("separate pairings cannot correlate a local persona through keys, handles, 
     localIdentity: second.alice.localIdentity,
     peerIdentity: second.alice.peerIdentity
   });
-  assert.notEqual(firstBinding.localCertificateReferenceDigest, secondBinding.localCertificateReferenceDigest);
+  assert.notEqual(firstBinding.localBindingReferenceDigest, secondBinding.localBindingReferenceDigest);
 });
 
-async function paired(localName, peerName) {
+async function paired(localName, peerName, {
+  endpointCapabilities = createProtocolCapabilityManifest()
+} = {}) {
   const pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
   const crypto = new NoctweaveCryptoSuite({ pqc, webcrypto: new WebCryptoPrimitives() });
   const invitation = await createContactPairingInvitationV2({ crypto, createdAt, expiresAt });
   const offerer = await prepareContactPairingParticipantV2({
     crypto,
     pqc,
-    displayName: localName,
+    relationshipPseudonym: localName,
     relay,
+    endpointCapabilities,
     createdAt
   });
   const responder = await prepareContactPairingParticipantV2({
     crypto,
     pqc,
-    displayName: peerName,
+    relationshipPseudonym: peerName,
     relay,
+    endpointCapabilities,
     createdAt
   });
   const established = await establishContactPairingV2({

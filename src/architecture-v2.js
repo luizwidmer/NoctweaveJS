@@ -14,17 +14,18 @@ const latestConversationEventTime = 4_102_444_800_000;
 const deliveryStateOrder = Object.freeze([
   "locallyPersisted",
   "relayAccepted",
-  "peerEndpointStored",
+  "peerStored",
   "peerRead"
 ]);
 
 export const noctweaveArchitectureV2 = Object.freeze({
   version: 2,
-  maximumEndpoints: 16,
   maximumModules: 64,
   maximumModuleNameBytes: 96,
   maximumModuleVersions: 8,
   maximumContentTypeBytes: 96,
+  maximumContentTypeCapabilities: 128,
+  maximumContentTypeMajorVersions: 8,
   maximumContentParameters: 32,
   maximumContentParameterBytes: 256,
   maximumContentPayloadBytes: 65_536,
@@ -47,20 +48,6 @@ const directV4Requirements = Object.freeze([
   {
     module: "nw.core",
     versions: [2],
-    limits: { maxCiphertextBytes: 65_536 },
-    minimums: { maxCiphertextBytes: 512 }
-  },
-  {
-    module: "nw.relationship-endpoints",
-    versions: [2],
-    // Direct-v4 currently addresses one certified preferred peer endpoint.
-    // maximumEndpoints is a structural manifest bound, not fan-out support.
-    limits: { maxActiveEndpoints: 1 },
-    minimums: { maxActiveEndpoints: 1 }
-  },
-  {
-    module: "nw.events",
-    versions: [2],
     limits: {
       maxContentParameterBytes: 256,
       maxContentParameters: 32,
@@ -74,16 +61,10 @@ const directV4Requirements = Object.freeze([
     }
   },
   {
-    module: "nw.prekeys",
-    versions: [2],
-    limits: { maxPrekeyAgeSeconds: 691_200 },
-    minimums: { maxPrekeyAgeSeconds: 1 }
-  },
-  {
-    module: "nw.routes",
-    versions: [2],
-    limits: { maxRoutes: 8 },
-    minimums: { maxRoutes: 1 }
+    module: "nw.direct",
+    versions: [4],
+    limits: { maxCiphertextBytes: 65_536, maxPrekeyAgeSeconds: 691_200 },
+    minimums: { maxCiphertextBytes: 512, maxPrekeyAgeSeconds: 1 }
   }
 ]);
 
@@ -96,7 +77,7 @@ export const directV4RequiredModules = Object.freeze(
 );
 
 export function validateProtocolModuleCapability(value) {
-  requireRecord(value, "Protocol module capability");
+  requireExactRecord(value, "Protocol module capability", ["module", "versions", "status", "limits"]);
   const module = boundedString(value.module, "Protocol module name", {
     maximumBytes: noctweaveArchitectureV2.maximumModuleNameBytes,
     trimmed: true
@@ -110,8 +91,9 @@ export function validateProtocolModuleCapability(value) {
   }
   const versions = [...new Set(value.versions.map((version) => uint16(version, "Protocol module version")))]
     .sort((left, right) => left - right);
-  if (versions.length !== value.versions.length) {
-    throw new TypeError("Protocol module versions must be unique.");
+  if (versions.length !== value.versions.length ||
+      versions.some((version, index) => version !== value.versions[index])) {
+    throw new TypeError("Protocol module versions must be unique and sorted.");
   }
   if (!extensionStatuses.has(value.status)) {
     throw new TypeError("Protocol module status is invalid.");
@@ -124,7 +106,7 @@ export function validateProtocolModuleCapability(value) {
     throw new TypeError("Protocol module limits exceed the 32-entry bound.");
   }
   const limits = {};
-  for (const [key, limit] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [key, limit] of entries.sort(([left], [right]) => compareProtocolStrings(left, right))) {
     boundedString(key, "Protocol module limit name", { maximumBytes: 96 });
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError("Protocol module limits must be non-negative safe integers.");
@@ -136,13 +118,26 @@ export function validateProtocolModuleCapability(value) {
 
 export function createProtocolCapabilityManifest({
   architectureVersion = noctweaveArchitectureV2.version,
-  modules = defaultActiveEndpointModules
+  modules = defaultActiveEndpointModules,
+  contentTypes = defaultContentTypeCapabilities
 } = {}) {
-  return validateProtocolCapabilityManifest({ architectureVersion, modules });
+  if (!Array.isArray(modules) || !Array.isArray(contentTypes)) {
+    throw new TypeError("Protocol capability manifest modules and contentTypes must be arrays.");
+  }
+  return validateProtocolCapabilityManifest({
+    architectureVersion,
+    modules: modules.map(normalizeProtocolModuleCapability)
+      .sort((left, right) => compareProtocolStrings(left.module, right.module)),
+    contentTypes: [...contentTypes].sort(compareContentTypeCapabilities)
+  });
 }
 
 export function validateProtocolCapabilityManifest(value) {
-  requireRecord(value, "Protocol capability manifest");
+  requireExactRecord(value, "Protocol capability manifest", [
+    "architectureVersion",
+    "modules",
+    "contentTypes"
+  ]);
   if (value.architectureVersion !== noctweaveArchitectureV2.version) {
     throw new TypeError("Protocol capability manifest architectureVersion must be 2.");
   }
@@ -151,16 +146,74 @@ export function validateProtocolCapabilityManifest(value) {
     throw new TypeError("Protocol capability manifest modules exceed their bounds.");
   }
   const modules = value.modules.map(validateProtocolModuleCapability)
-    .sort((left, right) => left.module.localeCompare(right.module));
+    .sort((left, right) => compareProtocolStrings(left.module, right.module));
+  if (modules.some((module, index) => module.module !== value.modules[index].module)) {
+    throw new TypeError("Protocol capability manifest modules must be canonically sorted.");
+  }
   if (new Set(modules.map(({ module }) => module)).size !== modules.length) {
     throw new TypeError("Protocol capability manifest module names must be unique.");
+  }
+  if (!Array.isArray(value.contentTypes) || value.contentTypes.length === 0 ||
+      value.contentTypes.length > noctweaveArchitectureV2.maximumContentTypeCapabilities) {
+    throw new TypeError("Protocol capability manifest contentTypes exceed their bounds.");
+  }
+  const contentTypes = value.contentTypes.map(validateContentTypeCapabilityV2)
+    .sort(compareContentTypeCapabilities);
+  if (contentTypes.some((capability, index) =>
+    compareContentTypeCapabilities(capability, value.contentTypes[index]) !== 0)) {
+    throw new TypeError("Protocol capability manifest contentTypes must be canonically sorted.");
+  }
+  const contentTypeKeys = contentTypes.map(({ authority, name }) => `${authority}\0${name}`);
+  if (new Set(contentTypeKeys).size !== contentTypeKeys.length) {
+    throw new TypeError("Protocol capability manifest content type families must be unique.");
   }
   if (!supportsModule(modules, "nw.core", 2)) {
     throw new TypeError("Protocol capability manifest must support nw.core version 2.");
   }
+  if (!supportsContentFamily(contentTypes, standardContentTypes.text)) {
+    throw new TypeError("Protocol capability manifest must support the org.noctweave/text family.");
+  }
   return freezeRecord({
     architectureVersion: noctweaveArchitectureV2.version,
-    modules: Object.freeze(modules)
+    modules: Object.freeze(modules),
+    contentTypes: Object.freeze(contentTypes)
+  });
+}
+
+export function createContentTypeCapabilityV2({ authority, name, majorVersions }) {
+  if (!Array.isArray(majorVersions)) {
+    throw new TypeError("Content type capability majorVersions must be an array.");
+  }
+  return validateContentTypeCapabilityV2({
+    authority,
+    name,
+    majorVersions: [...new Set(majorVersions)].sort((left, right) => left - right)
+  });
+}
+
+export function validateContentTypeCapabilityV2(value) {
+  requireExactRecord(value, "Content type capability", ["authority", "name", "majorVersions"]);
+  if (!Array.isArray(value.majorVersions) || value.majorVersions.length === 0 ||
+      value.majorVersions.length > noctweaveArchitectureV2.maximumContentTypeMajorVersions) {
+    throw new TypeError("Content type capability majorVersions exceed their bounds.");
+  }
+  const majorVersions = value.majorVersions.map((version) =>
+    positiveUInt16(version, "Content type capability major version"));
+  const canonicalMajorVersions = [...new Set(majorVersions)].sort((left, right) => left - right);
+  if (canonicalMajorVersions.length !== majorVersions.length ||
+      canonicalMajorVersions.some((version, index) => version !== majorVersions[index])) {
+    throw new TypeError("Content type capability majorVersions must be unique and sorted.");
+  }
+  const representative = validateContentTypeId({
+    authority: value.authority,
+    name: value.name,
+    major: majorVersions[0],
+    minor: 0
+  });
+  return freezeRecord({
+    authority: representative.authority,
+    name: representative.name,
+    majorVersions: Object.freeze(majorVersions)
   });
 }
 
@@ -197,10 +250,34 @@ export function negotiateProtocolCapabilities(localValue, peerValue) {
       limits
     }));
   }
-  if (!supportsModule(modules, "nw.core", 2)) {
+  const peerContentTypes = new Map(peer.contentTypes.map((capability) => [
+    `${capability.authority}\0${capability.name}`,
+    capability
+  ]));
+  const contentTypes = [];
+  for (const localCapability of local.contentTypes) {
+    const peerCapability = peerContentTypes.get(
+      `${localCapability.authority}\0${localCapability.name}`
+    );
+    if (!peerCapability) {
+      continue;
+    }
+    const peerMajors = new Set(peerCapability.majorVersions);
+    const sharedMajors = localCapability.majorVersions.filter((major) => peerMajors.has(major));
+    if (sharedMajors.length === 0) {
+      continue;
+    }
+    contentTypes.push(createContentTypeCapabilityV2({
+      authority: localCapability.authority,
+      name: localCapability.name,
+      majorVersions: [sharedMajors.at(-1)]
+    }));
+  }
+  if (!supportsModule(modules, "nw.core", 2) ||
+      !supportsContentFamily(contentTypes, standardContentTypes.text)) {
     return null;
   }
-  return validateProtocolCapabilityManifest({ architectureVersion: 2, modules });
+  return createProtocolCapabilityManifest({ architectureVersion: 2, modules, contentTypes });
 }
 
 /// Deterministic direct-v4 projection of two relationship-scoped endpoint
@@ -242,20 +319,99 @@ export function negotiateDirectV4Capabilities(localValue, peerValue) {
       limits: Object.freeze(limits)
     });
   });
-  return Object.freeze({
+  const peerContentTypes = new Map(peer.contentTypes.map((capability) => [
+    `${capability.authority}\0${capability.name}`,
+    capability
+  ]));
+  const contentTypes = local.contentTypes.flatMap((localCapability) => {
+    const peerCapability = peerContentTypes.get(
+      `${localCapability.authority}\0${localCapability.name}`
+    );
+    if (!peerCapability) return [];
+    const peerMajors = new Set(peerCapability.majorVersions);
+    const sharedMajors = localCapability.majorVersions.filter((major) => peerMajors.has(major));
+    if (sharedMajors.length === 0) return [];
+    return [createContentTypeCapabilityV2({
+      authority: localCapability.authority,
+      name: localCapability.name,
+      majorVersions: [sharedMajors.at(-1)]
+    })];
+  });
+  if (!supportsContentFamily(contentTypes, standardContentTypes.text)) {
+    throw new Error("Direct-v4 requires a shared org.noctweave/text content family.");
+  }
+  return validateDirectV4NegotiatedCapabilityManifest({
     version: 1,
     architectureVersion: noctweaveArchitectureV2.version,
     cipherSuite: directV4CipherSuite,
-    modules: Object.freeze(modules)
+    modules,
+    contentTypes
+  });
+}
+
+export function validateDirectV4NegotiatedCapabilityManifest(value) {
+  requireExactRecord(value, "Direct-v4 negotiated capability manifest", [
+    "version",
+    "architectureVersion",
+    "cipherSuite",
+    "modules",
+    "contentTypes"
+  ]);
+  if (value.version !== 1 || value.architectureVersion !== noctweaveArchitectureV2.version ||
+      value.cipherSuite !== directV4CipherSuite || !Array.isArray(value.modules) ||
+      value.modules.length !== directV4Requirements.length) {
+    throw new TypeError("Direct-v4 negotiated capability manifest is invalid.");
+  }
+  const modules = value.modules.map((module, index) => {
+    requireExactRecord(module, "Direct-v4 negotiated module", ["module", "version", "limits"]);
+    const requirement = directV4Requirements[index];
+    requireRecord(module.limits, "Direct-v4 negotiated module limits");
+    const expectedLimitNames = Object.keys(requirement.limits).sort(compareProtocolStrings);
+    const actualLimitNames = Object.keys(module.limits).sort(compareProtocolStrings);
+    if (module.module !== requirement.module ||
+        !requirement.versions.includes(module.version) ||
+        actualLimitNames.length !== expectedLimitNames.length ||
+        actualLimitNames.some((name, limitIndex) => name !== expectedLimitNames[limitIndex])) {
+      throw new TypeError("Direct-v4 negotiated module is invalid.");
+    }
+    const limits = {};
+    for (const name of expectedLimitNames) {
+      const limit = module.limits[name];
+      if (!Number.isSafeInteger(limit) || limit < (requirement.minimums[name] ?? 0) ||
+          limit > requirement.limits[name]) {
+        throw new TypeError(`Direct-v4 negotiated limit ${module.module}.${name} is invalid.`);
+      }
+      limits[name] = limit;
+    }
+    return freezeRecord({ module: module.module, version: module.version, limits: Object.freeze(limits) });
+  });
+  if (!Array.isArray(value.contentTypes) || value.contentTypes.length === 0 ||
+      value.contentTypes.length > noctweaveArchitectureV2.maximumContentTypeCapabilities) {
+    throw new TypeError("Direct-v4 negotiated contentTypes exceed their bounds.");
+  }
+  const contentTypes = value.contentTypes.map(validateContentTypeCapabilityV2)
+    .sort(compareContentTypeCapabilities);
+  if (contentTypes.some((capability, index) =>
+    compareContentTypeCapabilities(capability, value.contentTypes[index]) !== 0)) {
+    throw new TypeError("Direct-v4 negotiated contentTypes must be canonically sorted.");
+  }
+  const contentTypeKeys = contentTypes.map(({ authority, name }) => `${authority}\0${name}`);
+  if (new Set(contentTypeKeys).size !== contentTypeKeys.length ||
+      !supportsContentFamily(contentTypes, standardContentTypes.text)) {
+    throw new TypeError("Direct-v4 negotiated contentTypes are invalid.");
+  }
+  return freezeRecord({
+    version: 1,
+    architectureVersion: noctweaveArchitectureV2.version,
+    cipherSuite: directV4CipherSuite,
+    modules: Object.freeze(modules),
+    contentTypes: Object.freeze(contentTypes)
   });
 }
 
 const knownModuleValues = [
   { module: "nw.core", versions: [2], status: "stable" },
-  { module: "nw.prekeys", versions: [2], status: "stable" },
-  { module: "nw.events", versions: [2], status: "stable" },
-  { module: "nw.relationship-endpoints", versions: [2], status: "stable" },
-  { module: "nw.routes", versions: [2], status: "stable" },
+  { module: "nw.direct", versions: [4], status: "stable" },
   { module: "nw.opaque-route", versions: [2], status: "stable" },
   { module: "nw.rendezvous-transport", versions: [2], status: "stable" },
   { module: "nw.blobs", versions: [1], status: "stable" },
@@ -278,18 +434,6 @@ export const defaultActiveEndpointModules = Object.freeze([
     module: "nw.core",
     versions: [2],
     status: "stable",
-    limits: { maxCiphertextBytes: 65_536 }
-  },
-  {
-    module: "nw.relationship-endpoints",
-    versions: [2],
-    status: "stable",
-    limits: { maxActiveEndpoints: 1 }
-  },
-  {
-    module: "nw.events",
-    versions: [2],
-    status: "stable",
     limits: {
       maxContentParameterBytes: 256,
       maxContentParameters: 32,
@@ -298,18 +442,13 @@ export const defaultActiveEndpointModules = Object.freeze([
     }
   },
   {
-    module: "nw.prekeys",
-    versions: [2],
+    module: "nw.direct",
+    versions: [4],
     status: "stable",
-    limits: { maxPrekeyAgeSeconds: 691_200 }
-  },
-  {
-    module: "nw.routes",
-    versions: [2],
-    status: "stable",
-    limits: { maxRoutes: 8 }
+    limits: { maxCiphertextBytes: 65_536, maxPrekeyAgeSeconds: 691_200 }
   }
-].map(validateProtocolModuleCapability).sort((left, right) => left.module.localeCompare(right.module)));
+].map(validateProtocolModuleCapability).sort((left, right) =>
+  compareProtocolStrings(left.module, right.module)));
 
 export function createRelationshipEndpointHandle(rawValue) {
   return validateRelationshipEndpointHandle(
@@ -324,20 +463,19 @@ export function validateRelationshipEndpointHandle(value) {
 }
 
 export async function generateRelationshipEndpointHandle({
-  identityGenerationId,
-  endpointId,
   relationshipId,
   nonce = swiftUUID(),
   crypto = globalThis.crypto
 }) {
-  const ids = [identityGenerationId, endpointId, relationshipId, nonce]
-    .map((value, index) => normalizeUUID(value, [
-      "identityGenerationId",
-      "endpointId",
-      "relationshipId",
-      "nonce"
-    ][index]).toLowerCase());
-  const material = encoder.encode(`Noctweave/relationship-endpoint-handle/v2${ids.join("")}`);
+  const relationship = normalizeUUID(relationshipId, "relationshipId").toLowerCase();
+  const handleNonce = normalizeUUID(nonce, "nonce").toLowerCase();
+  const material = concat(
+    encoder.encode("Noctweave/relationship-endpoint-handle/v2"),
+    new Uint8Array([0]),
+    encoder.encode(relationship),
+    new Uint8Array([0]),
+    encoder.encode(handleNonce)
+  );
   const digest = await new WebCryptoPrimitives({ crypto }).sha256(material);
   return createRelationshipEndpointHandle(base64(digest));
 }
@@ -392,6 +530,19 @@ export const standardContentTypes = Object.freeze({
     minor: 0
   })
 });
+
+export const defaultContentTypeCapabilities = Object.freeze([
+  standardContentTypes.text,
+  standardContentTypes.attachment,
+  standardContentTypes.reaction,
+  standardContentTypes.retraction,
+  standardContentTypes.deliveryReceipt,
+  standardContentTypes.readReceipt
+].map(({ authority, name, major }) => createContentTypeCapabilityV2({
+  authority,
+  name,
+  majorVersions: [major]
+})).sort(compareContentTypeCapabilities));
 
 export const retractionRetainedCopyScope = "received-copies-may-remain";
 export const retractionFallbackText = "Message retracted; received copies may remain";
@@ -594,22 +745,6 @@ export function validateConversationEvent(value) {
   return freezeRecord(result);
 }
 
-export function mayMutateControlState(eventValue, supportedControlTypes) {
-  const event = validateConversationEvent(eventValue);
-  if (event.kind !== "control") {
-    return false;
-  }
-  const supported = supportedControlTypes instanceof Set
-    ? [...supportedControlTypes]
-    : supportedControlTypes;
-  if (!Array.isArray(supported)) {
-    throw new TypeError("Supported control types must be an array or Set.");
-  }
-  const canonical = contentTypeCanonicalName(event.content.type);
-  return supported.some((value) =>
-    (typeof value === "string" ? value : contentTypeCanonicalName(value)) === canonical);
-}
-
 export function createDeliveryStateRecord({
   eventId,
   destinationEndpoint,
@@ -710,6 +845,17 @@ function equalBytes(left, right) {
   return difference === 0;
 }
 
+function concat(...values) {
+  const length = values.reduce((total, value) => total + value.byteLength, 0);
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const value of values) {
+    output.set(value, offset);
+    offset += value.byteLength;
+  }
+  return output;
+}
+
 function normalizeDate(value, label) {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) {
@@ -723,9 +869,45 @@ function supportsModule(modules, module, version) {
     candidate.module === module && candidate.versions.includes(version));
 }
 
+function supportsContentFamily(contentTypes, contentType) {
+  return contentTypes.some((candidate) =>
+    candidate.authority === contentType.authority && candidate.name === contentType.name);
+}
+
+function compareContentTypeCapabilities(left, right) {
+  const authority = compareProtocolStrings(left.authority, right.authority);
+  return authority === 0 ? compareProtocolStrings(left.name, right.name) : authority;
+}
+
+function compareProtocolStrings(left, right) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function normalizeProtocolModuleCapability(value) {
+  requireExactRecord(value, "Protocol module capability", ["module", "versions", "status", "limits"]);
+  if (!Array.isArray(value.versions)) {
+    throw new TypeError("Protocol module versions must be an array.");
+  }
+  return validateProtocolModuleCapability({
+    ...value,
+    versions: [...new Set(value.versions)].sort((left, right) => left - right)
+  });
+}
+
 function requireRecord(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`${label} must be an object.`);
+  }
+}
+
+function requireExactRecord(value, label, fields) {
+  requireRecord(value, label);
+  const actual = Object.keys(value).sort();
+  const expected = [...fields].sort();
+  if (actual.length !== expected.length ||
+      actual.some((field, index) => field !== expected[index])) {
+    throw new TypeError(`${label} fields must match the current schema exactly.`);
   }
 }
 

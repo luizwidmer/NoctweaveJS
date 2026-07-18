@@ -9,6 +9,10 @@ import {
 } from "./contact-pairing-v2.js";
 import { swiftISODate } from "./crypto/swift-canonical.js";
 import { validateProtocolCapabilityManifest } from "./architecture-v2.js";
+import {
+  createRelationshipLocalPolicyV2,
+  validateRelationshipLocalPolicyV2
+} from "./relationship-local-policy-v2.js";
 
 const encoder = new TextEncoder();
 const personaFields = Object.freeze([
@@ -54,10 +58,11 @@ export class NoctweaveBrowserPairingService {
       crypto: this.crypto
     });
     const [health, info] = await Promise.all([client.health(), client.info()]);
-    if (!health || (health.type !== "ok" && health.type !== "health")) {
+    if (!health || typeof health !== "object" || Array.isArray(health) || Object.keys(health).length !== 0) {
       throw new Error("The relay health check returned an incompatible response.");
     }
-    if (info?.type !== "info" || !info.relayInfo || info.relayInfo.kind === "coordinator") {
+    if (!info || Object.keys(info).length !== 1 || !info.relayInfo ||
+        info.relayInfo.kind === "coordinator") {
       throw new Error("The address did not return a compatible client-facing Noctweave relay profile.");
     }
     let capabilities;
@@ -93,28 +98,32 @@ export class NoctweaveBrowserPairingService {
   async preparePairingParticipant({
     persona,
     relay,
-    relationshipLabel = defaultRelationshipPseudonymV2,
-    createdAt = swiftISODate()
+    relationshipPseudonym = defaultRelationshipPseudonymV2,
+    createdAt = swiftISODate(),
+    ...unsupported
   } = {}) {
+    if (Object.keys(unsupported).length !== 0) {
+      throw new TypeError("Pairing participant parameters do not match the current protocol.");
+    }
     validateBrowserPersonaState(persona);
     const endpoint = typeof relay === "string" ? parseBrowserRelayEndpoint(relay) : relay;
     const participant = await prepareContactPairingParticipantV2({
       crypto: this.crypto,
       pqc: this.pqc,
-      displayName: validateBrowserDisplayName(relationshipLabel),
+      relationshipPseudonym: validateBrowserDisplayName(relationshipPseudonym),
       relay: endpoint,
       createdAt
     });
     const client = this.relayClientFactory(endpoint, { crypto: this.crypto });
     const registered = await client.createOpaqueRoute({
-      transition: participant.routeCreateRequest,
+      request: participant.routeCreateRequest,
       renewCapability: participant.localReceiveRoute.clientCapabilities.renewCapability
     });
     const activated = {
       ...participant,
       localReceiveRoute: {
         ...participant.localReceiveRoute,
-        opaqueRoute: registered.opaqueRouteV2
+        route: registered
       }
     };
     await validatePreparedContactParticipantV2({
@@ -133,7 +142,8 @@ export class NoctweaveBrowserPairingService {
     peerParticipant,
     ledger,
     at = swiftISODate(),
-    role = "offerer"
+    role = "offerer",
+    consent = "accepted"
   }) {
     const persona = structuredClone(validateBrowserPersonaState(personaValue));
     const result = await establishContactPairingV2({
@@ -146,9 +156,16 @@ export class NoctweaveBrowserPairingService {
       ledger,
       at
     });
-    const relationship = role === "offerer"
+    const establishedRelationship = role === "offerer"
       ? result.offererRelationship
       : result.responderRelationship;
+    const relationship = Object.freeze({
+      ...establishedRelationship,
+      localPolicy: createRelationshipLocalPolicyV2({
+        ...establishedRelationship.localPolicy,
+        consent
+      })
+    });
     if (persona.relationships.some(({ relationshipID }) => relationshipID === relationship.relationshipID)) {
       throw new Error("This one-use rendezvous relationship is already stored.");
     }
@@ -160,6 +177,18 @@ export class NoctweaveBrowserPairingService {
     persona.relationships.push(relationship);
     validateBrowserPersonaState(persona);
     return { persona, relationship, handshake: result };
+  }
+
+  setRelationshipLocalPolicy({ persona: personaValue, relationshipID, policy }) {
+    const persona = structuredClone(validateBrowserPersonaState(personaValue));
+    const index = persona.relationships.findIndex((relationship) =>
+      relationship.relationshipID === relationshipID);
+    if (index < 0) throw new Error("Pairwise relationship was not found.");
+    persona.relationships[index] = {
+      ...persona.relationships[index],
+      localPolicy: validateRelationshipLocalPolicyV2(policy)
+    };
+    return validateBrowserPersonaState(persona);
   }
 }
 
@@ -184,6 +213,7 @@ export function validateBrowserPersonaState(value) {
         relationshipIDs.has(relationship.relationshipID)) {
       throw new Error("The browser persona contains an invalid pairwise relationship.");
     }
+    validateRelationshipLocalPolicyV2(relationship.localPolicy);
     relationshipIDs.add(relationship.relationshipID);
   }
   for (const pending of value.pendingPairings) {

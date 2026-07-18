@@ -27,11 +27,9 @@ const directHeaderKeys = Object.freeze([
   "sessionId",
   "eventId",
   "senderEndpointHandle",
-  "senderCertificateDigest",
-  "senderEndpointSetEpoch",
+  "senderBindingDigest",
   "recipientEndpointHandle",
-  "recipientCertificateDigest",
-  "recipientEndpointSetEpoch",
+  "recipientBindingDigest",
   "cipherSuite",
   "negotiatedCapabilitiesDigest",
   "bootstrap",
@@ -46,7 +44,7 @@ const groupEnvelopeKeys = Object.freeze([
   "groupId",
   "epoch",
   "transcriptHash",
-  "senderClientHandle",
+  "senderCredentialHandle",
   "eventId",
   "messageCounter",
   "sentAt",
@@ -143,29 +141,21 @@ export function validateDirectEnvelopeV4Header(value) {
       value.senderEndpointHandle,
       "DirectEnvelopeV4 sender endpoint handle"
     ),
-    senderCertificateDigest: canonicalBase64(
-      value.senderCertificateDigest,
-      "DirectEnvelopeV4 sender certificate digest",
+    senderBindingDigest: canonicalBase64(
+      value.senderBindingDigest,
+      "DirectEnvelopeV4 sender endpoint-binding digest",
       DIGEST_BYTES,
       DIGEST_BYTES
-    ),
-    senderEndpointSetEpoch: uint64(
-      value.senderEndpointSetEpoch,
-      "DirectEnvelopeV4 sender endpoint-set epoch"
     ),
     recipientEndpointHandle: validateOpaqueHandle(
       value.recipientEndpointHandle,
       "DirectEnvelopeV4 recipient endpoint handle"
     ),
-    recipientCertificateDigest: canonicalBase64(
-      value.recipientCertificateDigest,
-      "DirectEnvelopeV4 recipient certificate digest",
+    recipientBindingDigest: canonicalBase64(
+      value.recipientBindingDigest,
+      "DirectEnvelopeV4 recipient endpoint-binding digest",
       DIGEST_BYTES,
       DIGEST_BYTES
-    ),
-    recipientEndpointSetEpoch: uint64(
-      value.recipientEndpointSetEpoch,
-      "DirectEnvelopeV4 recipient endpoint-set epoch"
     ),
     cipherSuite: DIRECT_CIPHER_SUITE,
     negotiatedCapabilitiesDigest: canonicalBase64(
@@ -249,9 +239,9 @@ export function groupApplicationEnvelopeV2SignablePayload(value) {
       DIGEST_BYTES,
       DIGEST_BYTES
     ),
-    senderClientHandle: validateOpaqueHandle(
-      value.senderClientHandle,
-      "GroupApplicationEnvelopeV2 sender client handle"
+    senderCredentialHandle: validateOpaqueHandle(
+      value.senderCredentialHandle,
+      "GroupApplicationEnvelopeV2 sender credential handle"
     ),
     eventId: canonicalUUID(value.eventId, "GroupApplicationEnvelopeV2 event ID"),
     messageCounter: uint64(

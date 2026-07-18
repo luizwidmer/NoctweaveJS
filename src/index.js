@@ -1,5 +1,9 @@
 export { normalizeRelayEndpoint, parseRelayEndpoint, relayEndpointURL } from "./endpoint.js";
-export { relayRequests, validateRelayRequestEnvelopeV2 } from "./requests.js";
+export {
+  relayRequests,
+  validateRelayRequestEnvelopeV2,
+  validateRelayResponseEnvelopeV2
+} from "./requests.js";
 export {
   NoctweaveRelayClient,
   normalizeRelayClientPolicy,
@@ -25,14 +29,18 @@ export {
 } from "./storage.js";
 export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 export * from "./rendezvous-v2.js";
+export * from "./rendezvous-relay-v2.js";
 export * from "./opaque-route-v2.js";
 export * from "./opaque-route-packet-v2.js";
 export * from "./opaque-route-relay-v2.js";
 export * from "./pairwise-opaque-route-v2.js";
+export * from "./relationship-control-v2.js";
+export * from "./relationship-local-policy-v2.js";
 export * from "./contact-pairing-v2.js";
 export {
   advanceDeliveryState,
   contentTypeCanonicalName,
+  createContentTypeCapabilityV2,
   createContentTypeId,
   createConversationEvent,
   createDeliveryStateRecord,
@@ -41,17 +49,21 @@ export {
   createRelationshipEndpointHandle,
   createTextEncodedContent,
   defaultActiveEndpointModules,
+  defaultContentTypeCapabilities,
+  directV4CipherSuite,
   generateRelationshipEndpointHandle,
-  mayMutateControlState,
   messageDeliveryStates,
+  negotiateDirectV4Capabilities,
   negotiateProtocolCapabilities,
   noctweaveArchitectureV2,
   protocolKnownModuleCatalog,
   protocolExtensionStatuses,
   standardContentTypes,
   validateContentTypeId,
+  validateContentTypeCapabilityV2,
   validateConversationEvent,
   validateDeliveryStateRecord,
+  validateDirectV4NegotiatedCapabilityManifest,
   validateEncodedContent,
   validateProtocolCapabilityManifest,
   validateProtocolModuleCapability,
@@ -90,11 +102,7 @@ export {
   verifyNativeEnvelope
 } from "./crypto/noctweave-native-message.js";
 export {
-  assertCertifiedEndpointPrekeyFresh,
-  assertPeerEndpointActive,
-  certifiedEndpointAuthorizationDigest,
-  certifiedEndpointDigest,
-  createEndpointRemovalProofV4,
+  assertRelationshipEndpointPrekeyFresh,
   derivePairwiseDirectV4Binding,
   derivePairwiseEndpointBindingV4,
   directV4ConversationId,
@@ -102,9 +110,8 @@ export {
   isPeerPairwiseIdentityV2,
   nativeDirectV4,
   preparePairwiseDirectV4Identity,
+  relationshipEndpointAuthorizationDigestV4,
   renewPairwiseDirectV4PrekeyIfNeeded,
-  validateCertifiedGenerationEndpointV4,
-  validateEndpointSetCheckpointV4,
-  verifyCertifiedGenerationEndpointV4,
-  verifyEndpointRemovalProofV4
+  validateRelationshipEndpointBindingV4,
+  verifyRelationshipEndpointBindingV4
 } from "./crypto/direct-v4.js";

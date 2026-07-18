@@ -16,14 +16,14 @@ export class NoctweaveRemoteEnvelopeError extends Error {
   }
 }
 import {
-  assertCertifiedEndpointPrekeyFresh,
-  assertPeerEndpointActive,
+  assertRelationshipEndpointPrekeyFresh,
   derivePairwiseDirectV4Binding,
   directV4ConversationId,
   pairwiseDirectV4EndpointSession,
   directV4SessionBindingBytes,
   isPeerPairwiseIdentityV2,
   negotiateNativeDirectV4,
+  verifyRelationshipEndpointBindingV4
 } from "./direct-v4.js";
 import {
   directEnvelopeV4AuthenticatedDataBytes,
@@ -31,6 +31,10 @@ import {
   validateDirectBootstrapV4,
   validateDirectEnvelopeV4
 } from "./noctweave-wire.js";
+import {
+  createApplicationWirePayloadV2,
+  validateWirePayloadV2
+} from "../relationship-control-v2.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -58,12 +62,18 @@ export async function createNativeOutboundSession({
   now = Date.now()
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
-  await assertPeerEndpointActive({ crypto, pqc, peerIdentity });
-  const peerEndpoint = peerIdentity.preferredEndpoint;
-  assertCertifiedEndpointPrekeyFresh({ endpoint: peerEndpoint, now });
-  const localEndpoint = localIdentity.certifiedGenerationEndpoint;
+  await verifyRelationshipEndpointBindingV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey: peerIdentity.signingPublicKey,
+    endpointBinding: peerIdentity.endpointBinding,
+    now
+  });
+  const peerEndpoint = peerIdentity.endpointBinding;
+  assertRelationshipEndpointPrekeyFresh({ endpointBinding: peerEndpoint, now });
+  const localEndpoint = localIdentity.endpointBinding;
   const binding = await derivePairwiseDirectV4Binding({ crypto, localIdentity, peerIdentity });
-  const negotiation = await validateCurrentDirectV4Negotiation({
+  const { manifest: negotiation } = await validateCurrentDirectV4Negotiation({
     crypto,
     localIdentity,
     peerIdentity,
@@ -100,13 +110,9 @@ export async function createNativeOutboundSession({
         ML_KEM_PUBLIC_KEY_BYTES
       ),
       relationshipID: peerIdentity.relationshipID,
-      conversationId: await directV4ConversationId({
-        crypto,
-        localEndpoint,
-        peerEndpoint,
-        binding
-      }),
-      endpointSession
+      conversationId: directV4ConversationId({ binding }),
+      endpointSession,
+      binding
     });
     return {
       conversation,
@@ -134,10 +140,16 @@ export async function createNativeInboundSession({
   now = Date.now()
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
-  await assertPeerEndpointActive({ crypto, pqc, peerIdentity });
+  await verifyRelationshipEndpointBindingV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey: peerIdentity.signingPublicKey,
+    endpointBinding: peerIdentity.endpointBinding,
+    now
+  });
   const local = localIdentity.localEndpoint;
-  const localEndpoint = localIdentity.certifiedGenerationEndpoint;
-  const peerEndpoint = peerIdentity.preferredEndpoint;
+  const localEndpoint = localIdentity.endpointBinding;
+  const peerEndpoint = peerIdentity.endpointBinding;
   const validatedBootstrap = validateDirectBootstrapV4(bootstrap);
   if (validatedBootstrap.kind !== "signedPrekey") {
     throw new Error("Direct-v4 bootstrap does not target the local signed prekey.");
@@ -166,7 +178,7 @@ export async function createNativeInboundSession({
       prekeySecret
     );
     const binding = await derivePairwiseDirectV4Binding({ crypto, localIdentity, peerIdentity });
-    const negotiation = await validateCurrentDirectV4Negotiation({
+    const { manifest: negotiation } = await validateCurrentDirectV4Negotiation({
       crypto,
       localIdentity,
       peerIdentity,
@@ -189,13 +201,9 @@ export async function createNativeInboundSession({
         ML_KEM_PUBLIC_KEY_BYTES
       ),
       relationshipID: peerIdentity.relationshipID,
-      conversationId: await directV4ConversationId({
-        crypto,
-        localEndpoint,
-        peerEndpoint,
-        binding
-      }),
-      endpointSession: pairwiseDirectV4EndpointSession({ peerIdentity, localIdentity, binding })
+      conversationId: directV4ConversationId({ binding }),
+      endpointSession: pairwiseDirectV4EndpointSession({ peerIdentity, localIdentity, binding }),
+      binding
     });
   } finally {
     wipeBytes(sharedSecret);
@@ -288,13 +296,27 @@ async function encryptNativeEnvelopePayload({
   sentAt = swiftISODate()
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
-  const negotiation = await validateCurrentDirectV4Negotiation({
+  const negotiated = await validateCurrentDirectV4Negotiation({
     crypto,
     localIdentity,
     peerIdentity,
     endpointSession: conversation.endpointSession
   });
-  await assertPeerEndpointActive({ crypto, pqc, peerIdentity });
+  const negotiation = negotiated.manifest;
+  const binding = negotiated.binding;
+  const outboundContent = content ?? createTextEncodedContent(text);
+  if (!negotiatedContentTypeSupports(negotiation, outboundContent.type)) {
+    throw new Error(
+      `Peer relationship endpoint did not advertise ${contentTypeCanonicalName(outboundContent.type)}.`
+    );
+  }
+  await verifyRelationshipEndpointBindingV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey: peerIdentity.signingPublicKey,
+    endpointBinding: peerIdentity.endpointBinding,
+    now: Date.parse(sentAt)
+  });
   const ownSigning = deserializeKeypair(
     localIdentity.localEndpoint.signing,
     {
@@ -312,7 +334,7 @@ async function encryptNativeEnvelopePayload({
     authorEndpointHandle: conversation.endpointSession.localEndpointHandle,
     createdAt: canonicalSentAt,
     kind: eventKind,
-    content: content ?? createTextEncodedContent(text),
+    content: outboundContent,
     relation: relation ?? undefined
   });
   const plaintext = encodePaddedDirectV4Application(
@@ -333,13 +355,11 @@ async function encryptNativeEnvelopePayload({
     sessionId: conversation.sessionId,
     eventId,
     senderEndpointHandle: conversation.endpointSession.localEndpointHandle,
-    senderCertificateDigest: conversation.endpointSession.localCertificateReferenceDigest,
-    senderEndpointSetEpoch: conversation.endpointSession.localManifestEpoch,
+    senderBindingDigest: conversation.endpointSession.localBindingReferenceDigest,
     recipientEndpointHandle: conversation.endpointSession.peerEndpointHandle,
-    recipientCertificateDigest: conversation.endpointSession.peerCertificateReferenceDigest,
-    recipientEndpointSetEpoch: conversation.endpointSession.peerManifestEpoch,
-    cipherSuite: conversation.endpointSession.cipherSuite,
-    negotiatedCapabilitiesDigest: conversation.endpointSession.negotiatedCapabilitiesDigest,
+    recipientBindingDigest: conversation.endpointSession.peerBindingReferenceDigest,
+    cipherSuite: binding.cipherSuite,
+    negotiatedCapabilitiesDigest: binding.negotiatedCapabilitiesDigest,
     bootstrap: validatedBootstrap,
     sentAt: canonicalSentAt,
     messageCounter: prepared.counter
@@ -376,10 +396,35 @@ async function encryptNativeEnvelopePayload({
   }
 }
 
-export async function verifyNativeEnvelope({ crypto, pqc, peerIdentity, conversation, envelope }) {
+export async function verifyNativeEnvelope({
+  crypto,
+  pqc,
+  localIdentity,
+  peerIdentity,
+  conversation,
+  envelope,
+  binding = null
+}) {
   requirePeerPairwiseIdentity(peerIdentity);
-  const directEnvelope = await validateNativeEnvelope({ crypto, peerIdentity, conversation, envelope });
-  await assertPeerEndpointActive({ crypto, pqc, peerIdentity });
+  const currentBinding = binding ?? (await validateCurrentDirectV4Negotiation({
+    crypto,
+    localIdentity,
+    peerIdentity,
+    endpointSession: conversation.endpointSession
+  })).binding;
+  const directEnvelope = await validateNativeEnvelope({
+    peerIdentity,
+    conversation,
+    envelope,
+    binding: currentBinding
+  });
+  await verifyRelationshipEndpointBindingV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey: peerIdentity.signingPublicKey,
+    endpointBinding: peerIdentity.endpointBinding,
+    now: Date.parse(directEnvelope.sentAt)
+  });
   const signature = fromBase64(
     directEnvelope.signature,
     "envelope signature",
@@ -387,7 +432,7 @@ export async function verifyNativeEnvelope({ crypto, pqc, peerIdentity, conversa
     ML_DSA_SIGNATURE_BYTES
   );
   const signingPublicKey = fromBase64(
-    peerIdentity.preferredEndpoint.signingPublicKey,
+    peerIdentity.endpointBinding.signingPublicKey,
     "peer endpoint signing key",
     ML_DSA_PUBLIC_KEY_BYTES,
     ML_DSA_PUBLIC_KEY_BYTES
@@ -400,7 +445,7 @@ export async function verifyNativeEnvelope({ crypto, pqc, peerIdentity, conversa
   if (!valid) {
     throw new NoctweaveRemoteEnvelopeError(
       "invalidAttribution",
-      `Invalid signature from ${peerIdentity.displayName}`
+      "Invalid signature for this relationship."
     );
   }
   return directEnvelope;
@@ -436,14 +481,21 @@ async function decryptNativeEnvelopePayload({
   envelope
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
-  const negotiation = await validateCurrentDirectV4Negotiation({
+  const negotiated = await validateCurrentDirectV4Negotiation({
     crypto,
     localIdentity,
     peerIdentity,
     endpointSession: conversation.endpointSession
   });
+  const negotiation = negotiated.manifest;
   const directEnvelope = await verifyNativeEnvelope({
-    crypto, pqc, peerIdentity, conversation, envelope
+    crypto,
+    pqc,
+    localIdentity,
+    peerIdentity,
+    conversation,
+    envelope,
+    binding: negotiated.binding
   });
   const candidateReceiveChain = cloneChain(conversation.receiveChain);
   const key = await receiveMessageKey(
@@ -492,8 +544,7 @@ async function decryptNativeEnvelopePayload({
 
 export function pairwiseConversationKey(peerIdentity) {
   requirePeerPairwiseIdentity(peerIdentity);
-  const endpoint = peerIdentity.preferredEndpoint;
-  return `direct-v4:${peerIdentity.relationshipID}:${endpoint.endpointId}:${endpoint.manifestEpoch}`;
+  return `direct-v4:${peerIdentity.relationshipID}`;
 }
 
 export async function findPairwiseRelationshipForEnvelope({ crypto, relationships, envelope }) {
@@ -515,7 +566,7 @@ export async function findPairwiseRelationshipForEnvelope({ crypto, relationship
   return null;
 }
 
-async function validateNativeEnvelope({ crypto, peerIdentity, conversation, envelope }) {
+async function validateNativeEnvelope({ peerIdentity, conversation, envelope, binding }) {
   requirePeerPairwiseIdentity(peerIdentity);
   const directEnvelope = validateDirectEnvelopeV4(envelope);
   if (directEnvelope.conversationId !== conversation.id) {
@@ -526,13 +577,11 @@ async function validateNativeEnvelope({ crypto, peerIdentity, conversation, enve
   }
   const endpointSession = conversation.endpointSession;
   if (directEnvelope.senderEndpointHandle.rawValue !== endpointSession.peerEndpointHandle.rawValue ||
-      directEnvelope.senderCertificateDigest !== endpointSession.peerCertificateReferenceDigest ||
-      directEnvelope.senderEndpointSetEpoch !== endpointSession.peerManifestEpoch ||
+      directEnvelope.senderBindingDigest !== endpointSession.peerBindingReferenceDigest ||
       directEnvelope.recipientEndpointHandle.rawValue !== endpointSession.localEndpointHandle.rawValue ||
-      directEnvelope.recipientCertificateDigest !== endpointSession.localCertificateReferenceDigest ||
-      directEnvelope.recipientEndpointSetEpoch !== endpointSession.localManifestEpoch ||
-      directEnvelope.cipherSuite !== endpointSession.cipherSuite ||
-      directEnvelope.negotiatedCapabilitiesDigest !== endpointSession.negotiatedCapabilitiesDigest) {
+      directEnvelope.recipientBindingDigest !== endpointSession.localBindingReferenceDigest ||
+      directEnvelope.cipherSuite !== binding.cipherSuite ||
+      directEnvelope.negotiatedCapabilitiesDigest !== binding.negotiatedCapabilitiesDigest) {
     throw new Error("DirectEnvelopeV4 does not match the endpoint session.");
   }
   return directEnvelope;
@@ -547,11 +596,9 @@ function directEnvelopeHeader(envelope) {
     sessionId: envelope.sessionId,
     eventId: envelope.eventId,
     senderEndpointHandle: envelope.senderEndpointHandle,
-    senderCertificateDigest: envelope.senderCertificateDigest,
-    senderEndpointSetEpoch: envelope.senderEndpointSetEpoch,
+    senderBindingDigest: envelope.senderBindingDigest,
     recipientEndpointHandle: envelope.recipientEndpointHandle,
-    recipientCertificateDigest: envelope.recipientCertificateDigest,
-    recipientEndpointSetEpoch: envelope.recipientEndpointSetEpoch,
+    recipientBindingDigest: envelope.recipientBindingDigest,
     cipherSuite: envelope.cipherSuite,
     negotiatedCapabilitiesDigest: envelope.negotiatedCapabilitiesDigest,
     bootstrap: envelope.bootstrap,
@@ -573,18 +620,38 @@ async function validateCurrentDirectV4Negotiation({
   binding = null,
   endpointSession = null
 }) {
-  const localEndpoint = localIdentity?.certifiedGenerationEndpoint;
-  const peerEndpoint = peerIdentity?.preferredEndpoint;
+  const localEndpoint = localIdentity?.endpointBinding;
+  const peerEndpoint = peerIdentity?.endpointBinding;
   if (!localEndpoint || !peerEndpoint) {
-    throw new Error("Certified direct-v4 endpoints are required for negotiation.");
+    throw new Error("Direct-v4 relationship endpoint bindings are required for negotiation.");
   }
+  const currentBinding = await derivePairwiseDirectV4Binding({
+    crypto,
+    localIdentity,
+    peerIdentity
+  });
   const negotiated = await negotiateNativeDirectV4({ crypto, localEndpoint, peerEndpoint });
   const transcript = endpointSession ?? binding;
-  if (!transcript || transcript.cipherSuite !== negotiated.manifest.cipherSuite ||
-      transcript.negotiatedCapabilitiesDigest !== negotiated.digest) {
+  const bindingMatches = binding !== null &&
+    binding.relationshipId === currentBinding.relationshipId &&
+    binding.localEndpointHandle?.rawValue === currentBinding.localEndpointHandle.rawValue &&
+    binding.peerEndpointHandle?.rawValue === currentBinding.peerEndpointHandle.rawValue &&
+    binding.localBindingReferenceDigest === currentBinding.localBindingReferenceDigest &&
+    binding.peerBindingReferenceDigest === currentBinding.peerBindingReferenceDigest &&
+    binding.cipherSuite === currentBinding.cipherSuite &&
+    binding.negotiatedCapabilitiesDigest === currentBinding.negotiatedCapabilitiesDigest;
+  const sessionMatches = endpointSession !== null &&
+    endpointSession.relationshipID === currentBinding.relationshipId &&
+    endpointSession.localEndpointHandle?.rawValue === currentBinding.localEndpointHandle.rawValue &&
+    endpointSession.peerEndpointHandle?.rawValue === currentBinding.peerEndpointHandle.rawValue &&
+    endpointSession.localBindingReferenceDigest === currentBinding.localBindingReferenceDigest &&
+    endpointSession.peerBindingReferenceDigest === currentBinding.peerBindingReferenceDigest;
+  if (!transcript || !(bindingMatches || sessionMatches) ||
+      currentBinding.cipherSuite !== negotiated.manifest.cipherSuite ||
+      currentBinding.negotiatedCapabilitiesDigest !== negotiated.digest) {
     throw new Error("Direct-v4 capability transcript does not match the endpoint session.");
   }
-  return negotiated.manifest;
+  return Object.freeze({ manifest: negotiated.manifest, binding: currentBinding });
 }
 
 function negotiatedLimit(negotiation, moduleName, limitName) {
@@ -596,13 +663,21 @@ function negotiatedLimit(negotiation, moduleName, limitName) {
   return value;
 }
 
+function negotiatedContentTypeSupports(negotiation, contentType) {
+  return Array.isArray(negotiation?.contentTypes) && negotiation.contentTypes.some((capability) =>
+    capability.authority === contentType.authority &&
+    capability.name === contentType.name &&
+    Array.isArray(capability.majorVersions) &&
+    capability.majorVersions.includes(contentType.major));
+}
+
 function validateNegotiatedPrekeyFreshness(prekey, negotiation, now) {
   const nowMs = typeof now === "number" ? now : new Date(now).getTime();
   const issuedAtMs = Date.parse(prekey?.issuedAt);
   const expiresAtMs = Date.parse(prekey?.expiresAt);
   const maximumAgeMs = negotiatedLimit(
     negotiation,
-    "nw.prekeys",
+    "nw.direct",
     "maxPrekeyAgeSeconds"
   ) * 1_000;
   if (!Number.isFinite(nowMs) || !Number.isFinite(issuedAtMs) ||
@@ -617,24 +692,24 @@ function validateNegotiatedApplicationLimits({ event, paddedBytes, negotiation }
   const payload = fromBase64(
     content.payload,
     "direct-v4 application payload",
-    negotiatedLimit(negotiation, "nw.events", "maxContentPayloadBytes")
+    negotiatedLimit(negotiation, "nw.core", "maxContentPayloadBytes")
   );
   try {
     const maxParameterBytes = negotiatedLimit(
       negotiation,
-      "nw.events",
+      "nw.core",
       "maxContentParameterBytes"
     );
-    if (paddedBytes > negotiatedLimit(negotiation, "nw.core", "maxCiphertextBytes") ||
+    if (paddedBytes > negotiatedLimit(negotiation, "nw.direct", "maxCiphertextBytes") ||
         Object.keys(content.parameters).length > negotiatedLimit(
           negotiation,
-          "nw.events",
+          "nw.core",
           "maxContentParameters"
         ) ||
         (content.fallbackText != null &&
           encoder.encode(content.fallbackText).byteLength > negotiatedLimit(
             negotiation,
-            "nw.events",
+            "nw.core",
             "maxFallbackBytes"
           )) ||
         Object.entries(content.parameters).some(([key, value]) =>
@@ -701,13 +776,24 @@ async function conversationFromSharedSecret({
   peerAgreementPublicKey,
   relationshipID,
   conversationId,
-  endpointSession
+  endpointSession,
+  binding
 }) {
-  if (!isBoundedString(conversationId, 256) || endpointSession == null) {
+  if (!isBoundedString(conversationId, 256) || endpointSession == null || binding == null ||
+      conversationId !== relationshipID.toLowerCase()) {
     throw new Error("A direct-v4 conversation binding is required.");
   }
-  const directBinding = directV4SessionBindingBytes(endpointSession);
-  const rootInfo = concatBytes(encoder.encode("ROOT"), directBinding);
+  const directBinding = directV4SessionBindingBytes(binding);
+  const rootInfo = concatBytes(
+    encoder.encode("Noctweave/direct-v4/root"),
+    encoder.encode(binding.relationshipId.toLowerCase()),
+    fromBase64(
+      binding.negotiatedCapabilitiesDigest,
+      "direct-v4 negotiated capabilities digest",
+      32,
+      32
+    )
+  );
   const rootKey = await crypto.hkdfSha256({
     ikm: sharedSecret,
     salt: "NOCTWEAVE-ROOT",
@@ -811,11 +897,7 @@ function encodePaddedDirectV4Application(eventValue, randomBytes) {
   if (event.kind !== "application" && event.kind !== "receipt") {
     throw new TypeError("Only application and receipt events use the extensible direct-v4 codec.");
   }
-  return encodePaddedBody({
-    version: 2,
-    kind: "application",
-    application: event
-  }, NPAD_V2_MAGIC, randomBytes);
+  return encodePaddedBody(createApplicationWirePayloadV2(event), NPAD_V2_MAGIC, randomBytes);
 }
 
 function encodePaddedBody(body, magic, randomBytes) {
@@ -843,8 +925,8 @@ function encodePaddedBody(body, magic, randomBytes) {
 }
 
 function decodePaddedDirectV4Application(data, envelope) {
-  const body = decodePaddedBody(data, NPAD_V2_MAGIC);
-  if (body?.version !== 2 || body.kind !== "application" || body.control != null) {
+  const body = validateWirePayloadV2(decodePaddedBody(data, NPAD_V2_MAGIC));
+  if (body.kind !== "application") {
     throw new Error("Direct-v4 control and application payloads are separated.");
   }
   const event = validateConversationEvent(body.application);

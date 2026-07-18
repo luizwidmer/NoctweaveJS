@@ -5,19 +5,21 @@ import {
   base64,
   canonicalJsonBytes,
   contentTypeCanonicalName,
+  createContentTypeCapabilityV2,
   createContentTypeId,
   createConversationEvent,
   createDeliveryStateRecord,
   createProtocolCapabilityManifest,
   createTextEncodedContent,
   defaultActiveEndpointModules,
+  defaultContentTypeCapabilities,
   generateRelationshipEndpointHandle,
-  mayMutateControlState,
   negotiateProtocolCapabilities,
   protocolKnownModuleCatalog,
   standardContentTypes,
   validateConversationEvent,
   validateEncodedContent,
+  validateContentTypeCapabilityV2,
   validateProtocolCapabilityManifest
 } from "../src/index.js";
 import {
@@ -27,12 +29,11 @@ import {
   createRetractionEncodedContent,
   directV4CipherSuite,
   negotiateDirectV4Capabilities,
-  retractionFallbackText
+  retractionFallbackText,
+  validateDirectV4NegotiatedCapabilityManifest
 } from "../src/architecture-v2.js";
 
 const ids = Object.freeze({
-  identityGenerationId: "25D6B258-9C3D-43B9-A6AB-F654B3089B4B",
-  endpointId: "A12AA310-613D-4F86-8F45-28DC0D410F9F",
   relationshipId: "4A2D4951-C0CA-4B9D-94A4-2DC80B4AE8E0",
   nonce: "E141680A-06A0-4E36-B2D7-5AE72B6013CD",
   eventId: "2F942443-C62C-4D16-93C9-A38DFCB2D69C",
@@ -40,19 +41,31 @@ const ids = Object.freeze({
 });
 
 test("capability negotiation selects highest common versions and lower shared limits", () => {
+  const pollLocal = createContentTypeCapabilityV2({
+    authority: "org.example",
+    name: "poll",
+    majorVersions: [2, 1]
+  });
+  const pollPeer = createContentTypeCapabilityV2({
+    authority: "org.example",
+    name: "poll",
+    majorVersions: [3, 2]
+  });
   const local = createProtocolCapabilityManifest({
     modules: [
       { module: "nw.core", versions: [1, 2], status: "provisional", limits: {} },
       { module: "nw.opaque-route", versions: [1, 2], status: "provisional", limits: { maxPage: 256 } },
-      { module: "nw.events", versions: [2], status: "provisional", limits: { maxEventBytes: 65_536 } }
-    ]
+      { module: "nw.example-a", versions: [2], status: "provisional", limits: { maxEventBytes: 65_536 } }
+    ],
+    contentTypes: [...defaultContentTypeCapabilities, pollLocal]
   });
   const peer = createProtocolCapabilityManifest({
     modules: [
       { module: "nw.core", versions: [2], status: "stable", limits: {} },
       { module: "nw.opaque-route", versions: [2, 3], status: "stable", limits: { maxPage: 64 } },
-      { module: "nw.routes", versions: [2], status: "provisional", limits: {} }
-    ]
+      { module: "nw.example-b", versions: [2], status: "provisional", limits: {} }
+    ],
+    contentTypes: [...defaultContentTypeCapabilities, pollPeer]
   });
 
   const negotiated = negotiateProtocolCapabilities(local, peer);
@@ -61,38 +74,40 @@ test("capability negotiation selects highest common versions and lower shared li
     { module: "nw.opaque-route", versions: [2] }
   ]);
   assert.equal(negotiated.modules[1].limits.maxPage, 64);
+  assert.deepEqual(
+    negotiated.contentTypes.find(({ authority, name }) =>
+      authority === "org.example" && name === "poll").majorVersions,
+    [2]
+  );
   assert.equal(Object.isFrozen(negotiated.modules), true);
 });
 
 test("direct-v4 negotiation is symmetric, bounded, and requires every implemented module", () => {
   const defaults = createProtocolCapabilityManifest();
-  assert.equal(
-    defaults.modules.find(({ module }) => module === "nw.relationship-endpoints").limits.maxActiveEndpoints,
-    1
-  );
   const constrained = createProtocolCapabilityManifest({
-    modules: defaults.modules.map((module) => module.module === "nw.events"
-      ? { ...module, limits: { maxContentPayloadBytes: 1_024 } }
+    modules: defaults.modules.map((module) => module.module === "nw.core"
+      ? { ...module, limits: { ...module.limits, maxContentPayloadBytes: 1_024 } }
       : module)
   });
   const forward = negotiateDirectV4Capabilities(defaults, constrained);
   const reverse = negotiateDirectV4Capabilities(constrained, defaults);
   assert.deepEqual(forward, reverse);
   assert.equal(forward.cipherSuite, directV4CipherSuite);
+  assert.deepEqual(Object.keys(forward), [
+    "version",
+    "architectureVersion",
+    "cipherSuite",
+    "modules",
+    "contentTypes"
+  ]);
+  assert.deepEqual(forward.contentTypes, defaultContentTypeCapabilities);
   assert.deepEqual(forward.modules.map(({ module, version }) => ({ module, version })), [
     { module: "nw.core", version: 2 },
-    { module: "nw.relationship-endpoints", version: 2 },
-    { module: "nw.events", version: 2 },
-    { module: "nw.prekeys", version: 2 },
-    { module: "nw.routes", version: 2 }
+    { module: "nw.direct", version: 4 }
   ]);
   assert.equal(
-    forward.modules.find(({ module }) => module === "nw.events").limits.maxContentPayloadBytes,
+    forward.modules.find(({ module }) => module === "nw.core").limits.maxContentPayloadBytes,
     1_024
-  );
-  assert.equal(
-    forward.modules.find(({ module }) => module === "nw.relationship-endpoints").limits.maxActiveEndpoints,
-    1
   );
 
   const optionalModulesEnabled = createProtocolCapabilityManifest({
@@ -107,49 +122,85 @@ test("direct-v4 negotiation is symmetric, bounded, and requires every implemente
     negotiateDirectV4Capabilities(defaults, defaults)
   );
 
-  const overclaimedEndpoints = createProtocolCapabilityManifest({
-    modules: defaults.modules.map((module) => module.module === "nw.relationship-endpoints"
-      ? { ...module, limits: { maxActiveEndpoints: 16 } }
+  const overclaimedDirect = createProtocolCapabilityManifest({
+    modules: defaults.modules.map((module) => module.module === "nw.direct"
+      ? { ...module, limits: { ...module.limits, maxCiphertextBytes: 1_000_000 } }
       : module)
   });
   assert.equal(
-    negotiateDirectV4Capabilities(overclaimedEndpoints, overclaimedEndpoints)
-      .modules.find(({ module }) => module === "nw.relationship-endpoints").limits.maxActiveEndpoints,
-    1
+    negotiateDirectV4Capabilities(overclaimedDirect, overclaimedDirect)
+      .modules.find(({ module }) => module === "nw.direct").limits.maxCiphertextBytes,
+    65_536
   );
 
-  const missingEvents = createProtocolCapabilityManifest({
-    modules: defaults.modules.filter(({ module }) => module !== "nw.events")
+  const missingDirect = createProtocolCapabilityManifest({
+    modules: defaults.modules.filter(({ module }) => module !== "nw.direct")
   });
   assert.throws(
-    () => negotiateDirectV4Capabilities(defaults, missingEvents),
-    /requires nw\.events/
+    () => negotiateDirectV4Capabilities(defaults, missingDirect),
+    /requires nw\.direct/
   );
 
-  const incompatibleEvents = createProtocolCapabilityManifest({
-    modules: defaults.modules.map((module) => module.module === "nw.events"
-      ? { ...module, versions: [3] }
+  const incompatibleDirect = createProtocolCapabilityManifest({
+    modules: defaults.modules.map((module) => module.module === "nw.direct"
+      ? { ...module, versions: [5] }
       : module)
   });
   assert.throws(
-    () => negotiateDirectV4Capabilities(defaults, incompatibleEvents),
-    /no shared nw\.events version/
+    () => negotiateDirectV4Capabilities(defaults, incompatibleDirect),
+    /no shared nw\.direct version/
+  );
+
+  const localContent = createProtocolCapabilityManifest({
+    contentTypes: [createContentTypeCapabilityV2({
+      authority: "org.noctweave",
+      name: "text",
+      majorVersions: [1, 2]
+    })]
+  });
+  const peerContent = createProtocolCapabilityManifest({
+    contentTypes: [createContentTypeCapabilityV2({
+      authority: "org.noctweave",
+      name: "text",
+      majorVersions: [2, 3]
+    })]
+  });
+  assert.deepEqual(
+    negotiateDirectV4Capabilities(localContent, peerContent).contentTypes,
+    [{ authority: "org.noctweave", name: "text", majorVersions: [2] }]
+  );
+  const incompatibleContent = createProtocolCapabilityManifest({
+    contentTypes: [createContentTypeCapabilityV2({
+      authority: "org.noctweave",
+      name: "text",
+      majorVersions: [3]
+    })]
+  });
+  assert.throws(
+    () => negotiateDirectV4Capabilities(localContent, incompatibleContent),
+    /requires a shared org\.noctweave\/text content family/
+  );
+  const oldShape = structuredClone(forward);
+  delete oldShape.contentTypes;
+  assert.throws(
+    () => validateDirectV4NegotiatedCapabilityManifest(oldShape),
+    /fields must match the current schema exactly/
   );
 });
 
 test("capability manifests are bounded and require the architecture-v2 core", () => {
-  assert.equal(protocolKnownModuleCatalog.length, 14);
+  const defaults = createProtocolCapabilityManifest();
+  assert.equal(protocolKnownModuleCatalog.length, 11);
   assert.deepEqual(defaultActiveEndpointModules.map(({ module }) => module), [
     "nw.core",
-    "nw.events",
-    "nw.prekeys",
-    "nw.relationship-endpoints",
-    "nw.routes"
+    "nw.direct"
   ]);
-  assert.deepEqual(createProtocolCapabilityManifest().modules, defaultActiveEndpointModules);
+  assert.deepEqual(defaults.modules, defaultActiveEndpointModules);
+  assert.deepEqual(defaults.contentTypes, defaultContentTypeCapabilities);
+  assert.deepEqual(Object.keys(defaults), ["architectureVersion", "modules", "contentTypes"]);
   assert.deepEqual(
-    protocolKnownModuleCatalog.find(({ module }) => module === "nw.routes"),
-    { module: "nw.routes", versions: [2], status: "stable", limits: {} }
+    protocolKnownModuleCatalog.find(({ module }) => module === "nw.direct"),
+    { module: "nw.direct", versions: [4], status: "stable", limits: {} }
   );
   for (const inactive of [
     "nw.opaque-route",
@@ -167,9 +218,25 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
   assert.throws(
     () => validateProtocolCapabilityManifest({
       architectureVersion: 2,
-      modules: [{ module: "nw.events", versions: [2], status: "provisional", limits: {} }]
+      modules: [{ module: "nw.example-a", versions: [2], status: "provisional", limits: {} }],
+      contentTypes: defaultContentTypeCapabilities
     }),
     /nw\.core version 2/
+  );
+  assert.throws(
+    () => validateProtocolCapabilityManifest({
+      architectureVersion: 2,
+      modules: defaultActiveEndpointModules
+    }),
+    /fields must match the current schema exactly/
+  );
+  assert.throws(
+    () => validateContentTypeCapabilityV2({
+      authority: "org.example",
+      name: "poll",
+      majorVersions: [2, 1]
+    }),
+    /unique and sorted/
   );
   assert.throws(
     () => createProtocolCapabilityManifest({
@@ -184,7 +251,7 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
 
 test("relationship endpoint handles match the Swift v2 derivation and remain opaque", async () => {
   const handle = await generateRelationshipEndpointHandle(ids);
-  assert.equal(handle.rawValue, "03kx4/LQ+FBjGnQG/B/NTnX7Sj13lp5+O9NUKj2/ZBk=");
+  assert.equal(handle.rawValue, "4haxFhtS3427bxV0686oib/3PkGuyEYB8n+LQCzIpAE=");
   assert.equal(Object.keys(handle).join(","), "rawValue");
   assert.equal(Object.isFrozen(handle), true);
 });
@@ -328,7 +395,7 @@ test("reserved relation and receipt semantics reject mismatch, self-reference, c
   assert.throws(() => createRetractionEncodedContent({ reason: `bad\u0000reason` }), /protocol bounds/);
 });
 
-test("unknown application types survive while unsupported control types fail closed", async () => {
+test("unknown application types survive while control conversation events remain audit-only", async () => {
   const handle = await generateRelationshipEndpointHandle(ids);
   const customType = createContentTypeId({ authority: "dev.example", name: "poll", major: 1, minor: 0 });
   assert.throws(
@@ -369,11 +436,12 @@ test("unknown application types survive while unsupported control types fail clo
   });
 
   assert.equal(application.content.fallbackText, "Unsupported poll");
-  assert.equal(mayMutateControlState(control, [standardContentTypes.text]), false);
-  assert.equal(mayMutateControlState(control, [controlType]), true);
+  assert.equal(control.kind, "control");
+  assert.equal(control.content.disposition, "silent");
+  assert.equal(Object.isFrozen(control), true);
 });
 
-test("relationship delivery state is monotonic and endpoint scoped", async () => {
+test("relationship delivery state is monotonic and relationship scoped", async () => {
   const handle = await generateRelationshipEndpointHandle(ids);
   const local = createDeliveryStateRecord({
     eventId: ids.eventId,
@@ -387,7 +455,7 @@ test("relationship delivery state is monotonic and endpoint scoped", async () =>
 
   assert.equal(accepted.state, "relayAccepted");
   assert.equal(advanceDeliveryState(accepted, "locallyPersisted"), null);
-  assert.equal(advanceDeliveryState(accepted, "peerEndpointStored", {
+  assert.equal(advanceDeliveryState(accepted, "peerStored", {
     updatedAt: "2026-07-16T12:34:59Z"
   }), null);
   assert.equal(local.state, "locallyPersisted");

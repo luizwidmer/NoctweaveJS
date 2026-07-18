@@ -112,17 +112,22 @@ test("one-use ML-KEM rendezvous derives matching directional sessions and fixed-
   );
 });
 
-test("rendezvous rejects disabled purposes, wrong bearer material, expiry, and ciphertext tampering", async () => {
+test("rendezvous exposes only contact pairing and rejects wrong bearer material, expiry, and tampering", async () => {
   const crypto = testCrypto();
   const transportCapability = await createRendezvousTransportCapabilityV2({ crypto, expiresAt });
+  assert.deepEqual(Object.keys(rendezvousPurposeV2), ["contactPairing"]);
+  assert.throws(
+    () => validateRendezvousOfferV2({ ...canonicalOffer(), purpose: "not-contact-pairing" }),
+    (error) => error.code === "invalidOffer"
+  );
   await assert.rejects(
     () => createPendingRendezvousOfferV2({
       crypto,
       transportCapability,
       createdAt,
-      purpose: rendezvousPurposeV2.historyTransfer
+      purpose: "not-contact-pairing"
     }),
-    (error) => error.code === "purposeDisabled"
+    (error) => error.code === "invalidOffer"
   );
 
   const pending = await createPendingRendezvousOfferV2({ crypto, transportCapability, createdAt });

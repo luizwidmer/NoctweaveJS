@@ -6,6 +6,10 @@ import {
 } from "./opaque-route-v2.js";
 import { validateOpaqueRoutePayloadKeyV2 } from "./opaque-route-packet-v2.js";
 import {
+  validateOpaqueRouteCommitResponseV2,
+  validateOpaqueRouteCursorV2
+} from "./opaque-route-relay-v2.js";
+import {
   concatBytes,
   encodeBase64,
   equalBytes,
@@ -21,12 +25,12 @@ import {
 } from "./private-v2.js";
 import { noctweaveRendezvousV2 } from "./rendezvous-v2.js";
 import {
-  validateCertifiedGenerationEndpointV4,
-  validateEndpointSetCheckpointV4,
-  verifyCertifiedGenerationEndpointV4
+  validateRelationshipEndpointBindingV4,
+  verifyRelationshipEndpointBindingV4
 } from "./crypto/direct-v4.js";
 import {
   noctweaveArchitectureV2,
+  validateProtocolCapabilityManifest,
   validateRelationshipEndpointHandle
 } from "./architecture-v2.js";
 
@@ -61,17 +65,38 @@ const routeSetFields = Object.freeze([
 ]);
 const introductionFields = Object.freeze([
   "version",
-  "displayName",
-  "relationshipGenerationID",
+  "relationshipPseudonym",
   "relationshipSigningPublicKey",
   "relationshipAgreementPublicKey",
-  "endpointSetCheckpoint",
-  "preferredEndpoint",
+  "endpointBinding",
   "receiveRoutes",
   "rendezvousTranscriptDigest",
   "issuedAt",
   "expiresAt",
   "signature"
+]);
+const localReceiveRouteFields = Object.freeze([
+  "relay",
+  "route",
+  "clientCapabilities",
+  "payloadKey",
+  "committedCursor",
+  "committedSequence",
+  "committedRecordDigest",
+  "gapState"
+]);
+const gapStateFields = Object.freeze([
+  "reason",
+  "expectedSequence",
+  "observedSequence",
+  "retentionFloorSequence",
+  "detectedAt"
+]);
+const gapReasons = new Set([
+  "retentionExpired",
+  "sequenceDiscontinuity",
+  "digestChainBreak",
+  "cursorRegression"
 ]);
 
 const ML_DSA_PUBLIC_KEY_BYTES = 1_952;
@@ -86,6 +111,8 @@ export const noctweavePairwiseOpaqueRoutesV2 = Object.freeze({
   defaultRoutePriority: 100,
   routeStates: Object.freeze([...routeStates])
 });
+
+export const opaqueRouteGapReasonsV2 = Object.freeze([...gapReasons]);
 
 export class PairwiseOpaqueRouteV2Error extends Error {
   constructor(code, message = code, cause) {
@@ -103,14 +130,210 @@ export class PairwiseRouteSetV2Error extends Error {
   }
 }
 
+export class OpaqueRouteGapV2Error extends PairwiseOpaqueRouteV2Error {
+  constructor(gapState, localReceiveRoute) {
+    super("routeGapDetected", "Opaque route synchronization continuity failed.");
+    this.name = "OpaqueRouteGapV2Error";
+    this.gapState = gapState;
+    this.localReceiveRoute = localReceiveRoute;
+  }
+}
+
+export async function createLocalOpaqueReceiveRouteV2({
+  crypto,
+  relay,
+  route,
+  clientCapabilities,
+  payloadKey
+}) {
+  return validateLocalOpaqueReceiveRouteV2({
+    crypto,
+    route: {
+      relay,
+      route,
+      clientCapabilities,
+      payloadKey,
+      committedCursor: null,
+      committedSequence: 0,
+      committedRecordDigest: encodeBase64(new Uint8Array(DIGEST_BYTES)),
+      gapState: null
+    }
+  });
+}
+
+export async function validateLocalOpaqueReceiveRouteV2({ crypto, route: value }) {
+  try {
+    requireExactKeys(value, localReceiveRouteFields, "Local opaque receive route");
+    const relay = validatePairwiseRelayEndpointV2(value.relay);
+    const route = validateOpaqueReceiveRouteV2(value.route);
+    const clientCapabilities = validateOpaqueRouteClientCapabilityMaterialV2(
+      value.clientCapabilities
+    );
+    const payloadKey = validateOpaqueRoutePayloadKeyV2(value.payloadKey);
+    const committedCursor = value.committedCursor === null
+      ? null
+      : validateOpaqueRouteCursorV2(value.committedCursor);
+    const committedSequence = requireInteger(
+      value.committedSequence,
+      "Opaque route committed sequence",
+      0,
+      Number.MAX_SAFE_INTEGER
+    );
+    const committedRecordDigest = wireDigest(
+      value.committedRecordDigest,
+      "Opaque route committed record digest"
+    );
+    const gapState = value.gapState === null
+      ? null
+      : validateOpaqueRouteGapStateV2(value.gapState);
+    if (route.status !== "active" ||
+        route.routeID.rawValue !== clientCapabilities.routeID.rawValue ||
+        (committedCursor === null &&
+          (committedSequence !== 0 || committedRecordDigest !== encodeBase64(new Uint8Array(DIGEST_BYTES))))) {
+      throw new TypeError("Local opaque receive route state is inconsistent.");
+    }
+    for (const [authority, credential, expectedDigest] of [
+      ["send", clientCapabilities.sendCapability, route.sendCapabilityDigest],
+      ["read", clientCapabilities.readCredential, route.readCredentialDigest],
+      ["renew", clientCapabilities.renewCapability, route.renewCapabilityDigest],
+      ["teardown", clientCapabilities.teardownCapability, route.teardownCapabilityDigest]
+    ]) {
+      const actualDigest = await opaqueRouteCredentialDigestV2(crypto, authority, credential);
+      if (!equalBytes(actualDigest, requireBase64(
+        expectedDigest,
+        DIGEST_BYTES,
+        `Opaque route ${authority} capability digest`
+      ))) {
+        throw new TypeError(`Opaque route ${authority} authority does not match relay state.`);
+      }
+    }
+    return redactedWire({
+      relay,
+      route,
+      clientCapabilities,
+      payloadKey,
+      committedCursor,
+      committedSequence,
+      committedRecordDigest,
+      gapState
+    }, "LocalOpaqueReceiveRouteV2");
+  } catch (error) {
+    if (error instanceof PairwiseOpaqueRouteV2Error) throw error;
+    throw new PairwiseOpaqueRouteV2Error(
+      "invalidRoute",
+      "Local opaque receive route is invalid.",
+      error
+    );
+  }
+}
+
+export function validateOpaqueRouteGapStateV2(value) {
+  requireExactKeys(value, gapStateFields, "Opaque route gap state");
+  if (!gapReasons.has(value.reason)) throw new TypeError("Opaque route gap reason is invalid.");
+  const expectedSequence = requireInteger(
+    value.expectedSequence,
+    "Opaque route expected sequence",
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
+  const observedSequence = requireInteger(
+    value.observedSequence,
+    "Opaque route observed sequence",
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
+  const retentionFloorSequence = requireInteger(
+    value.retentionFloorSequence,
+    "Opaque route retention-floor sequence",
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
+  if (retentionFloorSequence > observedSequence) {
+    throw new TypeError("Opaque route gap bounds are invalid.");
+  }
+  return Object.freeze({
+    reason: value.reason,
+    expectedSequence,
+    observedSequence,
+    retentionFloorSequence,
+    detectedAt: requireCanonicalTimestamp(value.detectedAt, "Opaque route gap detection time")
+  });
+}
+
+export function detectOpaqueRouteGapV2({ batch, localReceiveRoute, detectedAt }) {
+  const expectedSequence = requireInteger(
+    localReceiveRoute?.committedSequence,
+    "Opaque route committed sequence",
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
+  const committedDigest = wireDigest(
+    localReceiveRoute?.committedRecordDigest,
+    "Opaque route committed record digest"
+  );
+  let reason = null;
+  if (batch.retentionFloorSequence > expectedSequence) {
+    reason = "retentionExpired";
+  } else if (batch.startsAfterSequence < expectedSequence || batch.nextSequence < expectedSequence) {
+    reason = "cursorRegression";
+  } else if (batch.startsAfterSequence !== expectedSequence) {
+    reason = "sequenceDiscontinuity";
+  } else if (batch.startsAfterRecordDigest !== committedDigest) {
+    reason = "digestChainBreak";
+  }
+  if (reason === null) return null;
+  return validateOpaqueRouteGapStateV2({
+    reason,
+    expectedSequence,
+    observedSequence: batch.startsAfterSequence,
+    retentionFloorSequence: batch.retentionFloorSequence,
+    detectedAt
+  });
+}
+
+export function assertOpaqueRouteSyncContinuityV2({ batch, localReceiveRoute, detectedAt }) {
+  const gapState = detectOpaqueRouteGapV2({ batch, localReceiveRoute, detectedAt });
+  if (gapState === null) return batch;
+  const quarantined = redactedWire(
+    { ...localReceiveRoute, gapState },
+    "LocalOpaqueReceiveRouteV2"
+  );
+  throw new OpaqueRouteGapV2Error(gapState, quarantined);
+}
+
+export async function advanceLocalOpaqueReceiveRouteV2({
+  crypto,
+  localReceiveRoute: value,
+  batch,
+  commitResponse,
+  detectedAt
+}) {
+  const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({ crypto, route: value });
+  if (localReceiveRoute.gapState !== null) {
+    throw new OpaqueRouteGapV2Error(localReceiveRoute.gapState, localReceiveRoute);
+  }
+  assertOpaqueRouteSyncContinuityV2({ batch, localReceiveRoute, detectedAt });
+  validateOpaqueRouteCommitResponseV2(commitResponse, { cursor: batch.nextCursor });
+  return validateLocalOpaqueReceiveRouteV2({
+    crypto,
+    route: {
+      ...localReceiveRoute,
+      committedCursor: batch.nextCursor,
+      committedSequence: batch.nextSequence,
+      committedRecordDigest: batch.nextRecordDigest,
+      gapState: null
+    }
+  });
+}
+
 /**
  * Validates the only route authority that may be disclosed to a peer.
  * Read, renewal, and teardown secrets are intentionally not wire fields.
  */
-export function validatePairwiseSendRouteV2(value) {
+export function validateOpaqueSendRouteV2(value) {
   try {
-    requireRecord(value, "Pairwise send route");
-    requireExactKeys(value, routeFields, "Pairwise send route");
+    requireRecord(value, "Opaque send route");
+    requireExactKeys(value, routeFields, "Opaque send route");
     const routeID = validateFixedWireValue(value.routeID, "Opaque route ID");
     const sendCapability = validateFixedWireValue(
       value.sendCapability,
@@ -165,10 +388,10 @@ export function validatePairwiseSendRouteV2(value) {
       testedAt,
       drainAfter,
       revokedAt
-    }, "PairwiseSendRouteV2");
+    }, "OpaqueSendRouteV2");
   } catch (error) {
     if (error instanceof PairwiseOpaqueRouteV2Error) throw error;
-    throw new PairwiseOpaqueRouteV2Error("invalidRoute", "Pairwise send route is invalid.", error);
+    throw new PairwiseOpaqueRouteV2Error("invalidRoute", "Opaque send route is invalid.", error);
   }
 }
 
@@ -176,17 +399,17 @@ export function validatePairwiseSendRouteV2(value) {
  * Projects endpoint-local receive authority into peer-visible send authority.
  * All four local capability digests are checked before the projection is made.
  */
-export async function createPairwiseSendRouteV2({
+export async function createOpaqueSendRouteV2({
   crypto,
   relay,
-  opaqueRoute: opaqueRouteValue,
+  route: routeValue,
   clientCapabilities: clientCapabilitiesValue,
   payloadKey: payloadKeyValue,
   priority = noctweavePairwiseOpaqueRoutesV2.defaultRoutePriority,
   state = "active"
 }) {
   try {
-    const opaqueRoute = validateOpaqueReceiveRouteV2(opaqueRouteValue);
+    const route = validateOpaqueReceiveRouteV2(routeValue);
     requireExactKeys(clientCapabilitiesValue, [
       "routeID",
       "sendCapability",
@@ -207,15 +430,15 @@ export async function createPairwiseSendRouteV2({
       clientCapabilitiesValue
     );
     const payloadKey = validateOpaqueRoutePayloadKeyV2(payloadKeyValue);
-    if (opaqueRoute.status !== "active" ||
-        opaqueRoute.routeID.rawValue !== clientCapabilities.routeID.rawValue) {
+    if (route.status !== "active" ||
+        route.routeID.rawValue !== clientCapabilities.routeID.rawValue) {
       throw new TypeError("Opaque receive route does not match its local capability material.");
     }
     const authorityChecks = [
-      ["send", clientCapabilities.sendCapability, opaqueRoute.sendCapabilityDigest],
-      ["read", clientCapabilities.readCredential, opaqueRoute.readCredentialDigest],
-      ["renew", clientCapabilities.renewCapability, opaqueRoute.renewCapabilityDigest],
-      ["teardown", clientCapabilities.teardownCapability, opaqueRoute.teardownCapabilityDigest]
+      ["send", clientCapabilities.sendCapability, route.sendCapabilityDigest],
+      ["read", clientCapabilities.readCredential, route.readCredentialDigest],
+      ["renew", clientCapabilities.renewCapability, route.renewCapabilityDigest],
+      ["teardown", clientCapabilities.teardownCapability, route.teardownCapabilityDigest]
     ];
     for (const [authority, credential, expectedDigest] of authorityChecks) {
       const actualDigest = await opaqueRouteCredentialDigestV2(crypto, authority, credential);
@@ -227,18 +450,18 @@ export async function createPairwiseSendRouteV2({
         throw new TypeError(`Opaque route ${authority} authority does not match relay state.`);
       }
     }
-    return validatePairwiseSendRouteV2({
+    return validateOpaqueSendRouteV2({
       routeID: clientCapabilities.routeID,
       relay,
       sendCapability: clientCapabilities.sendCapability,
       payloadKey,
-      routeRevision: opaqueRoute.lease.renewalSequence,
-      policy: opaqueRoute.lease.policy,
-      validFrom: opaqueRoute.lease.issuedAt,
-      expiresAt: opaqueRoute.lease.expiresAt,
+      routeRevision: route.lease.renewalSequence,
+      policy: route.lease.policy,
+      validFrom: route.lease.issuedAt,
+      expiresAt: route.lease.expiresAt,
       priority,
       state,
-      testedAt: state === "active" ? opaqueRoute.lease.issuedAt : null,
+      testedAt: state === "active" ? route.lease.issuedAt : null,
       drainAfter: null,
       revokedAt: null
     });
@@ -248,8 +471,8 @@ export async function createPairwiseSendRouteV2({
   }
 }
 
-export function pairwiseSendRouteIsUsableV2(value, at = Date.now()) {
-  const route = validatePairwiseSendRouteV2(value);
+export function opaqueSendRouteIsUsableV2(value, at = Date.now()) {
+  const route = validateOpaqueSendRouteV2(value);
   const date = flexibleTimestampMilliseconds(at, "Pairwise route use time");
   if (date < timestampMilliseconds(route.validFrom) || date >= timestampMilliseconds(route.expiresAt)) {
     return false;
@@ -286,7 +509,7 @@ export function validatePairwiseRouteSetV2(value) {
         value.routes.length > noctweaveArchitectureV2.maximumRoutes) {
       throw new TypeError("Pairwise route-set route count is invalid.");
     }
-    const routes = value.routes.map(validatePairwiseSendRouteV2);
+    const routes = value.routes.map(validateOpaqueSendRouteV2);
     const routeIDs = routes.map((route) => route.routeID.rawValue);
     const sortedRouteIDs = [...routeIDs].sort(compareBase64Values);
     if (new Set(routeIDs).size !== routeIDs.length ||
@@ -360,9 +583,9 @@ export function createPairwiseRouteSetV2({
     throw new PairwiseRouteSetV2Error("invalidState", "An initial active route is required.");
   }
   const normalizedIssuedAt = requireCanonicalTimestamp(issuedAt, "Pairwise route-set issue time");
-  const routes = activeRoutes.map(validatePairwiseSendRouteV2);
+  const routes = activeRoutes.map(validateOpaqueSendRouteV2);
   if (routes.some((route) => route.state !== "active" ||
-      !pairwiseSendRouteIsUsableV2(route, normalizedIssuedAt))) {
+      !opaqueSendRouteIsUsableV2(route, normalizedIssuedAt))) {
     throw new PairwiseRouteSetV2Error("invalidState", "Initial pairwise routes must be active and usable.");
   }
   return signPairwiseRouteSetV2({
@@ -403,7 +626,7 @@ export async function derivePairwiseRelationshipIDV2({ crypto, rendezvousTranscr
 export function usablePairwiseRoutesV2(value, at = Date.now()) {
   const routeSet = validatePairwiseRouteSetV2(value);
   return Object.freeze(routeSet.routes
-    .filter((route) => pairwiseSendRouteIsUsableV2(route, at))
+    .filter((route) => opaqueSendRouteIsUsableV2(route, at))
     .sort((left, right) => left.priority - right.priority || compareRoutes(left, right)));
 }
 
@@ -417,7 +640,7 @@ export async function addTestingPairwiseRouteV2({
   ownerSigningSecretKey
 }) {
   const routeSet = validatePairwiseRouteSetV2(current);
-  const route = validatePairwiseSendRouteV2(routeValue);
+  const route = validateOpaqueSendRouteV2(routeValue);
   const existing = routeSet.routes.find((candidate) =>
     candidate.routeID.rawValue === route.routeID.rawValue
   );
@@ -546,6 +769,72 @@ export async function promotePairwiseRouteV2({
   });
 }
 
+// Records a successful targeted probe and promotes the route in one signed
+// successor. No unpublished intermediate route-set revision is created.
+export async function promoteProbedPairwiseRouteV2({
+  crypto,
+  pqc,
+  current,
+  routeID,
+  replacingRouteIDs,
+  testedAt,
+  overlapUntil,
+  issuedAt,
+  ownerSigningPublicKey,
+  ownerSigningSecretKey
+}) {
+  const routeSet = validatePairwiseRouteSetV2(current);
+  const targetID = validateFixedWireValue(routeID, "Opaque route ID").rawValue;
+  if (!Array.isArray(replacingRouteIDs) || replacingRouteIDs.length === 0) {
+    throw new PairwiseRouteSetV2Error("invalidTransition");
+  }
+  const replacements = replacingRouteIDs.map((value) =>
+    validateFixedWireValue(value, "Replaced opaque route ID").rawValue
+  );
+  const replacementSet = new Set(replacements);
+  const tested = requireCanonicalTimestamp(testedAt, "Pairwise route probe time");
+  const transitionTime = requireCanonicalTimestamp(issuedAt, "Pairwise route promotion time");
+  const overlap = requireCanonicalTimestamp(overlapUntil, "Pairwise route overlap deadline");
+  const targetIndex = routeSet.routes.findIndex((route) => route.routeID.rawValue === targetID);
+  const target = routeSet.routes[targetIndex];
+  if (replacementSet.size !== replacements.length || replacementSet.has(targetID) ||
+      timestampMilliseconds(tested) > timestampMilliseconds(transitionTime) ||
+      timestampMilliseconds(overlap) <= timestampMilliseconds(transitionTime) ||
+      !target || target.state !== "testing" || target.testedAt !== null ||
+      timestampMilliseconds(tested) < timestampMilliseconds(target.validFrom) ||
+      replacements.some((id) => !routeSet.routes.some((route) =>
+        route.routeID.rawValue === id && route.state === "active"
+      ))) {
+    throw new PairwiseRouteSetV2Error("invalidTransition");
+  }
+  const routes = routeSet.routes.map((route, index) => {
+    if (index === targetIndex) {
+      return replaceRouteLifecycle(route, {
+        state: "active",
+        testedAt: tested,
+        drainAfter: null,
+        revokedAt: null
+      });
+    }
+    if (!replacementSet.has(route.routeID.rawValue)) return route;
+    return replaceRouteLifecycle(route, {
+      state: "draining",
+      testedAt: route.testedAt,
+      drainAfter: overlap,
+      revokedAt: null
+    });
+  });
+  return transitionPairwiseRouteSetV2({
+    crypto,
+    pqc,
+    current: routeSet,
+    routes,
+    issuedAt: transitionTime,
+    ownerSigningPublicKey,
+    ownerSigningSecretKey
+  });
+}
+
 export async function revokeDrainedPairwiseRouteV2({
   crypto,
   pqc,
@@ -593,7 +882,7 @@ export function validateContactIntroductionV2(value, { pqc } = {}) {
   if (!verifyPairwiseRouteSetV2({
     pqc,
     routeSet: introduction.receiveRoutes,
-    ownerSigningPublicKey: introduction.preferredEndpoint.signingPublicKey
+    ownerSigningPublicKey: introduction.endpointBinding.signingPublicKey
   })) {
     throw new PairwiseOpaqueRouteV2Error(
       "invalidIntroduction",
@@ -608,8 +897,7 @@ function normalizeContactIntroductionV2(value) {
     requireRecord(value, "Contact introduction");
     requireExactKeys(value, introductionFields, "Contact introduction");
     if (value.version !== noctweavePairwiseOpaqueRoutesV2.version ||
-        !boundedString(value.displayName, 512) ||
-        !canonicalUUID(value.relationshipGenerationID)) {
+        !boundedString(value.relationshipPseudonym, 512)) {
       throw new TypeError("Contact introduction relationship fields are invalid.");
     }
     requireBase64(
@@ -622,11 +910,10 @@ function normalizeContactIntroductionV2(value) {
       ML_KEM_PUBLIC_KEY_BYTES,
       "Contact introduction relationship agreement key"
     );
-    validateExactCurrentEndpoint(value.endpointSetCheckpoint, value.preferredEndpoint);
-    const checkpoint = validateEndpointSetCheckpointV4(value.endpointSetCheckpoint);
-    const preferredEndpoint = validateCertifiedGenerationEndpointV4(
-      value.preferredEndpoint,
-      value.preferredEndpoint?.prekeyBundle?.createdAt
+    validateExactRelationshipEndpointBinding(value.endpointBinding);
+    const endpointBinding = validateRelationshipEndpointBindingV4(
+      value.endpointBinding,
+      value.endpointBinding?.prekeyBundle?.createdAt
     );
     const receiveRoutes = validatePairwiseRouteSetV2(value.receiveRoutes);
     requireBase64(
@@ -642,22 +929,16 @@ function normalizeContactIntroductionV2(value) {
         usablePairwiseRoutesV2(receiveRoutes, issuedAt).length === 0 ||
         usablePairwiseRoutesV2(receiveRoutes, issuedAt).some((route) =>
           timestampMilliseconds(route.expiresAt) <= timestampMilliseconds(expiresAt)
-        ) ||
-        checkpoint.identityGenerationId !== value.relationshipGenerationID ||
-        preferredEndpoint.identityGenerationId !== value.relationshipGenerationID ||
-        preferredEndpoint.manifestEpoch !== checkpoint.epoch ||
-        preferredEndpoint.manifestDigest !== checkpoint.manifestDigest) {
+        )) {
       throw new TypeError("Contact introduction is not bound to current active state.");
     }
     requireBase64(value.signature, ML_DSA_SIGNATURE_BYTES, "Contact introduction signature");
     return Object.freeze({
       version: noctweavePairwiseOpaqueRoutesV2.version,
-      displayName: value.displayName,
-      relationshipGenerationID: value.relationshipGenerationID,
+      relationshipPseudonym: value.relationshipPseudonym,
       relationshipSigningPublicKey: value.relationshipSigningPublicKey,
       relationshipAgreementPublicKey: value.relationshipAgreementPublicKey,
-      endpointSetCheckpoint: freezeWire(checkpoint),
-      preferredEndpoint: freezeWire(preferredEndpoint),
+      endpointBinding: freezeWire(endpointBinding),
       receiveRoutes,
       rendezvousTranscriptDigest: value.rendezvousTranscriptDigest,
       issuedAt,
@@ -687,18 +968,16 @@ export function contactIntroductionV2SignableBytes(value) {
 /**
  * Creates a one-use introduction from explicitly supplied relationship keys.
  * There is deliberately no aggregate-authority parameter: callers must mint a
- * fresh relationship generation and certificate graph for this peer.
+ * fresh disposable relationship authority and endpoint binding for this peer.
  */
 export async function createContactIntroductionV2({
   crypto,
   pqc,
-  displayName,
-  relationshipGenerationID,
+  relationshipPseudonym,
   relationshipSigningPublicKey,
   relationshipSigningSecretKey,
   relationshipAgreementPublicKey,
-  endpointSetCheckpoint,
-  preferredEndpoint,
+  endpointBinding,
   receiveRoutes,
   rendezvousTranscriptDigest,
   issuedAt,
@@ -709,13 +988,11 @@ export async function createContactIntroductionV2({
       throw new TypeError("Contact introduction creation requires ML-DSA signing.");
     }
     const digest = wireDigest(rendezvousTranscriptDigest, "Rendezvous transcript digest");
-    await verifyCertifiedGenerationEndpointV4({
+    await verifyRelationshipEndpointBindingV4({
       crypto,
       pqc,
-      identityGenerationId: relationshipGenerationID,
-      identitySigningPublicKey: relationshipSigningPublicKey,
-      endpointSetCheckpoint,
-      preferredEndpoint,
+      authoritySigningPublicKey: relationshipSigningPublicKey,
+      endpointBinding,
       now: requireCanonicalTimestamp(issuedAt, "Contact introduction issue time")
     });
     if (receiveRoutes?.relationshipID !== await derivePairwiseRelationshipIDV2({
@@ -727,18 +1004,16 @@ export async function createContactIntroductionV2({
     if (!verifyPairwiseRouteSetV2({
       pqc,
       routeSet: receiveRoutes,
-      ownerSigningPublicKey: preferredEndpoint?.signingPublicKey
+      ownerSigningPublicKey: endpointBinding?.signingPublicKey
     })) {
       throw new TypeError("Contact introduction route set is not signed by its endpoint.");
     }
     const unsigned = {
       version: noctweavePairwiseOpaqueRoutesV2.version,
-      displayName,
-      relationshipGenerationID,
+      relationshipPseudonym,
       relationshipSigningPublicKey,
       relationshipAgreementPublicKey,
-      endpointSetCheckpoint,
-      preferredEndpoint,
+      endpointBinding,
       receiveRoutes,
       rendezvousTranscriptDigest: digest,
       issuedAt: requireCanonicalTimestamp(issuedAt, "Contact introduction issue time"),
@@ -838,19 +1113,17 @@ export async function verifyContactIntroductionV2({
     );
   }
   try {
-    await verifyCertifiedGenerationEndpointV4({
+    await verifyRelationshipEndpointBindingV4({
       crypto,
       pqc,
-      identityGenerationId: introduction.relationshipGenerationID,
-      identitySigningPublicKey: introduction.relationshipSigningPublicKey,
-      endpointSetCheckpoint: introduction.endpointSetCheckpoint,
-      preferredEndpoint: introduction.preferredEndpoint,
-      now: introduction.preferredEndpoint.prekeyBundle.createdAt
+      authoritySigningPublicKey: introduction.relationshipSigningPublicKey,
+      endpointBinding: introduction.endpointBinding,
+      now: introduction.endpointBinding.prekeyBundle.createdAt
     });
     if (!verifyPairwiseRouteSetV2({
       pqc,
       routeSet: introduction.receiveRoutes,
-      ownerSigningPublicKey: introduction.preferredEndpoint.signingPublicKey
+      ownerSigningPublicKey: introduction.endpointBinding.signingPublicKey
     })) {
       throw new TypeError("Contact introduction route set signature is invalid.");
     }
@@ -878,7 +1151,7 @@ function signPairwiseRouteSetV2({
   if (typeof pqc?.sign !== "function" || typeof pqc?.verify !== "function") {
     throw new TypeError("Pairwise route-set signing requires ML-DSA signing and verification.");
   }
-  const orderedRoutes = routes.map(validatePairwiseSendRouteV2).sort(compareRoutes);
+  const orderedRoutes = routes.map(validateOpaqueSendRouteV2).sort(compareRoutes);
   const unsigned = {
     version: noctweavePairwiseOpaqueRoutesV2.version,
     relationshipID,
@@ -989,7 +1262,7 @@ async function revokePairwiseRoute({
 
 function replaceRouteLifecycle(route, { state, testedAt, drainAfter, revokedAt }) {
   try {
-    return validatePairwiseSendRouteV2({
+    return validateOpaqueSendRouteV2({
       routeID: route.routeID,
       relay: route.relay,
       sendCapability: route.sendCapability,
@@ -1025,12 +1298,10 @@ function routeSetSignatureProjection(value) {
 function introductionSignatureProjection(value) {
   return {
     version: value.version,
-    displayName: value.displayName,
-    relationshipGenerationID: value.relationshipGenerationID,
+    relationshipPseudonym: value.relationshipPseudonym,
     relationshipSigningPublicKey: value.relationshipSigningPublicKey,
     relationshipAgreementPublicKey: value.relationshipAgreementPublicKey,
-    endpointSetCheckpoint: value.endpointSetCheckpoint,
-    preferredEndpoint: value.preferredEndpoint,
+    endpointBinding: value.endpointBinding,
     receiveRoutes: value.receiveRoutes,
     rendezvousTranscriptDigest: value.rendezvousTranscriptDigest,
     issuedAt: value.issuedAt,
@@ -1086,65 +1357,45 @@ function validatePairwiseRelayEndpointV2(value) {
   return freezeWire(relay);
 }
 
-function validateExactCurrentEndpoint(checkpoint, endpoint) {
-  requireRecord(checkpoint, "Endpoint set checkpoint");
-  requireExactKeys(checkpoint, [
-    "version",
-    "identityGenerationId",
-    "identityFingerprint",
-    "epoch",
-    "manifestDigest",
-    "issuedAt",
-    "signature"
-  ], "Endpoint set checkpoint");
-  requireCanonicalTimestamp(checkpoint.issuedAt, "Endpoint checkpoint issue time");
-  requireRecord(endpoint, "Certified generation endpoint");
+function validateExactRelationshipEndpointBinding(endpoint) {
+  requireRecord(endpoint, "Relationship endpoint binding");
   requireExactKeys(endpoint, [
-    "identityGenerationId",
-    "identityAuthorityPublicKey",
-    "manifestEpoch",
-    "manifestDigest",
-    "endpointId",
+    "version",
     "signingPublicKey",
     "agreementPublicKey",
     "capabilities",
     "prekeyBundle",
     "prekeyPackageSignature",
     "issuedAt",
-    "authoritySignature",
-    "possessionSignature"
-  ], "Certified generation endpoint");
-  requireCanonicalTimestamp(endpoint.issuedAt, "Certified endpoint issue time");
-  requireRecord(endpoint.capabilities, "Certified endpoint capabilities");
+    "authoritySignature"
+  ], "Relationship endpoint binding");
+  requireCanonicalTimestamp(endpoint.issuedAt, "Relationship endpoint issue time");
+  requireRecord(endpoint.capabilities, "Relationship endpoint capabilities");
   requireExactKeys(
     endpoint.capabilities,
-    ["architectureVersion", "modules"],
-    "Certified endpoint capabilities"
+    ["architectureVersion", "modules", "contentTypes"],
+    "Relationship endpoint capabilities"
   );
-  if (Array.isArray(endpoint.capabilities.modules)) {
-    for (const module of endpoint.capabilities.modules) {
-      requireExactKeys(module, ["module", "versions", "status", "limits"], "Endpoint module capability");
-    }
-  }
-  const bundle = requireRecord(endpoint.prekeyBundle, "Certified endpoint prekey bundle");
+  validateProtocolCapabilityManifest(endpoint.capabilities);
+  const bundle = requireRecord(endpoint.prekeyBundle, "Relationship endpoint prekey bundle");
   requireExactKeys(bundle, [
     "version",
-    "identityFingerprint",
+    "relationshipSigningKeyDigest",
     "signedPrekey",
     "oneTimePrekeys",
     "createdAt"
-  ], "Certified endpoint prekey bundle");
-  requireCanonicalTimestamp(bundle.createdAt, "Certified endpoint prekey creation time");
-  const signedPrekey = requireRecord(bundle.signedPrekey, "Certified endpoint signed prekey");
+  ], "Relationship endpoint prekey bundle");
+  requireCanonicalTimestamp(bundle.createdAt, "Relationship endpoint prekey creation time");
+  const signedPrekey = requireRecord(bundle.signedPrekey, "Relationship endpoint signed prekey");
   requireExactKeys(signedPrekey, [
     "id",
     "publicKey",
     "issuedAt",
     "expiresAt",
     "signature"
-  ], "Certified endpoint signed prekey");
-  requireCanonicalTimestamp(signedPrekey.issuedAt, "Certified endpoint signed prekey issue time");
-  requireCanonicalTimestamp(signedPrekey.expiresAt, "Certified endpoint signed prekey expiry");
+  ], "Relationship endpoint signed prekey");
+  requireCanonicalTimestamp(signedPrekey.issuedAt, "Relationship endpoint signed prekey issue time");
+  requireCanonicalTimestamp(signedPrekey.expiresAt, "Relationship endpoint signed prekey expiry");
 }
 
 function validateFixedWireValue(value, label) {

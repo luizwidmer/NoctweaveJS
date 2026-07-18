@@ -2,6 +2,9 @@
 import {
   NoctweaveRelayClient,
   WebCryptoPrimitives,
+  advanceLocalOpaqueReceiveRouteV2,
+  assertOpaqueRouteSyncContinuityV2,
+  createLocalOpaqueReceiveRouteV2,
   createOpaqueRouteClientCapabilityMaterialV2,
   createOpaqueRouteIdempotencyKeyV2,
   createOpaqueRouteLeaseV2,
@@ -28,7 +31,7 @@ const client = new NoctweaveRelayClient(endpoint, {
 console.log(`Relay: ${endpoint}`);
 console.log(`Health: ${JSON.stringify(await client.health())}`);
 const info = await client.info();
-console.log(`Info: ${info.relayInfo?.relayName ?? info.type ?? "unknown"}`);
+console.log(`Info: ${info.relayInfo?.relayName ?? "unknown"}`);
 
 const createdAt = new Date();
 const createdAtValue = swiftISODate(createdAt);
@@ -51,12 +54,19 @@ const createTransition = await makeOpaqueRouteCreateRequestV2({
   nonce: await createOpaqueRouteProofNonceV2(crypto)
 });
 const created = await client.createOpaqueRoute({
-  transition: createTransition,
+  request: createTransition,
   renewCapability: capabilities.renewCapability
 });
-console.log(`Created opaque route: ${created.opaqueRouteV2.status}`);
+console.log(`Created opaque route: ${created.status}`);
 
 const payloadKey = await createOpaqueRoutePayloadKeyV2(crypto);
+let localReceiveRoute = await createLocalOpaqueReceiveRouteV2({
+  crypto,
+  relay: client.endpoint,
+  route: created,
+  clientCapabilities: capabilities,
+  payloadKey
+});
 const bundle = await sealOpaqueRouteBundleV2({
   crypto,
   payload: new TextEncoder().encode(options.text ?? `Noctweave route smoke ${createdAtValue}`),
@@ -80,32 +90,44 @@ const synced = await client.syncOpaqueRoute({
   request: syncRequest,
   readCredential: capabilities.readCredential
 });
-console.log(`Synced packets: ${synced.opaqueRouteSyncV2.packets.length}`);
+assertOpaqueRouteSyncContinuityV2({
+  batch: synced,
+  localReceiveRoute,
+  detectedAt: swiftISODate()
+});
+console.log(`Synced packets: ${synced.packets.length}`);
 
 const commitRequest = await makeOpaqueRouteCommitRequestV2({
   crypto,
   capabilities,
-  cursor: synced.opaqueRouteSyncV2.nextCursor
+  cursor: synced.nextCursor
 });
-await client.commitOpaqueRoute({
+const committed = await client.commitOpaqueRoute({
   request: commitRequest,
   readCredential: capabilities.readCredential
 });
-console.log("Committed opaque route cursor: ok");
+localReceiveRoute = await advanceLocalOpaqueReceiveRouteV2({
+  crypto,
+  localReceiveRoute,
+  batch: synced,
+  commitResponse: committed,
+  detectedAt: swiftISODate()
+});
+console.log(`Committed opaque route sequence: ${localReceiveRoute.committedSequence}`);
 
 const teardownTransition = await makeOpaqueRouteTeardownRequestV2({
   crypto,
   capabilities,
-  current: created.opaqueRouteV2,
+  current: created,
   authorizedAt: swiftISODate(),
   idempotencyKey: await createOpaqueRouteIdempotencyKeyV2(crypto),
   nonce: await createOpaqueRouteProofNonceV2(crypto)
 });
 const tornDown = await client.teardownOpaqueRoute({
-  transition: teardownTransition,
+  request: teardownTransition,
   teardownCapability: capabilities.teardownCapability
 });
-console.log(`Tore down opaque route: ${tornDown.opaqueRouteV2.status}`);
+console.log(`Tore down opaque route: ${tornDown.status}`);
 
 function parseArgs(args) {
   const parsed = {};

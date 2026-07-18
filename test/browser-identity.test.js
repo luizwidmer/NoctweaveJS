@@ -28,8 +28,7 @@ test("browser personas are keyless UI containers and each pairing mints fresh au
     "signing",
     "agreement",
     "access",
-    "networkAddress",
-    "identityGenerationId"
+    "networkAddress"
   ]) {
     assert.equal(Object.hasOwn(persona, forbidden), false, forbidden);
   }
@@ -43,8 +42,8 @@ test("browser personas are keyless UI containers and each pairing mints fresh au
     relay: "https://relay.example",
     createdAt: "2026-07-16T12:00:01Z"
   });
-  assert.equal(first.localIdentity.displayName, defaultRelationshipPseudonymV2);
-  assert.notEqual(first.localIdentity.displayName, persona.displayName);
+  assert.equal(first.localIdentity.relationshipPseudonym, defaultRelationshipPseudonymV2);
+  assert.notEqual(first.localIdentity.relationshipPseudonym, persona.displayName);
   assert.notEqual(first.localIdentity.signing.publicKey, second.localIdentity.signing.publicKey);
   assert.notEqual(
     first.localReceiveRoute.clientCapabilities.routeID.rawValue,
@@ -62,7 +61,7 @@ test("browser personas are keyless UI containers and each pairing mints fresh au
   const peer = await service.preparePairingParticipant({
     persona: peerPersona,
     relay: "https://relay.example",
-    relationshipLabel: "Bob for Alice",
+    relationshipPseudonym: "Bob for Alice",
     createdAt: "2026-07-16T12:00:00Z"
   });
   const completed = await service.establishPairing({
@@ -75,14 +74,15 @@ test("browser personas are keyless UI containers and each pairing mints fresh au
   });
   assert.equal(completed.persona.relationships.length, 1);
   assert.equal(completed.persona.relationships[0].relationshipID, completed.relationship.relationshipID);
-  assert.equal(completed.persona.relationships[0].peerIdentity.displayName, "Bob for Alice");
+  assert.equal(completed.persona.relationships[0].peerIdentity.relationshipPseudonym, "Bob for Alice");
+  assert.equal(JSON.stringify(completed.relationship).includes(persona.displayName), false);
 });
 
 test("browser relay verification requires current opaque-route delivery", async () => {
   const service = await pairingService({
     relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
-      info: async () => ({ type: "info", relayInfo: testRelayInfo() })
+      health: async () => ({}),
+      info: async () => ({ relayInfo: testRelayInfo() })
     })
   });
   const verified = await service.verifyRelay("https://relay.example");
@@ -91,9 +91,8 @@ test("browser relay verification requires current opaque-route delivery", async 
 
   const incompatible = await pairingService({
     relayClientFactory: () => ({
-      health: async () => ({ type: "ok" }),
+      health: async () => ({}),
       info: async () => ({
-        type: "info",
         relayInfo: {
           ...testRelayInfo(),
           protocolCapabilities: {
@@ -112,7 +111,7 @@ test("browser persona schema rejects non-current global identity state", () => {
     stateSchema: "nw.browser-global-identity",
     architectureVersion: 2,
     displayName: "Alice",
-    identityGenerationId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+    globalProtocolID: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
     networkAddress: "reusable-address"
   };
   assert.throws(() => validateBrowserPersonaState(foreignState), /fields do not match|unsupported/);
@@ -140,16 +139,15 @@ async function pairingService(options = {}) {
   const pqc = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
   const crypto = new NoctweaveCryptoSuite({ pqc, webcrypto: new WebCryptoPrimitives() });
   const relayClientFactory = options.relayClientFactory ?? (() => ({
-    createOpaqueRoute: async ({ transition, renewCapability }) => ({
-      type: "opaqueRouteV2",
-      opaqueRouteV2: await createOpaqueReceiveRouteV2({
+    createOpaqueRoute: async ({ request, renewCapability }) => (
+      createOpaqueReceiveRouteV2({
         crypto,
-        request: transition,
+        request,
         presentedRenewCapability: renewCapability,
         confidentialTransport: true,
-        receivedAt: transition.lease.issuedAt
+        receivedAt: request.lease.issuedAt
       })
-    })
+    )
   }));
   return new NoctweaveBrowserPairingService({
     pqc,
