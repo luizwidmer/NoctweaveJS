@@ -25,23 +25,24 @@ test("browser secret state stays encrypted and old global schemas are rejected",
   assert.match(script, /EncryptedNoctweaveStore/);
   assert.match(script, /iterations:\s*310_000/);
   assert.match(script, /validateBrowserPersonaState/);
-  assert.match(script, /preparePairingParticipant/);
-  assert.match(script, /pendingPairings\.push/);
+  assert.match(script, /prepareOffererPairing/);
+  assert.doesNotMatch(script, /pendingPairings\.push/);
   assert.match(identityService, /stateSchema !== browserPersonaStateSchema/);
   assert.match(identityService, /scope !== "pairwise"/);
   assert.doesNotMatch(script, /migrate|backfill|compatibility/i);
 });
 
-test("every browser invitation creates fresh participant state before persistence", async () => {
+test("every browser invitation persists a valid offerer state machine", async () => {
   const script = await readFile(new URL("../client/app.js", import.meta.url), "utf8");
   const start = script.indexOf("async function createInvitation");
   const end = script.indexOf("async function copyInvitation", start);
   assert.ok(start >= 0 && end > start);
   const body = script.slice(start, end);
-  assert.match(body, /createPairingInvitation/);
-  assert.match(body, /preparePairingParticipant/);
-  assert.match(body, /state\.persona\.pendingPairings\.push/);
-  assert.ok(body.indexOf("preparePairingParticipant") < body.indexOf("repository.save"));
+  assert.match(body, /prepareOffererPairing/);
+  assert.match(body, /persona:\s*state\.persona/);
+  assert.match(body, /repository\.save\(prepared\.persona\)/);
+  assert.ok(body.indexOf("prepareOffererPairing") < body.indexOf("repository.save"));
+  assert.ok(body.indexOf("repository.save") < body.indexOf("state.persona = prepared.persona"));
   assert.match(body, /expiresAt/);
 });
 

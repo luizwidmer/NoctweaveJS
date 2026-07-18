@@ -196,31 +196,18 @@ async function createInvitation() {
   const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1_000);
   const createdAtValue = swiftISODate(createdAt);
   const expiresAtValue = swiftISODate(expiresAt);
-  const made = await state.pairing.createPairingInvitation({
+  const prepared = await state.pairing.prepareOffererPairing({
+    persona: state.persona,
+    relay: elements.relay.value,
     createdAt: createdAtValue,
     expiresAt: expiresAtValue
   });
-  const participant = await state.pairing.preparePairingParticipant({
-    persona: state.persona,
-    relay: elements.relay.value,
-    createdAt: createdAtValue
-  });
   const encoded = await encodeContactPairingInvitationV2({
     crypto: state.crypto,
-    invitation: made.invitation
+    invitation: prepared.invitation
   });
-  const pendingRecord = {
-    version: 2,
-    createdAt: createdAtValue,
-    expiresAt: expiresAtValue,
-    pending: made.pending,
-    participant
-  };
-  state.persona.pendingPairings = state.persona.pendingPairings
-    .filter(({ expiresAt: expiry }) => Date.parse(expiry) > Date.now());
-  state.persona.pendingPairings.push(pendingRecord);
-  validateBrowserPersonaState(state.persona);
-  await state.repository.save(state.persona);
+  await state.repository.save(prepared.persona);
+  state.persona = prepared.persona;
   state.invitation = encoded;
   elements.invitation.value = encoded;
   elements.invitationResult.textContent = "Fresh invitation ready. It expires in ten minutes and can be redeemed once.";
