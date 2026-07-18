@@ -107,7 +107,11 @@ export function validateProtocolModuleCapability(value) {
   }
   const limits = {};
   for (const [key, limit] of entries.sort(([left], [right]) => compareProtocolStrings(left, right))) {
-    boundedString(key, "Protocol module limit name", { maximumBytes: 96 });
+    boundedString(key, "Protocol module limit name", {
+      maximumBytes: 96,
+      trimmed: true,
+      controls: false
+    });
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError("Protocol module limits must be non-negative safe integers.");
     }

@@ -216,6 +216,17 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
     }),
     /limits must be an object/
   );
+  for (const key of [" maxPage", "maxPage ", "max\u0000Page"]) {
+    assert.throws(
+      () => validateProtocolModuleCapability({
+        module: "nw.core",
+        versions: [2],
+        status: "stable",
+        limits: { [key]: 256 }
+      }),
+      /limit name.*protocol bounds/
+    );
+  }
   for (const inactive of [
     "nw.opaque-route",
     "nw.rendezvous-transport",

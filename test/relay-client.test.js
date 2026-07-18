@@ -820,6 +820,26 @@ test("attachment upload requires an exact bounded encrypted payload", () => {
   const request = relayRequests.uploadAttachment(input);
   assert.deepEqual(request.body.payload, payload);
   assert.equal(request.body.ttlSeconds, null);
+  assert.equal(
+    relayRequests.fetchAttachment({
+      attachmentId: input.attachmentId,
+      chunkIndex: 511
+    }).body.chunkIndex,
+    511
+  );
+  for (const chunkIndex of [-1, 512]) {
+    assert.throws(
+      () => relayRequests.uploadAttachment({ ...input, chunkIndex }),
+      /Attachment coordinates are invalid/
+    );
+    assert.throws(
+      () => relayRequests.fetchAttachment({
+        attachmentId: input.attachmentId,
+        chunkIndex
+      }),
+      /Attachment coordinates are invalid/
+    );
+  }
 
   assert.throws(
     () => relayRequests.uploadAttachment({ ...input, legacy: true }),

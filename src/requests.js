@@ -31,7 +31,8 @@ import { canonicalJson, swiftUUID } from "./crypto/swift-canonical.js";
 const encryptedAttachmentPayloadLimits = Object.freeze({
   nonceBytes: 12,
   tagBytes: 16,
-  maximumEncodedBytes: 128 * 1_024
+  maximumEncodedBytes: 128 * 1_024,
+  maximumChunkCount: 512
 });
 const mlDsa65PublicKeyBytes = 1_952;
 const mlDsa65SignatureBytes = 3_309;
@@ -794,7 +795,9 @@ function validateRequestBody(binding, body) {
 }
 
 function validateAttachmentCoordinates(body) {
-  if (!canonicalUUID(body.attachmentId) || !Number.isSafeInteger(body.chunkIndex) || body.chunkIndex < 0) {
+  if (!canonicalUUID(body.attachmentId) || !Number.isSafeInteger(body.chunkIndex) ||
+      body.chunkIndex < 0 ||
+      body.chunkIndex >= encryptedAttachmentPayloadLimits.maximumChunkCount) {
     throw new TypeError("Attachment coordinates are invalid.");
   }
 }
