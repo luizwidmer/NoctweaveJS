@@ -2,12 +2,13 @@ import { NoctweaveRelayClient } from "./relay-client.js";
 import { NoctweaveStateRepository } from "./storage.js";
 import {
   makeOpaqueRouteCommitRequestV2,
-  makeOpaqueRouteSyncRequestV2
+  makeOpaqueRouteSyncRequestV2,
+  validateOpaqueRouteCommitResponseV2
 } from "./opaque-route-relay-v2.js";
 import {
   OpaqueRouteGapV2Error,
   advanceLocalOpaqueReceiveRouteV2,
-  assertOpaqueRouteSyncContinuityV2,
+  markLocalOpaqueReceiveRouteGapV2,
   validateLocalOpaqueReceiveRouteV2
 } from "./pairwise-opaque-route-v2.js";
 import { swiftISODate } from "./crypto/swift-canonical.js";
@@ -92,11 +93,13 @@ export class NoctweaveWebClient {
 
   async syncOpaqueRoute(localReceiveRouteValue, {
     limit = 256,
+    persistLocalState,
     requestID,
     authorizedAt = swiftISODate(),
     nonce,
     relayOptions
   } = {}) {
+    requireLocalPersistenceTransaction(persistLocalState);
     const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({
       crypto: this.crypto,
       route: localReceiveRouteValue
@@ -117,53 +120,88 @@ export class NoctweaveWebClient {
       request,
       readCredential: localReceiveRoute.clientCapabilities.readCredential
     }, relayOptions);
-    assertOpaqueRouteSyncContinuityV2({
+    const gapRoute = await markLocalOpaqueReceiveRouteGapV2({
+      crypto: this.crypto,
       batch,
       localReceiveRoute,
       detectedAt: authorizedAt
     });
+    if (gapRoute !== null) {
+      await persistLocalState(Object.freeze({
+        kind: "routeGap",
+        previousLocalReceiveRoute: localReceiveRoute,
+        localReceiveRoute: gapRoute,
+        batch
+      }));
+      throw new OpaqueRouteGapV2Error(gapRoute.gapState, gapRoute);
+    }
     return Object.freeze({ batch, localReceiveRoute });
   }
 
-  async commitOpaqueRoute({ localReceiveRoute: routeValue, batch, durablyProcessed }, {
+  async commitOpaqueRoute({ localReceiveRoute: routeValue, batch, persistLocalState }, {
     requestID,
     authorizedAt = swiftISODate(),
     nonce,
     relayOptions
   } = {}) {
-    if (durablyProcessed !== true) {
-      throw new TypeError("Opaque route packets must be durably processed before cursor commit.");
-    }
+    requireLocalPersistenceTransaction(persistLocalState);
     const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({
       crypto: this.crypto,
       route: routeValue
     });
-    assertOpaqueRouteSyncContinuityV2({
-      batch,
+    const candidate = await advanceLocalOpaqueReceiveRouteV2({
+      crypto: this.crypto,
       localReceiveRoute,
+      batch,
       detectedAt: authorizedAt
     });
-    const request = await makeOpaqueRouteCommitRequestV2({
-      crypto: this.crypto,
-      capabilities: localReceiveRoute.clientCapabilities,
-      cursor: batch.nextCursor,
-      requestID,
-      authorizedAt,
-      nonce
-    });
-    const commit = await this.relay.commitOpaqueRoute({
-      request,
-      readCredential: localReceiveRoute.clientCapabilities.readCredential
-    }, relayOptions);
-    return Object.freeze({
-      commit,
-      localReceiveRoute: await advanceLocalOpaqueReceiveRouteV2({
+
+    // The callback is the application's transaction boundary. It must make
+    // the candidate cursor, reassembly snapshot, and any effects derived from
+    // this batch durable together. Returning successfully is the only local
+    // commit authorization; an assertion boolean cannot represent durability.
+    await persistLocalState(Object.freeze({
+      kind: "cursorAdvance",
+      previousLocalReceiveRoute: localReceiveRoute,
+      localReceiveRoute: candidate,
+      batch
+    }));
+
+    let commit = null;
+    try {
+      const request = await makeOpaqueRouteCommitRequestV2({
         crypto: this.crypto,
-        localReceiveRoute,
-        batch,
-        commitResponse: commit,
-        detectedAt: authorizedAt
+        capabilities: localReceiveRoute.clientCapabilities,
+        cursor: batch.nextCursor,
+        requestID,
+        authorizedAt,
+        nonce
+      });
+      commit = await this.relay.commitOpaqueRoute({
+        request,
+        readCredential: localReceiveRoute.clientCapabilities.readCredential
+      }, relayOptions);
+      validateOpaqueRouteCommitResponseV2(commit, { cursor: batch.nextCursor });
+    } catch {
+      // Relay garbage collection is best-effort after the local transaction.
+      // A repeated sync can safely retry it from the persisted local cursor.
+      commit = null;
+    }
+    return Object.freeze({
+      localReceiveRoute: candidate,
+      relayCommit: Object.freeze({
+        status: commit === null ? "deferred" : "accepted",
+        response: commit
       })
     });
   }
+}
+
+function requireLocalPersistenceTransaction(value) {
+  if (typeof value !== "function") {
+    throw new TypeError(
+      "Opaque route synchronization requires a local persistence transaction callback."
+    );
+  }
+  return value;
 }

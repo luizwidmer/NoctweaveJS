@@ -76,13 +76,35 @@ opaque cursor together with `committedSequence` and `committedRecordDigest`;
 the initial values are zero and cannot be inferred from a global identity.
 
 `NoctweaveWebClient.syncOpaqueRoute(localReceiveRoute)` is the state-aware
-entry point. After the application has durably processed the returned packets,
-`commitOpaqueRoute({ localReceiveRoute, batch, durablyProcessed: true })`
-returns the advanced local route record. The lower-level
+entry point. Commit requires a real application persistence transaction:
+
+```js
+const synced = await client.syncOpaqueRoute(localReceiveRoute);
+const committed = await client.commitOpaqueRoute({
+  localReceiveRoute,
+  batch: synced.batch,
+  persistLocalState: async ({ localReceiveRoute: candidate, batch }) => {
+    // Atomically store `candidate`, its reassembly snapshot, and every local
+    // effect derived from `batch` as one encrypted application record before
+    // this callback resolves.
+    await encryptedStore.set(routeStateKey, {
+      localReceiveRoute: candidate,
+      appliedBatchDigest: batch.nextRecordDigest,
+      effects: deriveApplicationEffects(batch)
+    });
+  }
+});
+localReceiveRoute = committed.localReceiveRoute;
+```
+
+The relay cursor commit happens only after that callback succeeds and is
+best-effort; `committed.relayCommit.status === "deferred"` is safe to retry.
+A boolean assertion cannot substitute for durable storage. The lower-level
 `NoctweaveRelayClient` exposes exact relay submissions for integrations that
 already own equivalent durable state handling. Committing a cursor advances
-only that route's durable read position; it is not a plaintext receipt or a
-peer-read signal.
+only that route's durable read position. The persisted route includes a bounded
+1 MiB exact reassembly snapshot so fragmented bundles survive restarts; it is
+not a plaintext receipt or a peer-read signal.
 
 ```js
 import {
@@ -217,6 +239,12 @@ The browser service exposes independent crash-resumable participant flows:
    returned relationship, and submit its `rendezvousDeletionRequests`.
 6. If the flow is abandoned, call `cancelPairing` and submit the same bounded
    lane-deletion requests.
+
+The checked-in browser shell performs this pump for either role, persists every
+returned participant state before continuing, resumes pending work after
+unlock/restart, and removes terminal pending state only after lane deletion is
+prepared. Its UI exposes retry, finalize, and cancel without rendering pairing
+IDs, bearer capabilities, private keys, or the peer's local persona label.
 
 There is deliberately no `establishPairing` production helper: one process
 must never receive both participants' private relationship state.

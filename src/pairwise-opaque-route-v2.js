@@ -4,11 +4,13 @@ import {
   validateOpaqueRouteClientCapabilityMaterialV2,
   validateOpaqueRoutePolicyV2
 } from "./opaque-route-v2.js";
-import { validateOpaqueRoutePayloadKeyV2 } from "./opaque-route-packet-v2.js";
 import {
-  validateOpaqueRouteCommitResponseV2,
-  validateOpaqueRouteCursorV2
-} from "./opaque-route-relay-v2.js";
+  createOpaqueRoutePacketReassemblerV2,
+  restoreOpaqueRoutePacketReassemblerV2,
+  validateOpaqueRoutePacketReassemblerStateV2,
+  validateOpaqueRoutePayloadKeyV2
+} from "./opaque-route-packet-v2.js";
+import { validateOpaqueRouteCursorV2 } from "./opaque-route-relay-v2.js";
 import {
   concatBytes,
   encodeBase64,
@@ -83,7 +85,8 @@ const localReceiveRouteFields = Object.freeze([
   "committedCursor",
   "committedSequence",
   "committedRecordDigest",
-  "gapState"
+  "gapState",
+  "reassembler"
 ]);
 const gapStateFields = Object.freeze([
   "reason",
@@ -108,6 +111,7 @@ const DIGEST_BYTES = 32;
 export const noctweavePairwiseOpaqueRoutesV2 = Object.freeze({
   version: 2,
   maximumIntroductionLifetimeSeconds: noctweaveRendezvousV2.maximumLifetimeSeconds,
+  maximumPersistedReassemblerBufferedBytes: 1 * 1_024 * 1_024,
   defaultRoutePriority: 100,
   routeStates: Object.freeze([...routeStates])
 });
@@ -156,7 +160,8 @@ export async function createLocalOpaqueReceiveRouteV2({
       committedCursor: null,
       committedSequence: 0,
       committedRecordDigest: encodeBase64(new Uint8Array(DIGEST_BYTES)),
-      gapState: null
+      gapState: null,
+      reassembler: createOpaqueRoutePacketReassemblerV2().snapshot()
     }
   });
 }
@@ -186,8 +191,14 @@ export async function validateLocalOpaqueReceiveRouteV2({ crypto, route: value }
     const gapState = value.gapState === null
       ? null
       : validateOpaqueRouteGapStateV2(value.gapState);
+    const reassembler = validateOpaqueRoutePacketReassemblerStateV2(
+      value.reassembler,
+      { routeID: route.routeID }
+    );
     if (route.status !== "active" ||
         route.routeID.rawValue !== clientCapabilities.routeID.rawValue ||
+        reassembler.maximumBufferedBytes >
+          noctweavePairwiseOpaqueRoutesV2.maximumPersistedReassemblerBufferedBytes ||
         (committedCursor === null &&
           (committedSequence !== 0 || committedRecordDigest !== encodeBase64(new Uint8Array(DIGEST_BYTES))))) {
       throw new TypeError("Local opaque receive route state is inconsistent.");
@@ -215,7 +226,8 @@ export async function validateLocalOpaqueReceiveRouteV2({ crypto, route: value }
       committedCursor,
       committedSequence,
       committedRecordDigest,
-      gapState
+      gapState,
+      reassembler
     }, "LocalOpaqueReceiveRouteV2");
   } catch (error) {
     if (error instanceof PairwiseOpaqueRouteV2Error) throw error;
@@ -301,11 +313,64 @@ export function assertOpaqueRouteSyncContinuityV2({ batch, localReceiveRoute, de
   throw new OpaqueRouteGapV2Error(gapState, quarantined);
 }
 
+/**
+ * Produces the terminal local state for a verified relay cursor gap. Pending
+ * fragments are unreachable after a gap, while completed/evicted tombstones
+ * remain bounded and durable for replay safety.
+ */
+export async function markLocalOpaqueReceiveRouteGapV2({
+  crypto,
+  localReceiveRoute: value,
+  batch,
+  detectedAt
+}) {
+  const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({ crypto, route: value });
+  const gapState = detectOpaqueRouteGapV2({ batch, localReceiveRoute, detectedAt });
+  if (gapState === null) return null;
+  const reassembler = restoreOpaqueRoutePacketReassemblerV2(
+    localReceiveRoute.reassembler,
+    { routeID: localReceiveRoute.route.routeID }
+  );
+  reassembler.discardPendingBundles();
+  return validateLocalOpaqueReceiveRouteV2({
+    crypto,
+    route: {
+      ...localReceiveRoute,
+      gapState,
+      reassembler: reassembler.snapshot()
+    }
+  });
+}
+
+/**
+ * Applies one reassembly mutation to an isolated candidate. A throwing update
+ * leaves the caller's persisted route unchanged.
+ */
+export async function updateLocalOpaqueReceiveRouteReassemblerV2({
+  crypto,
+  localReceiveRoute: value,
+  update
+}) {
+  if (typeof update !== "function") {
+    throw new TypeError("Opaque route reassembly update must be a function.");
+  }
+  const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({ crypto, route: value });
+  const reassembler = restoreOpaqueRoutePacketReassemblerV2(
+    localReceiveRoute.reassembler,
+    { routeID: localReceiveRoute.route.routeID }
+  );
+  const result = await update(reassembler);
+  const next = await validateLocalOpaqueReceiveRouteV2({
+    crypto,
+    route: { ...localReceiveRoute, reassembler: reassembler.snapshot() }
+  });
+  return Object.freeze({ localReceiveRoute: next, result });
+}
+
 export async function advanceLocalOpaqueReceiveRouteV2({
   crypto,
   localReceiveRoute: value,
   batch,
-  commitResponse,
   detectedAt
 }) {
   const localReceiveRoute = await validateLocalOpaqueReceiveRouteV2({ crypto, route: value });
@@ -313,7 +378,6 @@ export async function advanceLocalOpaqueReceiveRouteV2({
     throw new OpaqueRouteGapV2Error(localReceiveRoute.gapState, localReceiveRoute);
   }
   assertOpaqueRouteSyncContinuityV2({ batch, localReceiveRoute, detectedAt });
-  validateOpaqueRouteCommitResponseV2(commitResponse, { cursor: batch.nextCursor });
   return validateLocalOpaqueReceiveRouteV2({
     crypto,
     route: {

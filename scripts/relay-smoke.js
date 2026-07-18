@@ -97,21 +97,25 @@ assertOpaqueRouteSyncContinuityV2({
 });
 console.log(`Synced packets: ${synced.packets.length}`);
 
+// This protocol smoke runner has no application database. It still advances
+// the local candidate before authorizing relay garbage collection. Production
+// clients must durably persist this candidate, its reassembly snapshot, and
+// batch effects atomically before sending the commit request; use
+// NoctweaveWebClient.commitOpaqueRoute for that transaction boundary.
+localReceiveRoute = await advanceLocalOpaqueReceiveRouteV2({
+  crypto,
+  localReceiveRoute,
+  batch: synced,
+  detectedAt: swiftISODate()
+});
 const commitRequest = await makeOpaqueRouteCommitRequestV2({
   crypto,
   capabilities,
   cursor: synced.nextCursor
 });
-const committed = await client.commitOpaqueRoute({
+await client.commitOpaqueRoute({
   request: commitRequest,
   readCredential: capabilities.readCredential
-});
-localReceiveRoute = await advanceLocalOpaqueReceiveRouteV2({
-  crypto,
-  localReceiveRoute,
-  batch: synced,
-  commitResponse: committed,
-  detectedAt: swiftISODate()
 });
 console.log(`Committed opaque route sequence: ${localReceiveRoute.committedSequence}`);
 

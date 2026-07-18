@@ -87,7 +87,8 @@ const localReceiveRouteFields = Object.freeze([
   "committedCursor",
   "committedSequence",
   "committedRecordDigest",
-  "gapState"
+  "gapState",
+  "reassembler"
 ]);
 const preparedLocalIdentityFields = Object.freeze([
   "version",

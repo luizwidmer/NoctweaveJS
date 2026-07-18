@@ -24,9 +24,36 @@ import {
 } from "./opaque-route-v2.js";
 
 const encoder = new TextEncoder();
+const inspectSymbol = Symbol.for("nodejs.util.inspect.custom");
 const frameMagic = Uint8Array.of(0x4e, 0x57, 0x52, 0x50); // NWRP
 const paddingBuckets = new Set([4_096, 16_384, 65_536]);
 const frameHeaderBytes = 90;
+const reassemblerStateFields = Object.freeze([
+  "maximumBufferedBundles",
+  "maximumBufferedBytes",
+  "pendingBundles",
+  "packetDigests",
+  "completedBundles"
+]);
+const pendingBundleFields = Object.freeze([
+  "bundleID",
+  "routeID",
+  "routeRevision",
+  "paddingBucket",
+  "bundleDigest",
+  "fragmentCount",
+  "totalPayloadBytes",
+  "fragments",
+  "packetIDs"
+]);
+const persistedFragmentFields = Object.freeze(["index", "payload"]);
+const persistedPacketDigestFields = Object.freeze(["packetID", "digest"]);
+const completedBundleFields = Object.freeze([
+  "bundleID",
+  "routeID",
+  "routeRevision",
+  "bundleDigest"
+]);
 
 export const noctweaveOpaqueRoutePacketsV2 = Object.freeze({
   version: 2,
@@ -368,7 +395,7 @@ export async function openOpaqueRoutePacketV2({
 
 export class OpaqueRoutePacketReassemblerV2 {
   static defaultMaximumBufferedBundles = 64;
-  static defaultMaximumBufferedBytes = 64 * 1_024 * 1_024;
+  static defaultMaximumBufferedBytes = 1 * 1_024 * 1_024;
   static maximumRecentCompletedBundles = 1_024;
 
   constructor({
@@ -384,10 +411,209 @@ export class OpaqueRoutePacketReassemblerV2 {
     this.maximumBufferedBundles = maximumBufferedBundles;
     this.maximumBufferedBytes = maximumBufferedBytes;
     this.pending = new Map();
+    this.pendingOrder = [];
     this.packetDigests = new Map();
     this.completed = new Map();
     this.completedOrder = [];
     this.bufferedBytes = 0;
+  }
+
+  /**
+   * Restores the exact bounded state emitted by snapshot(). Array order is
+   * protocol state: pending bundles are oldest-first and completed bundles are
+   * bounded replay tombstones in retirement order.
+   */
+  static restore(value, { routeID } = {}) {
+    try {
+      requireExactRecord(
+        value,
+        reassemblerStateFields,
+        [],
+        "Opaque route reassembler state"
+      );
+      const maximumBufferedBundles = requireInteger(
+        value.maximumBufferedBundles,
+        "Opaque route maximum buffered bundles",
+        1,
+        256
+      );
+      const maximumBufferedBytes = requireInteger(
+        value.maximumBufferedBytes,
+        "Opaque route maximum buffered bytes",
+        1,
+        noctweaveOpaqueRoutePacketsV2.maximumBundleBytes
+      );
+      if (!Array.isArray(value.pendingBundles) ||
+          value.pendingBundles.length > maximumBufferedBundles ||
+          !Array.isArray(value.packetDigests) ||
+          value.packetDigests.length > Math.min(
+            maximumBufferedBundles * noctweaveOpaqueRoutePacketsV2.maximumFragmentCount,
+            maximumBufferedBytes + maximumBufferedBundles
+          ) ||
+          !Array.isArray(value.completedBundles) ||
+          value.completedBundles.length > this.maximumRecentCompletedBundles) {
+        throw new TypeError("Opaque route reassembler collections exceed protocol bounds.");
+      }
+
+      const expectedRouteID = routeID === undefined
+        ? null
+        : validateOpaqueRouteIdentifierForState(routeID, "Opaque route identifier").rawValue;
+      const restored = new OpaqueRoutePacketReassemblerV2({
+        maximumBufferedBundles,
+        maximumBufferedBytes
+      });
+      const pendingPacketIDs = new Set();
+
+      for (const candidate of value.pendingBundles) {
+        requireExactRecord(candidate, pendingBundleFields, [], "Persisted pending bundle");
+        const bundleID = validateOpaqueRouteBundleIdV2(candidate.bundleID);
+        const route = validateOpaqueRouteIdentifierForState(
+          candidate.routeID,
+          "Persisted pending route identifier"
+        );
+        if (expectedRouteID !== null && route.rawValue !== expectedRouteID) {
+          throw new TypeError("Persisted pending bundle belongs to another opaque route.");
+        }
+        const routeRevision = validateRouteRevision(candidate.routeRevision);
+        const paddingBucket = validatePaddingBucket(candidate.paddingBucket);
+        const bundleDigest = canonicalDigest(
+          candidate.bundleDigest,
+          "Persisted pending bundle digest"
+        );
+        const fragmentCount = requireInteger(
+          candidate.fragmentCount,
+          "Persisted opaque route fragment count",
+          1,
+          noctweaveOpaqueRoutePacketsV2.maximumFragmentCount
+        );
+        const totalPayloadBytes = requireInteger(
+          candidate.totalPayloadBytes,
+          "Persisted opaque route total payload bytes",
+          1,
+          maximumBufferedBytes
+        );
+        const capacity = opaqueRoutePacketMaximumFragmentPayloadBytesV2(paddingBucket);
+        if (Math.ceil(totalPayloadBytes / capacity) !== fragmentCount ||
+            !Array.isArray(candidate.fragments) || candidate.fragments.length === 0 ||
+            candidate.fragments.length > fragmentCount ||
+            !Array.isArray(candidate.packetIDs) ||
+            candidate.packetIDs.length !== candidate.fragments.length) {
+          throw new TypeError("Persisted pending bundle fragment metadata is inconsistent.");
+        }
+
+        const fragments = new Map();
+        for (const persisted of candidate.fragments) {
+          requireExactRecord(
+            persisted,
+            persistedFragmentFields,
+            [],
+            "Persisted opaque route fragment"
+          );
+          const index = requireInteger(
+            persisted.index,
+            "Persisted opaque route fragment index",
+            0,
+            fragmentCount - 1
+          );
+          const expectedBytes = index === fragmentCount - 1
+            ? totalPayloadBytes - (fragmentCount - 1) * capacity
+            : capacity;
+          const payload = decodeBoundedPersistedPayload(
+            persisted.payload,
+            maximumBufferedBytes,
+            expectedBytes
+          );
+          if (fragments.has(index)) {
+            throw new TypeError("Persisted fragment indexes must be unique.");
+          }
+          fragments.set(index, payload);
+          restored.bufferedBytes += payload.byteLength;
+          if (restored.bufferedBytes > maximumBufferedBytes) {
+            throw new TypeError("Persisted fragments exceed the reassembly byte budget.");
+          }
+        }
+
+        const packetIDs = new Set();
+        for (const packetIDValue of candidate.packetIDs) {
+          const packetID = validateOpaqueRoutePacketIdV2(packetIDValue).rawValue;
+          if (packetIDs.has(packetID) || pendingPacketIDs.has(packetID)) {
+            throw new TypeError("Persisted packet identifiers must be unique.");
+          }
+          packetIDs.add(packetID);
+          pendingPacketIDs.add(packetID);
+        }
+        if (restored.pending.has(bundleID.rawValue)) {
+          throw new TypeError("Persisted pending bundle identifiers must be unique.");
+        }
+        restored.pending.set(bundleID.rawValue, {
+          routeID: route.rawValue,
+          routeRevision,
+          paddingBucket,
+          bundleDigest,
+          fragmentCount,
+          totalPayloadBytes,
+          fragments,
+          packetIDs
+        });
+        restored.pendingOrder.push(bundleID.rawValue);
+      }
+
+      for (const candidate of value.packetDigests) {
+        requireExactRecord(
+          candidate,
+          persistedPacketDigestFields,
+          [],
+          "Persisted opaque route packet digest"
+        );
+        const packetID = validateOpaqueRoutePacketIdV2(candidate.packetID).rawValue;
+        const digest = canonicalDigest(candidate.digest, "Persisted packet digest");
+        if (restored.packetDigests.has(packetID)) {
+          throw new TypeError("Persisted packet digest identifiers must be unique.");
+        }
+        restored.packetDigests.set(packetID, digest);
+      }
+      if (!sameStringSet(new Set(restored.packetDigests.keys()), pendingPacketIDs)) {
+        throw new TypeError("Persisted packet digests must match pending fragments exactly.");
+      }
+
+      for (const candidate of value.completedBundles) {
+        requireExactRecord(
+          candidate,
+          completedBundleFields,
+          [],
+          "Persisted completed opaque route bundle"
+        );
+        const bundleID = validateOpaqueRouteBundleIdV2(candidate.bundleID);
+        const route = validateOpaqueRouteIdentifierForState(
+          candidate.routeID,
+          "Persisted completed route identifier"
+        );
+        if (expectedRouteID !== null && route.rawValue !== expectedRouteID) {
+          throw new TypeError("Persisted completed bundle belongs to another opaque route.");
+        }
+        if (restored.pending.has(bundleID.rawValue) || restored.completed.has(bundleID.rawValue)) {
+          throw new TypeError("Persisted terminal bundle identifiers must be unique.");
+        }
+        restored.completed.set(bundleID.rawValue, {
+          routeID: route.rawValue,
+          routeRevision: validateRouteRevision(candidate.routeRevision),
+          bundleDigest: canonicalDigest(
+            candidate.bundleDigest,
+            "Persisted completed bundle digest"
+          )
+        });
+        restored.completedOrder.push(bundleID.rawValue);
+      }
+      return restored;
+    } catch (error) {
+      if (error instanceof OpaqueRoutePacketV2Error &&
+          error.code === "reassemblyCapacityExceeded") throw error;
+      throw new OpaqueRoutePacketV2Error(
+        "invalidReassemblyState",
+        "Persisted opaque route reassembly state is invalid.",
+        error
+      );
+    }
   }
 
   get pendingBundleCount() {
@@ -396,6 +622,67 @@ export class OpaqueRoutePacketReassemblerV2 {
 
   get bufferedPayloadBytes() {
     return this.bufferedBytes;
+  }
+
+  snapshot() {
+    const pendingBundles = this.pendingOrder.map((bundleKey) => {
+      const state = this.pending.get(bundleKey);
+      if (state === undefined) {
+        throw new OpaqueRoutePacketV2Error("invalidReassemblyState");
+      }
+      return {
+        bundleID: { rawValue: bundleKey },
+        routeID: { rawValue: state.routeID },
+        routeRevision: state.routeRevision,
+        paddingBucket: state.paddingBucket,
+        bundleDigest: state.bundleDigest,
+        fragmentCount: state.fragmentCount,
+        totalPayloadBytes: state.totalPayloadBytes,
+        fragments: [...state.fragments.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([index, payload]) => ({ index, payload: encodeBase64(payload) })),
+        packetIDs: [...state.packetIDs]
+          .sort(compareEncodedIdentifiers)
+          .map((rawValue) => ({ rawValue }))
+      };
+    });
+    const packetDigests = [...this.packetDigests.entries()]
+      .sort(([left], [right]) => compareEncodedIdentifiers(left, right))
+      .map(([rawValue, digest]) => ({ packetID: { rawValue }, digest }));
+    const completedBundles = this.completedOrder.map((bundleKey) => {
+      const state = this.completed.get(bundleKey);
+      if (state === undefined) {
+        throw new OpaqueRoutePacketV2Error("invalidReassemblyState");
+      }
+      return {
+        bundleID: { rawValue: bundleKey },
+        routeID: { rawValue: state.routeID },
+        routeRevision: state.routeRevision,
+        bundleDigest: state.bundleDigest
+      };
+    });
+    const snapshot = freezeWire({
+      maximumBufferedBundles: this.maximumBufferedBundles,
+      maximumBufferedBytes: this.maximumBufferedBytes,
+      pendingBundles,
+      packetDigests,
+      completedBundles
+    });
+    // Refuse to serialize an object whose mutable internals were corrupted.
+    OpaqueRoutePacketReassemblerV2.restore(snapshot);
+    return snapshot;
+  }
+
+  toJSON() {
+    return this.snapshot();
+  }
+
+  toString() {
+    return "OpaqueRoutePacketReassemblerV2(<redacted>)";
+  }
+
+  [inspectSymbol]() {
+    return this.toString();
   }
 
   async consume({ crypto, packet: packetValue, payloadKey, routeRevision }) {
@@ -466,6 +753,7 @@ export class OpaqueRoutePacketReassemblerV2 {
         packetIDs: new Set([packetKey])
       };
       this.pending.set(bundleKey, state);
+      this.pendingOrder.push(bundleKey);
     }
     this.packetDigests.set(packetKey, packetDigestValue);
     this.bufferedBytes += fragment.payload.byteLength;
@@ -483,7 +771,7 @@ export class OpaqueRoutePacketReassemblerV2 {
     }
     const reassembled = concatBytes(...parts);
     if (reassembled.byteLength !== state.totalPayloadBytes) {
-      this.removePending(bundleKey);
+      this.discardPendingBundle({ rawValue: bundleKey });
       throw new OpaqueRoutePacketV2Error("malformedFrame");
     }
     const digest = await opaqueRouteBundleDigestV2({
@@ -492,7 +780,7 @@ export class OpaqueRoutePacketReassemblerV2 {
       payload: reassembled
     });
     if (digest !== state.bundleDigest) {
-      this.removePending(bundleKey);
+      this.discardPendingBundle({ rawValue: bundleKey });
       throw new OpaqueRoutePacketV2Error("bundleDigestMismatch");
     }
     const bundle = freezeWire({
@@ -511,6 +799,8 @@ export class OpaqueRoutePacketReassemblerV2 {
     const removed = this.pending.get(bundleKey);
     if (removed === undefined) return;
     this.pending.delete(bundleKey);
+    const orderIndex = this.pendingOrder.indexOf(bundleKey);
+    if (orderIndex >= 0) this.pendingOrder.splice(orderIndex, 1);
     for (const part of removed.fragments.values()) {
       this.bufferedBytes -= part.byteLength;
     }
@@ -519,12 +809,44 @@ export class OpaqueRoutePacketReassemblerV2 {
     }
   }
 
+  /** Drops unreachable partial plaintext while retaining replay tombstones. */
+  discardPendingBundles() {
+    this.pending.clear();
+    this.pendingOrder.length = 0;
+    this.packetDigests.clear();
+    this.bufferedBytes = 0;
+  }
+
+  /** Deterministically evicts and retires the oldest incomplete bundle. */
+  discardOldestPendingBundle() {
+    const oldest = this.pendingOrder[0];
+    if (oldest === undefined || !this.discardPendingBundle({ rawValue: oldest })) return null;
+    return freezeWire({ rawValue: oldest });
+  }
+
+  /** Retires one incomplete bundle so later matching fragments are duplicates. */
+  discardPendingBundle(bundleIDValue) {
+    const bundleID = validateOpaqueRouteBundleIdV2(bundleIDValue);
+    const state = this.pending.get(bundleID.rawValue);
+    if (state === undefined) return false;
+    this.removePending(bundleID.rawValue);
+    this.rememberTerminalBundle(bundleID.rawValue, state);
+    return true;
+  }
+
   rememberCompleted(bundle) {
-    const key = bundle.bundleID.rawValue;
-    this.completed.set(key, {
+    this.rememberTerminalBundle(bundle.bundleID.rawValue, {
       routeID: bundle.routeID.rawValue,
       routeRevision: bundle.routeRevision,
       bundleDigest: bundle.bundleDigest
+    });
+  }
+
+  rememberTerminalBundle(key, state) {
+    this.completed.set(key, {
+      routeID: state.routeID,
+      routeRevision: state.routeRevision,
+      bundleDigest: state.bundleDigest
     });
     this.completedOrder.push(key);
     if (this.completedOrder.length > OpaqueRoutePacketReassemblerV2.maximumRecentCompletedBundles) {
@@ -535,6 +857,14 @@ export class OpaqueRoutePacketReassemblerV2 {
 
 export function createOpaqueRoutePacketReassemblerV2(options = {}) {
   return new OpaqueRoutePacketReassemblerV2(options);
+}
+
+export function restoreOpaqueRoutePacketReassemblerV2(value, options = {}) {
+  return OpaqueRoutePacketReassemblerV2.restore(value, options);
+}
+
+export function validateOpaqueRoutePacketReassemblerStateV2(value, options = {}) {
+  return restoreOpaqueRoutePacketReassemblerV2(value, options).snapshot();
 }
 
 async function openValidatedPacket({ crypto, packet, payloadKey, routeRevision }) {
@@ -711,6 +1041,51 @@ function validateIdentifier(value, label) {
     label
   ));
   return freezeWire({ rawValue });
+}
+
+function validateOpaqueRouteIdentifierForState(value, label) {
+  return validateIdentifier(value, label);
+}
+
+function canonicalDigest(value, label) {
+  return encodeBase64(requireBase64(
+    value,
+    noctweaveOpaqueRoutePacketsV2.digestBytes,
+    label
+  ));
+}
+
+function decodeBoundedPersistedPayload(value, maximumBytes, expectedBytes) {
+  const maximumEncodedLength = Math.ceil(maximumBytes / 3) * 4 + 4;
+  if (typeof value !== "string" || value.length === 0 || value.length > maximumEncodedLength) {
+    throw new TypeError("Persisted opaque route fragment exceeds the reassembly byte budget.");
+  }
+  return new Uint8Array(requireBase64(
+    value,
+    expectedBytes,
+    "Persisted opaque route fragment payload"
+  ));
+}
+
+function sameStringSet(left, right) {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function compareEncodedIdentifiers(leftValue, rightValue) {
+  const left = requireBase64(
+    leftValue,
+    noctweaveOpaqueRoutePacketsV2.identifierBytes,
+    "Opaque route identifier"
+  );
+  const right = requireBase64(
+    rightValue,
+    noctweaveOpaqueRoutePacketsV2.identifierBytes,
+    "Opaque route identifier"
+  );
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
 }
 
 function validatePaddingBucket(value) {
