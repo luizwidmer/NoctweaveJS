@@ -12,8 +12,14 @@ import {
   validateRegisterRendezvousTransportV2Request,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
-import { requireExactRecord, requireRecord } from "./private-v2.js";
+import { requireBase64, requireExactRecord, requireRecord } from "./private-v2.js";
 import { swiftUUID } from "./crypto/swift-canonical.js";
+
+const encryptedAttachmentPayloadLimits = Object.freeze({
+  nonceBytes: 12,
+  tagBytes: 16,
+  maximumEncodedBytes: 128 * 1_024
+});
 
 const relayErrorCodes = new Set([
   "authentication-required",
@@ -205,7 +211,7 @@ function validateRequestBody(binding, body) {
     requireExactRecord(body, ["attachmentId", "chunkIndex", "payload", "ttlSeconds"], [],
       "Attachment upload body");
     validateAttachmentCoordinates(body);
-    requireRecord(body.payload, "Encrypted attachment payload");
+    validateEncryptedAttachmentPayload(body.payload);
     if (body.ttlSeconds !== null && (!Number.isSafeInteger(body.ttlSeconds) || body.ttlSeconds < 1)) {
       throw new TypeError("Attachment TTL is invalid.");
     }
@@ -222,6 +228,33 @@ function validateAttachmentCoordinates(body) {
   if (!canonicalUUID(body.attachmentId) || !Number.isSafeInteger(body.chunkIndex) || body.chunkIndex < 0) {
     throw new TypeError("Attachment coordinates are invalid.");
   }
+}
+
+function validateEncryptedAttachmentPayload(value) {
+  requireExactRecord(value, ["nonce", "ciphertext", "tag"], [], "Encrypted attachment payload");
+  const maximumCiphertextBytes = encryptedAttachmentPayloadLimits.maximumEncodedBytes -
+    encryptedAttachmentPayloadLimits.nonceBytes - encryptedAttachmentPayloadLimits.tagBytes;
+  const maximumCiphertextBase64Bytes = 4 * Math.ceil(maximumCiphertextBytes / 3);
+  if (typeof value.ciphertext !== "string" || value.ciphertext.length > maximumCiphertextBase64Bytes) {
+    throw new TypeError("Encrypted attachment ciphertext exceeds the protocol size limit.");
+  }
+  const nonce = requireBase64(
+    value.nonce,
+    encryptedAttachmentPayloadLimits.nonceBytes,
+    "Encrypted attachment nonce"
+  );
+  const ciphertext = requireBase64(value.ciphertext, undefined, "Encrypted attachment ciphertext");
+  const tag = requireBase64(
+    value.tag,
+    encryptedAttachmentPayloadLimits.tagBytes,
+    "Encrypted attachment tag"
+  );
+  if (ciphertext.byteLength === 0 ||
+      nonce.byteLength + ciphertext.byteLength + tag.byteLength >
+        encryptedAttachmentPayloadLimits.maximumEncodedBytes) {
+    throw new TypeError("Encrypted attachment payload has invalid cryptographic field lengths.");
+  }
+  return value;
 }
 
 function validateAuthToken(value) {

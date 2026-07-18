@@ -393,6 +393,58 @@ test("relay request surface rejects operations outside the current protocol befo
   ]);
 });
 
+test("attachment upload requires an exact bounded encrypted payload", () => {
+  const payload = {
+    nonce: base64(new Uint8Array(12).fill(0x11)),
+    ciphertext: base64(Uint8Array.of(0x22)),
+    tag: base64(new Uint8Array(16).fill(0x33))
+  };
+  const input = {
+    attachmentId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+    chunkIndex: 0,
+    payload
+  };
+  const request = relayRequests.uploadAttachment(input);
+  assert.deepEqual(request.body.payload, payload);
+
+  assert.throws(
+    () => relayRequests.uploadAttachment({
+      ...input,
+      payload: { ...payload, legacy: true }
+    }),
+    /exactly its current protocol fields/
+  );
+  const { tag: _tag, ...missingTag } = payload;
+  assert.throws(
+    () => relayRequests.uploadAttachment({ ...input, payload: missingTag }),
+    /exactly its current protocol fields/
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({
+      ...input,
+      payload: { ...payload, nonce: base64(new Uint8Array(11).fill(0x11)) }
+    }),
+    /invalid encoding or length/
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({
+      ...input,
+      payload: { ...payload, ciphertext: "" }
+    }),
+    /must be base64/
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({
+      ...input,
+      payload: {
+        ...payload,
+        ciphertext: base64(new Uint8Array(128 * 1_024).fill(0x22))
+      }
+    }),
+    /protocol size limit/
+  );
+});
+
 test("web client exposes current opaque route and rendezvous transport operations", () => {
   const web = new NoctweaveWebClient({
     relay: "https://relay.example",
@@ -518,6 +570,7 @@ test("relay client enforces bounded response and request allocation", async () =
 
   let called = false;
   const requestClient = new NoctweaveRelayClient("https://relay.example", {
+    policy: { maxRequestBytes: 1_024 },
     fetch: async () => {
       called = true;
       return jsonResponse({ type: "ok" });
@@ -527,7 +580,11 @@ test("relay client enforces bounded response and request allocation", async () =
     () => requestClient.send(relayRequests.uploadAttachment({
       attachmentId: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
       chunkIndex: 0,
-      payload: { nonce: "x".repeat(600_000) }
+      payload: {
+        nonce: base64(new Uint8Array(12).fill(0x11)),
+        ciphertext: base64(new Uint8Array(2_048).fill(0x22)),
+        tag: base64(new Uint8Array(16).fill(0x33))
+      }
     })),
     /request exceeds client size limit/
   );
