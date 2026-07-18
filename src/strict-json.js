@@ -7,22 +7,29 @@ export const strictJSONMaximumDepth = 128;
  * different values. This preflight rejects repeated semantic keys, including
  * escaped spellings such as `"value"` and `"\u0076alue"`.
  */
-export function parseExactJSON(text, { maximumDepth = strictJSONMaximumDepth } = {}) {
+export function parseExactJSON(
+  text,
+  { maximumDepth = strictJSONMaximumDepth, canonicalNumbers = false } = {}
+) {
   if (typeof text !== "string") {
     throw new TypeError("Exact JSON input must be a string.");
   }
   if (!Number.isSafeInteger(maximumDepth) || maximumDepth < 1 || maximumDepth > 512) {
     throw new TypeError("Exact JSON maximum depth must be between 1 and 512.");
   }
+  if (typeof canonicalNumbers !== "boolean") {
+    throw new TypeError("Exact JSON canonicalNumbers must be a boolean.");
+  }
 
-  new ExactJSONScanner(text, maximumDepth).scan();
+  new ExactJSONScanner(text, maximumDepth, canonicalNumbers).scan();
   return JSON.parse(text);
 }
 
 class ExactJSONScanner {
-  constructor(text, maximumDepth) {
+  constructor(text, maximumDepth, canonicalNumbers) {
     this.text = text;
     this.maximumDepth = maximumDepth;
+    this.canonicalNumbers = canonicalNumbers;
     this.offset = 0;
   }
 
@@ -167,6 +174,15 @@ class ExactJSONScanner {
     const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u.exec(remaining);
     if (!match) this.fail("Invalid JSON value");
     if (!Number.isFinite(Number(match[0]))) this.fail("JSON number exceeds finite range");
+    if (this.canonicalNumbers && (
+      match[0].includes(".") ||
+      match[0].includes("e") ||
+      match[0].includes("E") ||
+      match[0] === "-0" ||
+      !Number.isSafeInteger(Number(match[0]))
+    )) {
+      this.fail("JSON number is outside the NCJ-1 safe-integer profile");
+    }
     this.offset += match[0].length;
   }
 

@@ -42,3 +42,18 @@ test("exact JSON retains native syntax rejection", () => {
   assert.throws(() => parseExactJSON('{"overflow":-1e400}'), /number exceeds finite range/);
   assert.throws(() => parseExactJSON('\uFEFF{"bom":true}'), SyntaxError);
 });
+
+test("exact JSON can enforce the NCJ-1 safe-integer number profile", () => {
+  assert.deepEqual(
+    parseExactJSON('{"minimum":-9007199254740991,"maximum":9007199254740991}', {
+      canonicalNumbers: true
+    }),
+    { minimum: -9007199254740991, maximum: 9007199254740991 }
+  );
+  for (const value of ["1.0", "1e3", "-0", "9007199254740992"]) {
+    assert.throws(
+      () => parseExactJSON(`{"value":${value}}`, { canonicalNumbers: true }),
+      /NCJ-1 safe-integer profile/
+    );
+  }
+});
