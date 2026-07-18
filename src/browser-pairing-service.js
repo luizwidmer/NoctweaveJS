@@ -84,6 +84,10 @@ export class NoctweaveBrowserPairingService {
       module.module === "nw.opaque-route" && module.versions.includes(2))) {
       throw new Error("The relay does not support opaque route v2 delivery.");
     }
+    if (!capabilities.modules.some((module) =>
+      module.module === "nw.rendezvous-transport" && module.versions.includes(2))) {
+      throw new Error("The relay does not support rendezvous transport v2 pairing.");
+    }
     return { endpoint: parsed, health, info };
   }
 

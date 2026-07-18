@@ -201,7 +201,7 @@ test("browser pairing cancellation removes persisted private pairing state", asy
   assert.equal(cancelled.rendezvousDeletionRequests.length, 2);
 });
 
-test("browser relay verification requires current opaque-route delivery", async () => {
+test("browser relay verification requires opaque-route and rendezvous transport v2", async () => {
   const service = await pairingService({
     relayClientFactory: () => ({
       health: async () => ({}),
@@ -227,6 +227,27 @@ test("browser relay verification requires current opaque-route delivery", async 
     })
   });
   await assert.rejects(() => incompatible.verifyRelay("https://relay.example"), /opaque route v2/);
+
+  const missingRendezvous = await pairingService({
+    relayClientFactory: () => ({
+      health: async () => ({}),
+      info: async () => ({
+        relayInfo: {
+          ...testRelayInfo(),
+          protocolCapabilities: {
+            ...createProtocolCapabilityManifest(),
+            modules: testRelayInfo().protocolCapabilities.modules.filter(
+              ({ module }) => module !== "nw.rendezvous-transport"
+            )
+          }
+        }
+      })
+    })
+  });
+  await assert.rejects(
+    () => missingRendezvous.verifyRelay("https://relay.example"),
+    /rendezvous transport v2/
+  );
 });
 
 test("browser persona schema rejects non-current global identity state", () => {
@@ -335,7 +356,8 @@ function testRelayInfo() {
       ...capabilities,
       modules: [
         ...capabilities.modules,
-        { module: "nw.opaque-route", versions: [2], status: "stable", limits: {} }
+        { module: "nw.opaque-route", versions: [2], status: "stable", limits: {} },
+        { module: "nw.rendezvous-transport", versions: [2], status: "provisional", limits: {} }
       ]
     },
     requiresPassword: null,

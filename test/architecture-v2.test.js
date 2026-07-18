@@ -8,14 +8,20 @@ import {
   createContentTypeCapabilityV2,
   createContentTypeId,
   createConversationEvent,
+  createDeliveryReceiptEncodedContent,
   createDeliveryStateRecord,
   createProtocolCapabilityManifest,
+  createReactionEncodedContent,
+  createReadReceiptEncodedContent,
+  createRetractionEncodedContent,
   createTextEncodedContent,
   defaultActiveEndpointModules,
   defaultContentTypeCapabilities,
   generateRelationshipEndpointHandle,
   negotiateProtocolCapabilities,
   protocolKnownModuleCatalog,
+  retractionFallbackText,
+  retractionRetainedCopyScope,
   standardContentTypes,
   validateConversationEvent,
   validateEncodedContent,
@@ -24,13 +30,8 @@ import {
   validateProtocolModuleCapability
 } from "../src/index.js";
 import {
-  createDeliveryReceiptEncodedContent,
-  createReactionEncodedContent,
-  createReadReceiptEncodedContent,
-  createRetractionEncodedContent,
   directV4CipherSuite,
   negotiateDirectV4Capabilities,
-  retractionFallbackText,
   validateDirectV4NegotiatedCapabilityManifest
 } from "../src/architecture-v2.js";
 
@@ -377,7 +378,7 @@ test("standard relations, reactions, truthful retractions, and receipts match Sw
   const retraction = createRetractionEncodedContent({ reason: "duplicate" });
   assert.equal(retraction.payload, base64(canonicalJsonBytes({
     reason: "duplicate",
-    scope: "received-copies-may-remain"
+    scope: retractionRetainedCopyScope
   })));
   assert.equal(retraction.fallbackText, retractionFallbackText);
   createConversationEvent({

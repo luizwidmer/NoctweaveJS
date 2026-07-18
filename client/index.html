@@ -55,21 +55,29 @@
           <h2>Relay</h2>
           <label for="relay">Relay URL</label>
           <input id="relay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url">
-          <button id="verifyRelay">Verify opaque-route support</button>
+          <button id="verifyRelay">Verify route and pairing transport</button>
           <div id="relayInfo" class="info">Not checked yet.</div>
         </section>
       </aside>
 
       <section class="chatPanel">
-        <div class="chatHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh rendezvous invitation</h2></div></div>
+        <div class="chatHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh relationship rendezvous</h2></div></div>
         <div class="panel compact">
           <p>Each invitation is ephemeral, expires after ten minutes, and can be redeemed once. Relationship keys and route capabilities are created fresh behind the encrypted rendezvous.</p>
+          <label for="relationshipPseudonym">Relationship-scoped name</label>
+          <input id="relationshipPseudonym" maxlength="128" value="Noctweave peer">
+          <p class="fieldHint">This name is encrypted inside this relationship only. Your local persona label is never reused.</p>
           <div class="buttonRow"><button id="createInvitation">Create fresh invitation</button><button id="copyInvitation" class="subtle">Copy</button></div>
           <textarea id="pairingInvitation" rows="8" readonly placeholder="Create a fresh invitation when you are ready to share it."></textarea>
-          <label for="peerInvitation">Inspect a received invitation</label>
+          <label for="peerInvitation">Accept a received invitation</label>
           <textarea id="peerInvitation" rows="8" placeholder="Paste a one-use invitation"></textarea>
-          <button id="inspectInvitation">Validate invitation</button>
+          <div class="buttonRow"><button id="inspectInvitation" class="subtle">Validate invitation</button><button id="acceptInvitation">Accept and start pairing</button></div>
           <p id="invitationResult" class="info">No reusable public relationship material is generated.</p>
+        </div>
+        <div class="panel compact">
+          <div class="pairingHeader"><div><p class="eyebrow">Crash-resumable rendezvous</p><h3>Pending pairings</h3></div><button id="resumePairings" class="subtle">Resume all</button></div>
+          <p id="pairingStatus" class="info" role="status">No pending rendezvous.</p>
+          <div id="pendingPairingList" class="pendingPairingList">No pending rendezvous.</div>
         </div>
         <div class="panel compact">
           <p class="eyebrow">Established relationships</p>

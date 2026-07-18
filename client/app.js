@@ -9,9 +9,11 @@ import {
   NoctweaveStateRepository,
   WebCryptoPrimitives,
   base64,
+  createRendezvousRelayAdapterV2,
   decodeContactPairingInvitationV2,
   encodeContactPairingInvitationV2,
   parseBrowserRelayEndpoint,
+  relayEndpointURL,
   swiftISODate,
   validateBrowserPersonaState
 } from "../src/index.js";
@@ -28,7 +30,9 @@ const state = {
   pairing: null,
   repository: null,
   persona: null,
-  invitation: null
+  invitation: null,
+  pairingBusy: new Set(),
+  pumpTimer: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -50,7 +54,10 @@ const elements = {
   relationshipList: $("#relationshipList"),
   invitation: $("#pairingInvitation"),
   peerInvitation: $("#peerInvitation"),
-  invitationResult: $("#invitationResult")
+  relationshipPseudonym: $("#relationshipPseudonym"),
+  invitationResult: $("#invitationResult"),
+  pairingStatus: $("#pairingStatus"),
+  pendingPairingList: $("#pendingPairingList")
 };
 
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
@@ -59,6 +66,8 @@ $("#verifyRelay").addEventListener("click", () => run(verifyRelay));
 $("#createInvitation").addEventListener("click", () => run(createInvitation));
 $("#copyInvitation").addEventListener("click", () => run(copyInvitation));
 $("#inspectInvitation").addEventListener("click", () => run(inspectInvitation));
+$("#acceptInvitation").addEventListener("click", () => run(acceptInvitation));
+$("#resumePairings").addEventListener("click", () => run(resumeAllPairings));
 $("#lockProfile").addEventListener("click", lockProfile);
 
 boot();
@@ -80,9 +89,10 @@ async function boot() {
 }
 
 function makeRelayClient(endpoint, options = {}) {
-  const parsed = parseBrowserRelayEndpoint(String(endpoint));
-  const customFetch = parsed.transport === "http" ? proxyFetch(String(endpoint)) : options.fetch;
-  return new NoctweaveRelayClient(endpoint, { ...options, fetch: customFetch });
+  const parsed = typeof endpoint === "string" ? parseBrowserRelayEndpoint(endpoint) : endpoint;
+  const endpointURL = typeof endpoint === "string" ? endpoint : relayEndpointURL(parsed, "/");
+  const customFetch = parsed.transport === "http" ? proxyFetch(endpointURL) : options.fetch;
+  return new NoctweaveRelayClient(parsed, { ...options, fetch: customFetch });
 }
 
 function proxyFetch(endpoint) {
@@ -164,13 +174,17 @@ function showApp() {
   elements.app.hidden = false;
   elements.app.inert = false;
   renderPersona();
+  startPairingPump();
 }
 
 function lockProfile() {
+  stopPairingPump();
   state.repository = null;
   state.persona = null;
   state.invitation = null;
+  state.pairingBusy.clear();
   elements.invitation.value = "";
+  elements.peerInvitation.value = "";
   elements.app.hidden = true;
   elements.app.inert = true;
   elements.gate.hidden = false;
@@ -199,6 +213,7 @@ async function createInvitation() {
   const prepared = await state.pairing.prepareOffererPairing({
     persona: state.persona,
     relay: elements.relay.value,
+    relationshipPseudonym: elements.relationshipPseudonym.value,
     createdAt: createdAtValue,
     expiresAt: expiresAtValue
   });
@@ -206,11 +221,11 @@ async function createInvitation() {
     crypto: state.crypto,
     invitation: prepared.invitation
   });
-  await state.repository.save(prepared.persona);
-  state.persona = prepared.persona;
+  await persistPersona(prepared.persona);
   state.invitation = encoded;
   elements.invitation.value = encoded;
-  elements.invitationResult.textContent = "Fresh invitation ready. It expires in ten minutes and can be redeemed once.";
+  elements.invitationResult.textContent = "Fresh invitation ready. Share it privately; it expires in ten minutes and can be redeemed once.";
+  await pumpPairing(prepared.pairingID);
 }
 
 async function copyInvitation() {
@@ -225,6 +240,187 @@ async function inspectInvitation() {
     encoded: elements.peerInvitation.value.trim()
   });
   elements.invitationResult.textContent = `Valid one-use rendezvous; expires ${invitation.offer.expiresAt}. No identity or route was disclosed.`;
+}
+
+async function acceptInvitation() {
+  requireUnlocked();
+  const encoded = elements.peerInvitation.value.trim();
+  if (!encoded) throw new Error("Paste a one-use invitation first.");
+  const invitation = await decodeContactPairingInvitationV2({ crypto: state.crypto, encoded });
+  const prepared = await state.pairing.prepareResponderPairing({
+    persona: state.persona,
+    invitation,
+    relay: elements.relay.value,
+    relationshipPseudonym: elements.relationshipPseudonym.value,
+    at: swiftISODate()
+  });
+  await persistPersona(prepared.persona);
+  elements.peerInvitation.value = "";
+  elements.invitationResult.textContent = "Invitation accepted. Its secret was removed from the form; the encrypted rendezvous will resume until ready.";
+  await pumpPairing(prepared.pairingID);
+}
+
+async function resumeAllPairings() {
+  requireUnlocked();
+  const pairingIDs = state.persona.pendingPairings.map(({ pairingID }) => pairingID);
+  if (pairingIDs.length === 0) {
+    elements.pairingStatus.textContent = "No pending rendezvous.";
+    return;
+  }
+  for (const pairingID of pairingIDs) await pumpPairing(pairingID);
+}
+
+async function pumpPairing(pairingID) {
+  requireUnlocked();
+  if (state.pairingBusy.has(pairingID)) return;
+  state.pairingBusy.add(pairingID);
+  renderPendingPairings();
+  try {
+    for (let round = 0; round < 16; round += 1) {
+      const current = pendingPairing(pairingID);
+      if (!current) return;
+      const endpoint = current.participant.localReceiveRoute.relay;
+      const relayClient = makeRelayClient(endpoint);
+      const adapter = await createRendezvousRelayAdapterV2({
+        crypto: state.crypto,
+        offer: current.offer
+      });
+      const resumed = await state.pairing.resumePairing({ persona: state.persona, pairingID });
+      let progressed = false;
+
+      for (const outbound of resumed.outboundTransportFrames) {
+        await relayClient.appendRendezvousTransportV2(outbound);
+        const acknowledged = await state.pairing.acknowledgePairingOutbound({
+          persona: state.persona,
+          pairingID,
+          frameIDs: [outbound.frame.frameId.rawValue]
+        });
+        await persistPersona(acknowledged.persona);
+        progressed = true;
+      }
+
+      const receiving = pendingPairing(pairingID);
+      if (!receiving || receiving.phase === "ready") break;
+      const request = adapter.syncRequest({
+        receivingAs: receiving.role,
+        afterSequence: receiving.nextInboundTransportSequence - 1,
+        maxCount: 32
+      });
+      const batch = await relayClient.syncRendezvousTransportV2(request);
+      for (const inbound of batch.frames) {
+        const processed = await state.pairing.processPairingFrame({
+          persona: state.persona,
+          pairingID,
+          transportFrame: inbound,
+          at: swiftISODate()
+        });
+        await persistPersona(processed.persona);
+        progressed = true;
+      }
+      if (!progressed || (!batch.hasMore && batch.frames.length === 0)) break;
+    }
+    const pairing = pendingPairing(pairingID);
+    elements.pairingStatus.textContent = pairing?.phase === "ready"
+      ? "Pairing is verified and ready for your explicit final approval."
+      : "Rendezvous synchronized. Waiting for the peer; retry is safe after a restart.";
+  } finally {
+    state.pairingBusy.delete(pairingID);
+    renderPendingPairings();
+  }
+}
+
+async function finalizePairing(pairingID) {
+  if (state.pairingBusy.has(pairingID)) throw new Error("Pairing synchronization is still running.");
+  state.pairingBusy.add(pairingID);
+  renderPendingPairings();
+  try {
+    const pending = requirePendingPairing(pairingID);
+    const finalized = await state.pairing.finalizePairing({
+      persona: state.persona,
+      pairingID,
+      at: swiftISODate()
+    });
+    await deleteRendezvousLanes(pending, finalized.rendezvousDeletionRequests);
+    await persistPersona(finalized.persona);
+    elements.pairingStatus.textContent = "Fresh pairwise relationship stored; the one-use rendezvous lanes were deleted.";
+  } finally {
+    state.pairingBusy.delete(pairingID);
+    renderPendingPairings();
+  }
+}
+
+async function cancelPairing(pairingID) {
+  if (state.pairingBusy.has(pairingID)) throw new Error("Pairing synchronization is still running.");
+  state.pairingBusy.add(pairingID);
+  renderPendingPairings();
+  try {
+    const pending = requirePendingPairing(pairingID);
+    const cancelled = await state.pairing.cancelPairing({
+      persona: state.persona,
+      pairingID,
+      at: swiftISODate()
+    });
+    await deleteRendezvousLanes(pending, cancelled.rendezvousDeletionRequests, {
+      allowAlreadyExpired: true
+    });
+    await persistPersona(cancelled.persona);
+    if (state.persona.pendingPairings.length === 0) {
+      state.invitation = null;
+      elements.invitation.value = "";
+    }
+    elements.pairingStatus.textContent = "Pairing cancelled; private pending state and one-use rendezvous lanes were deleted.";
+  } finally {
+    state.pairingBusy.delete(pairingID);
+    renderPendingPairings();
+  }
+}
+
+async function deleteRendezvousLanes(pairing, requests, { allowAlreadyExpired = false } = {}) {
+  const relayClient = makeRelayClient(pairing.participant.localReceiveRoute.relay);
+  try {
+    for (const request of requests) await relayClient.deleteRendezvousTransportV2(request);
+  } catch (error) {
+    if (!allowAlreadyExpired || Date.parse(pairing.offer.expiresAt) > Date.now()) throw error;
+    // The relay lease has ended, so no live lane remains to delete. Local
+    // cancellation still erases the encrypted pending participant state.
+  }
+}
+
+async function persistPersona(persona) {
+  const validated = validateBrowserPersonaState(persona);
+  await state.repository.save(validated);
+  state.persona = validated;
+  renderPersona();
+}
+
+function pendingPairing(pairingID) {
+  return state.persona?.pendingPairings.find((pairing) => pairing.pairingID === pairingID) ?? null;
+}
+
+function requirePendingPairing(pairingID) {
+  const pairing = pendingPairing(pairingID);
+  if (!pairing) throw new Error("Pending pairwise pairing was not found.");
+  return pairing;
+}
+
+function startPairingPump() {
+  stopPairingPump();
+  void backgroundResume();
+  state.pumpTimer = setInterval(backgroundResume, 3_000);
+}
+
+function stopPairingPump() {
+  if (state.pumpTimer !== null) clearInterval(state.pumpTimer);
+  state.pumpTimer = null;
+}
+
+async function backgroundResume() {
+  if (!state.persona || !state.repository || state.persona.pendingPairings.length === 0) return;
+  try {
+    await resumeAllPairings();
+  } catch (error) {
+    elements.pairingStatus.textContent = `Rendezvous paused: ${error instanceof Error ? error.message : String(error)} Use Resume all to retry.`;
+  }
 }
 
 function renderPersona() {
@@ -242,6 +438,60 @@ function renderPersona() {
   if (state.persona.relationships.length === 0) {
     elements.relationshipList.textContent = "No completed pairwise relationships yet.";
   }
+  renderPendingPairings();
+}
+
+function renderPendingPairings() {
+  if (!state.persona) return;
+  const pairings = state.persona.pendingPairings;
+  if (pairings.length === 0) {
+    elements.pendingPairingList.textContent = "No pending rendezvous.";
+    return;
+  }
+  elements.pendingPairingList.replaceChildren(...pairings.map((pairing) => {
+    const item = document.createElement("article");
+    const summary = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = pairing.role === "offerer" ? "Invitation you created" : "Invitation you accepted";
+    const detail = document.createElement("span");
+    detail.textContent = `${pairingPhaseLabel(pairing.phase)} · expires ${pairing.offer.expiresAt}`;
+    summary.append(title, detail);
+
+    const actions = document.createElement("div");
+    actions.className = "buttonRow";
+    const busy = state.pairingBusy.has(pairing.pairingID);
+    const resume = pairingButton(busy ? "Syncing…" : "Resume", () => run(() => pumpPairing(pairing.pairingID)));
+    resume.disabled = busy;
+    actions.append(resume);
+    if (pairing.phase === "ready" && pairing.outboundTransportFrames.length === 0) {
+      actions.append(pairingButton("Finalize", () => run(() => finalizePairing(pairing.pairingID))));
+    }
+    const cancel = pairingButton("Cancel", () => run(() => cancelPairing(pairing.pairingID)), "danger");
+    cancel.disabled = busy;
+    actions.append(cancel);
+    item.append(summary, actions);
+    return item;
+  }));
+}
+
+function pairingButton(label, operation, className = "subtle") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", operation);
+  return button;
+}
+
+function pairingPhaseLabel(phase) {
+  return ({
+    awaitingOpen: "Waiting for peer to redeem",
+    awaitingAcceptance: "Peer connected",
+    awaitingIntroduction: "Waiting for peer introduction",
+    awaitingConfirmation: "Verifying relationship",
+    awaitingAcknowledgement: "Waiting for final acknowledgement",
+    ready: "Ready to finalize"
+  })[phase] ?? "Pairing in progress";
 }
 
 function requireUnlocked() {
@@ -268,5 +518,6 @@ async function run(operation) {
   } catch (error) {
     elements.status.textContent = "Error";
     elements.error.textContent = error instanceof Error ? error.message : String(error);
+    if (state.persona) elements.pairingStatus.textContent = elements.error.textContent;
   }
 }

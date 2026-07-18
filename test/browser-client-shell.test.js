@@ -10,11 +10,63 @@ test("production browser client binds only present one-use pairing controls", as
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]));
   const referenced = [...script.matchAll(/\$\("#([A-Za-z0-9_-]+)"\)/g)].map((match) => match[1]);
   assert.deepEqual([...new Set(referenced.filter((id) => !ids.has(id)))], []);
-  for (const id of ["pairingInvitation", "peerInvitation", "relationshipList", "verifyRelay"]) {
+  for (const id of [
+    "pairingInvitation",
+    "peerInvitation",
+    "relationshipPseudonym",
+    "relationshipList",
+    "pendingPairingList",
+    "pairingStatus",
+    "acceptInvitation",
+    "resumePairings",
+    "verifyRelay"
+  ]) {
     assert.equal(ids.has(id), true, id);
   }
   assert.match(html, /One-use pairing/);
   assert.match(html, /no protocol key or routable identifier/i);
+});
+
+test("browser shell drives both persisted rendezvous roles through relay transport", async () => {
+  const script = await readFile(new URL("../client/app.js", import.meta.url), "utf8");
+  for (const operation of [
+    "prepareOffererPairing",
+    "prepareResponderPairing",
+    "resumePairing",
+    "appendRendezvousTransportV2",
+    "acknowledgePairingOutbound",
+    "syncRendezvousTransportV2",
+    "processPairingFrame",
+    "finalizePairing",
+    "cancelPairing",
+    "deleteRendezvousTransportV2"
+  ]) {
+    assert.match(script, new RegExp(`\\b${operation}\\b`), operation);
+  }
+  assert.match(script, /startPairingPump\(\)/);
+  assert.match(script, /setInterval\(backgroundResume/);
+  assert.match(script, /elements\.peerInvitation\.value = ""/);
+});
+
+test("pairing relay effects are persisted in crash-safe order and terminal lanes are cleaned", async () => {
+  const script = await readFile(new URL("../client/app.js", import.meta.url), "utf8");
+  const pumpStart = script.indexOf("async function pumpPairing");
+  const pumpEnd = script.indexOf("async function finalizePairing", pumpStart);
+  const pump = script.slice(pumpStart, pumpEnd);
+  assert.ok(pumpStart >= 0 && pumpEnd > pumpStart);
+  assert.ok(pump.indexOf("appendRendezvousTransportV2") < pump.indexOf("acknowledgePairingOutbound"));
+  assert.ok(pump.indexOf("acknowledgePairingOutbound") < pump.indexOf("persistPersona(acknowledged.persona)"));
+  assert.ok(pump.indexOf("processPairingFrame") < pump.indexOf("persistPersona(processed.persona)"));
+
+  for (const terminal of ["finalizePairing", "cancelPairing"]) {
+    const start = script.indexOf(`async function ${terminal}`);
+    const end = script.indexOf("\nasync function ", start + 1);
+    const body = script.slice(start, end);
+    assert.match(body, /deleteRendezvousLanes/);
+    assert.match(body, /persistPersona/);
+    assert.ok(body.indexOf("deleteRendezvousLanes") < body.indexOf("persistPersona"));
+  }
+  assert.doesNotMatch(script, /textContent\s*=.*(?:routeCapability|publishCapability|readCapability|deleteCapability|pairingID)/);
 });
 
 test("browser secret state stays encrypted and old global schemas are rejected", async () => {
@@ -40,9 +92,12 @@ test("every browser invitation persists a valid offerer state machine", async ()
   const body = script.slice(start, end);
   assert.match(body, /prepareOffererPairing/);
   assert.match(body, /persona:\s*state\.persona/);
-  assert.match(body, /repository\.save\(prepared\.persona\)/);
-  assert.ok(body.indexOf("prepareOffererPairing") < body.indexOf("repository.save"));
-  assert.ok(body.indexOf("repository.save") < body.indexOf("state.persona = prepared.persona"));
+  assert.match(body, /persistPersona\(prepared\.persona\)/);
+  assert.ok(body.indexOf("prepareOffererPairing") < body.indexOf("persistPersona"));
+  const persistStart = script.indexOf("async function persistPersona");
+  const persistEnd = script.indexOf("\nfunction pendingPairing", persistStart);
+  const persistBody = script.slice(persistStart, persistEnd);
+  assert.ok(persistBody.indexOf("repository.save") < persistBody.indexOf("state.persona = validated"));
   assert.match(body, /expiresAt/);
 });
 
