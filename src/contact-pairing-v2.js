@@ -9,6 +9,7 @@ import {
   makeOpaqueRouteCreateRequestV2
 } from "./opaque-route-v2.js";
 import { createOpaqueRoutePayloadKeyV2 } from "./opaque-route-packet-v2.js";
+import { parseExactJSON } from "./strict-json.js";
 import {
   createContactIntroductionV2,
   createLocalOpaqueReceiveRouteV2,
@@ -204,7 +205,7 @@ export async function decodeContactPairingInvitationV2({ crypto, encoded }) {
   const bytes = decodeBase64(encoded, MAX_INVITATION_BYTES, "pairing invitation");
   let value;
   try {
-    value = JSON.parse(decoder.decode(bytes));
+    value = parseExactJSON(decoder.decode(bytes));
   } catch (error) {
     throw new ContactPairingV2Error("invalidInvitation", "Contact pairing invitation is malformed.", error);
   }
@@ -667,7 +668,7 @@ async function openJsonFrame({ crypto, session, frame, expectedKind, at }) {
   const opened = await openRendezvousFrameV2({ crypto, session, frame, at });
   let value;
   try {
-    value = JSON.parse(decoder.decode(opened.plaintext));
+    value = parseExactJSON(decoder.decode(opened.plaintext));
   } catch (error) {
     throw new ContactPairingV2Error("invalidFrame", "Pairing frame is not JSON.", error);
   }

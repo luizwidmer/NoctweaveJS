@@ -10,6 +10,7 @@ import {
 import { validateRelationshipEndpointBindingV4 } from "./crypto/direct-v4.js";
 import { base64, canonicalJsonBytes, swiftUUID } from "./crypto/swift-canonical.js";
 import { validatePairwiseRouteSetV2 } from "./pairwise-opaque-route-v2.js";
+import { parseExactJSON } from "./strict-json.js";
 import {
   equalBytes,
   freezeWire,
@@ -441,7 +442,7 @@ function decodeCanonicalPayload(encoded, validator) {
   const data = requireBase64(encoded, undefined, "Relationship control payload");
   let parsed;
   try {
-    parsed = JSON.parse(decoder.decode(data));
+    parsed = parseExactJSON(decoder.decode(data));
   } catch (error) {
     throw new TypeError("Relationship control payload is not canonical JSON.", { cause: error });
   }

@@ -23,6 +23,7 @@ import {
   validateRendezvousRelaySyncBatchV2,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
+import { parseExactJSON } from "./strict-json.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
@@ -315,12 +316,11 @@ function requireRendezvousSyncResponse(response) {
 }
 
 function decodeRelayResponse(text, request) {
-  const trimmed = text.trim();
   let value;
   try {
-    value = JSON.parse(trimmed);
+    value = parseExactJSON(text);
   } catch {
-    throw new Error(`Relay returned invalid JSON: ${responseClassification(trimmed)}`);
+    throw new Error(`Relay returned invalid JSON: ${responseClassification(text)}`);
   }
   return validateRelayResponseEnvelopeV2(value, request);
 }
@@ -334,7 +334,7 @@ async function boundedResponseText(response, maximumBytes) {
     throw new Error("Fetch implementation must expose a streaming response body for bounded relay reads.");
   }
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let text = "";
   let byteCount = 0;
   try {
@@ -427,13 +427,13 @@ async function blobLikeToText(data, maximumBytes = DEFAULT_MAX_RESPONSE_BYTES) {
     if (data.byteLength > maximumBytes) {
       throw new Error("Relay response exceeds client size limit.");
     }
-    return new TextDecoder().decode(data);
+    return new TextDecoder("utf-8", { fatal: true }).decode(data);
   }
   if (ArrayBuffer.isView(data)) {
     if (data.byteLength > maximumBytes) {
       throw new Error("Relay response exceeds client size limit.");
     }
-    return new TextDecoder().decode(data);
+    return new TextDecoder("utf-8", { fatal: true }).decode(data);
   }
   return String(data);
 }

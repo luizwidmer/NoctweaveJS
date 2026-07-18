@@ -6,6 +6,7 @@ import {
 } from "./rendezvous-v2.js";
 import { base64, canonicalJsonBytes } from "./crypto/swift-canonical.js";
 import { bytes } from "./crypto/webcrypto.js";
+import { parseExactJSON } from "./strict-json.js";
 import {
   concatBytes,
   cryptoHmacSha256,
@@ -401,7 +402,7 @@ export class RendezvousRelayAdapterV2 {
       }
       const encoded = new Uint8Array(plaintext.subarray(framingBytes, framingBytes + payloadLength));
       try {
-        const parsed = JSON.parse(decoder.decode(encoded));
+        const parsed = parseExactJSON(decoder.decode(encoded));
         if (kind === 1) {
           if (direction !== "responderToOfferer" || frame.sequence !== 1) {
             throw new RendezvousRelayAdapterV2Error("invalidDirection");

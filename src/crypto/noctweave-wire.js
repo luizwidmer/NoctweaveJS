@@ -1,4 +1,5 @@
 import { base64, canonicalJsonBytes, swiftISODate } from "./swift-canonical.js";
+import { parseExactJSON } from "../strict-json.js";
 
 const DIRECT_VERSION = 4;
 const PROTOCOL_ENVELOPE_VERSION = 1;
@@ -299,7 +300,7 @@ export function decodeProtocolEnvelopeV1(value) {
     const text = typeof value === "string"
       ? value
       : decoder.decode(value instanceof Uint8Array ? value : new Uint8Array(value));
-    parsed = JSON.parse(text);
+    parsed = parseExactJSON(text);
   } catch (error) {
     throw new TypeError("ProtocolEnvelopeV1 encoding is invalid JSON.", { cause: error });
   }

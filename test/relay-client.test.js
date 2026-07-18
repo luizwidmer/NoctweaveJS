@@ -457,6 +457,20 @@ test("relay client redacts HTTP and invalid JSON bodies", async () => {
   });
 });
 
+test("relay client rejects duplicate response fields before envelope validation", async () => {
+  const client = new NoctweaveRelayClient("https://relay.example", {
+    fetch: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return new Response(
+        `{"requestID":"${request.requestID}","module":"nw.core","version":2,` +
+        `"method":"info","status":"success","\\u0073tatus":"error",` +
+        '"body":{},"error":null}'
+      );
+    }
+  });
+  await assert.rejects(() => client.info(), /invalid JSON/);
+});
+
 test("relay client rejects invalid policy, authentication, and endpoint inputs", () => {
   assert.throws(
     () => new NoctweaveRelayClient("https://relay.example", {

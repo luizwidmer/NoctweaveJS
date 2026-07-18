@@ -1,3 +1,5 @@
+import { parseExactJSON } from "./strict-json.js";
+
 const MAX_STORAGE_KEY_BYTES = 256;
 const MAX_PLAINTEXT_RECORD_BYTES = 8 * 1024 * 1024;
 const MAX_ENCRYPTED_RECORD_BYTES = 12 * 1024 * 1024;
@@ -56,7 +58,7 @@ export class BrowserLocalStorageStore {
     if (raw.length > MAX_ENCRYPTED_RECORD_BYTES) {
       throw new Error("Stored record exceeds its size limit.");
     }
-    return JSON.parse(raw);
+    return parseExactJSON(raw);
   }
 
   async set(key, value) {
@@ -244,7 +246,7 @@ export class EncryptedNoctweaveStore {
         if (plaintextBytes.byteLength > MAX_PLAINTEXT_RECORD_BYTES) {
           throw new Error("Decrypted store record exceeds its size limit.");
         }
-        return JSON.parse(new TextDecoder().decode(plaintextBytes));
+        return parseExactJSON(new TextDecoder("utf-8", { fatal: true }).decode(plaintextBytes));
       } finally {
         plaintextBytes.fill(0);
       }

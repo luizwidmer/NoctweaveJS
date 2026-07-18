@@ -1,4 +1,5 @@
 export { normalizeRelayEndpoint, parseRelayEndpoint, relayEndpointURL } from "./endpoint.js";
+export { parseExactJSON, strictJSONMaximumDepth } from "./strict-json.js";
 export {
   relayRequests,
   validateRelayRequestEnvelopeV2,

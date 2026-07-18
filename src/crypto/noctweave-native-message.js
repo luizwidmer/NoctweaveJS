@@ -1,4 +1,5 @@
 import { base64, canonicalJsonBytes, swiftISODate, swiftUUID } from "./swift-canonical.js";
+import { parseExactJSON } from "../strict-json.js";
 import {
   contentTypeCanonicalName,
   createConversationEvent,
@@ -37,7 +38,6 @@ import {
 } from "../relationship-control-v2.js";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const strictUTF8Decoder = new TextDecoder("utf-8", { fatal: true });
 const unsafeDisplayControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const NPAD_V2_MAGIC = new Uint8Array([0x4e, 0x50, 0x41, 0x44, 0x02]);
@@ -1085,7 +1085,7 @@ function decodeCanonicalContentPayload(content, label) {
   const payload = fromBase64(content.payload, label, MAX_PADDED_BYTES);
   let canonical;
   try {
-    const value = JSON.parse(strictUTF8Decoder.decode(payload));
+    const value = parseExactJSON(strictUTF8Decoder.decode(payload));
     canonical = canonicalJsonBytes(value);
     if (compareBytes(payload, canonical) !== 0) {
       throw new Error(`${label} is not canonical JSON.`);
@@ -1134,7 +1134,9 @@ function decodePaddedBody(data, magic) {
       paddedSizeFor(length) !== data.byteLength) {
     throw new Error("Message padding frame length is invalid.");
   }
-  return JSON.parse(decoder.decode(data.subarray(NPAD_HEADER_BYTES, NPAD_HEADER_BYTES + length)));
+  return parseExactJSON(
+    strictUTF8Decoder.decode(data.subarray(NPAD_HEADER_BYTES, NPAD_HEADER_BYTES + length))
+  );
 }
 
 function labelsForAgreement(ourKey, theirKey) {

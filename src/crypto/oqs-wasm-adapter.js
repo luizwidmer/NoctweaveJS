@@ -1,4 +1,5 @@
 import { bytes } from "./webcrypto.js";
+import { parseExactJSON } from "../strict-json.js";
 
 const DEFAULT_PROFILE = Object.freeze({
   kem: Object.freeze({
@@ -304,7 +305,9 @@ export class NoctweaveOQSWasmAdapter {
       throw new OQSWasmError("WASM profile is missing a bounded terminator");
     }
     try {
-      return JSON.parse(new TextDecoder().decode(heap.slice(ptr, end)));
+      return parseExactJSON(
+        new TextDecoder("utf-8", { fatal: true }).decode(heap.slice(ptr, end))
+      );
     } catch {
       throw new OQSWasmError("WASM module returned an invalid profile");
     }
