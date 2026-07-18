@@ -27,15 +27,17 @@ import {
   renewOpaqueReceiveRouteV2,
   sealOpaqueRouteBundleV2,
   swiftISODate,
-  teardownOpaqueReceiveRouteV2
+  teardownOpaqueReceiveRouteV2,
+  validateRelayResponseEnvelopeV2
 } from "../src/index.js";
 
 test("relay client posts bounded authenticated requests", async () => {
   const calls = [];
+  const relayInfo = relayInfoFixture();
   const fetch = async (url, init) => {
     calls.push({ url, init });
     const request = JSON.parse(init.body);
-    return jsonResponse(relaySuccess(request, { relayInfo: { relayName: "Test" } }));
+    return jsonResponse(relaySuccess(request, { relayInfo }));
   };
   const client = new NoctweaveRelayClient("https://relay.example", {
     fetch,
@@ -44,7 +46,7 @@ test("relay client posts bounded authenticated requests", async () => {
 
   const response = await client.info();
 
-  assert.deepEqual(response, { relayInfo: { relayName: "Test" } });
+  assert.deepEqual(response, { relayInfo });
   assert.equal(calls[0].url, "https://relay.example/relay");
   assert.equal(calls[0].init.method, "POST");
   assert.equal(calls[0].init.redirect, "error");
@@ -63,6 +65,113 @@ test("relay client posts bounded authenticated requests", async () => {
       authToken: "secret"
     }
   );
+});
+
+test("relay info responses require the exact bounded recursive current shape", () => {
+  const request = relayRequests.info();
+  const validate = (relayInfo) => validateRelayResponseEnvelopeV2(
+    relaySuccess(request, { relayInfo }),
+    request
+  );
+  const current = relayInfoFixture();
+  assert.deepEqual(validate(current), { relayInfo: current });
+  assert.throws(() => validate({ legacy: true }), /Relay info.*current protocol fields/);
+
+  const { advertisedAt: _advertisedAt, ...missingRequired } = current;
+  assert.throws(() => validate(missingRequired), /Relay info.*current protocol fields/);
+  assert.throws(
+    () => validate({ ...current, federation: { ...current.federation, legacy: true } }),
+    /Federation descriptor.*current protocol fields/
+  );
+  assert.throws(
+    () => validate({ ...current, relayName: "x".repeat(1_025) }),
+    /relayName.*protocol bounds/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      temporalBucketScheduleSeconds: Array.from({ length: 17 }, (_, index) => index + 1)
+    }),
+    /schedule.*protocol bounds/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      protocolCapabilities: { ...current.protocolCapabilities, legacy: true }
+    }),
+    /capability manifest.*current protocol fields/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      protocolCapabilities: {
+        ...current.protocolCapabilities,
+        modules: [{ ...current.protocolCapabilities.modules[0], legacy: true }]
+      }
+    }),
+    /module capability fields.*exactly/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      protocolCapabilities: {
+        architectureVersion: 2,
+        modules: Array.from({ length: 65 }, (_, index) => ({
+          module: `nw.module-${String(index).padStart(2, "0")}`,
+          versions: [1],
+          status: "experimental",
+          limits: {}
+        }))
+      }
+    }),
+    /capability manifest.*protocol bounds/
+  );
+});
+
+test("attachment success chunks are exact, bounded, and request-correlated", () => {
+  const attachmentId = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE";
+  const payload = encryptedPayloadFixture();
+  const requests = [
+    relayRequests.uploadAttachment({ attachmentId, chunkIndex: 7, payload }),
+    relayRequests.fetchAttachment({ attachmentId, chunkIndex: 7 })
+  ];
+  for (const request of requests) {
+    const chunk = { attachmentId, chunkIndex: 7, payload };
+    assert.deepEqual(
+      validateRelayResponseEnvelopeV2(relaySuccess(request, { chunk }), request),
+      { chunk }
+    );
+    assert.throws(
+      () => validateRelayResponseEnvelopeV2(
+        relaySuccess(request, { chunk: { ...chunk, legacy: true } }),
+        request
+      ),
+      /Attachment chunk.*current protocol fields/
+    );
+    assert.throws(
+      () => validateRelayResponseEnvelopeV2(
+        relaySuccess(request, { chunk: { ...chunk, payload: { ...payload, legacy: true } } }),
+        request
+      ),
+      /Encrypted attachment payload.*current protocol fields/
+    );
+    assert.throws(
+      () => validateRelayResponseEnvelopeV2(
+        relaySuccess(request, { chunk: { ...chunk, chunkIndex: 8 } }),
+        request
+      ),
+      /does not correlate/
+    );
+    assert.throws(
+      () => validateRelayResponseEnvelopeV2(relaySuccess(request, {
+        chunk: {
+          ...chunk,
+          payload: { ...payload, ciphertext: base64(new Uint8Array(128 * 1_024).fill(0x22)) }
+        }
+      }), request),
+      /protocol size limit/
+    );
+  }
 });
 
 test("relay client requires exact correlated responses and bounded error codes", async () => {
@@ -616,6 +725,40 @@ function relaySuccess(request, body) {
     status: "success",
     body,
     error: null
+  };
+}
+
+function relayInfoFixture() {
+  return {
+    kind: "standard",
+    federation: { mode: "solo" },
+    temporalBucketSeconds: 300,
+    temporalBucketScheduleSeconds: [300, 600],
+    attachmentDefaultTTLSeconds: 3_600,
+    attachmentMaxTTLSeconds: 21_600,
+    attachmentsEnabled: true,
+    attachmentStorageBackend: "inline",
+    relayName: "Test",
+    softwareVersion: "noctweave-relay/1.0",
+    protocolCapabilities: {
+      architectureVersion: 2,
+      modules: [
+        { module: "nw.core", versions: [2], status: "stable", limits: {} },
+        { module: "nw.opaque-route", versions: [2], status: "stable", limits: { maxPage: 256 } }
+      ]
+    },
+    requiresPassword: false,
+    tlsEnabled: true,
+    transport: "http",
+    advertisedAt: "2026-07-18T12:00:00Z"
+  };
+}
+
+function encryptedPayloadFixture() {
+  return {
+    nonce: base64(new Uint8Array(12).fill(0x11)),
+    ciphertext: base64(Uint8Array.of(0x22)),
+    tag: base64(new Uint8Array(16).fill(0x33))
   };
 }
 

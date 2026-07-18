@@ -12,7 +12,15 @@ import {
   validateRegisterRendezvousTransportV2Request,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
-import { requireBase64, requireExactRecord, requireRecord } from "./private-v2.js";
+import { validateProtocolModuleCapability } from "./architecture-v2.js";
+import { normalizeRelayEndpoint } from "./endpoint.js";
+import {
+  requireBase64,
+  requireCanonicalTimestamp,
+  requireExactRecord,
+  requireInteger,
+  requireRecord
+} from "./private-v2.js";
 import { swiftUUID } from "./crypto/swift-canonical.js";
 
 const encryptedAttachmentPayloadLimits = Object.freeze({
@@ -154,6 +162,7 @@ export function validateRelayResponseEnvelopeV2(value, request) {
     requireRecord(value.body, "Relay success body");
     const expected = binding.body === null ? [] : [binding.body];
     requireExactRecord(value.body, expected, [], "Relay success body");
+    validateResponseBody(binding, value.body, request);
     return value.body;
   }
   if (value.status === "error") {
@@ -170,6 +179,347 @@ export function validateRelayResponseEnvelopeV2(value, request) {
     throw error;
   }
   throw new TypeError("Relay response status is invalid.");
+}
+
+function validateResponseBody(binding, body, request) {
+  switch (`${binding.module}/${binding.method}`) {
+  case "nw.core/health": break;
+  case "nw.core/info": validateRelayInfoV2(body.relayInfo); break;
+  case "nw.blobs/upload":
+  case "nw.blobs/fetch": validateAttachmentChunkResponse(body.chunk, request.body); break;
+  // These response families require the request and cryptographic context held
+  // by their high-level client methods, which perform the complete validation.
+  case "nw.opaque-route/create":
+  case "nw.opaque-route/renew":
+  case "nw.opaque-route/teardown":
+  case "nw.opaque-route/append":
+  case "nw.opaque-route/sync":
+  case "nw.opaque-route/commit":
+  case "nw.rendezvous-transport/register":
+  case "nw.rendezvous-transport/append":
+  case "nw.rendezvous-transport/sync":
+  case "nw.rendezvous-transport/delete": break;
+  default: throw new TypeError("Relay response binding has no body validator.");
+  }
+}
+
+function validateRelayInfoV2(value) {
+  requireExactRecord(
+    value,
+    ["kind", "federation", "temporalBucketSeconds", "advertisedAt"],
+    [
+      "temporalBucketScheduleSeconds",
+      "attachmentDefaultTTLSeconds",
+      "attachmentMaxTTLSeconds",
+      "attachmentsEnabled",
+      "attachmentStorageBackend",
+      "hiddenRetrieval",
+      "onionTransport",
+      "mixnetTransport",
+      "wakeSupport",
+      "relayName",
+      "operatorNote",
+      "softwareVersion",
+      "protocolCapabilities",
+      "requiresPassword",
+      "tlsEnabled",
+      "transport",
+      "federationCoordinatorEndpoints",
+      "coordinatorReportedRelayCount",
+      "coordinatorRegistrationAuthRequired",
+      "curatedStrictPolicyEnabled",
+      "curatedCoordinatorQuorum",
+      "curatedRequireSignedDirectory",
+      "federationDirectoryPublicKey",
+      "knownOpenPeers",
+      "openFederationDiscovery"
+    ],
+    "Relay info"
+  );
+  if (!["standard", "discovery", "bridge", "privateRelay", "coordinator"].includes(value.kind)) {
+    throw new TypeError("Relay kind is invalid.");
+  }
+  validateFederationDescriptor(value.federation);
+  requireInteger(value.temporalBucketSeconds, "Relay temporal bucket", 0, 86_400);
+  requireCanonicalTimestamp(value.advertisedAt, "Relay advertisedAt");
+
+  if (Object.hasOwn(value, "temporalBucketScheduleSeconds")) {
+    validateCanonicalIntegerList(
+      value.temporalBucketScheduleSeconds,
+      "Relay temporal bucket schedule",
+      1,
+      16,
+      1,
+      86_400
+    );
+  }
+  if (Object.hasOwn(value, "attachmentDefaultTTLSeconds")) {
+    requireInteger(value.attachmentDefaultTTLSeconds, "Attachment default TTL", 60, 2_592_000);
+  }
+  if (Object.hasOwn(value, "attachmentMaxTTLSeconds")) {
+    requireInteger(value.attachmentMaxTTLSeconds, "Attachment maximum TTL", 60, 2_592_000);
+    if (Object.hasOwn(value, "attachmentDefaultTTLSeconds") &&
+        value.attachmentMaxTTLSeconds < value.attachmentDefaultTTLSeconds) {
+      throw new TypeError("Attachment maximum TTL must cover the default TTL.");
+    }
+  }
+  validateOptionalBooleanFields(value, [
+    "attachmentsEnabled",
+    "requiresPassword",
+    "tlsEnabled",
+    "coordinatorRegistrationAuthRequired",
+    "curatedStrictPolicyEnabled",
+    "curatedRequireSignedDirectory"
+  ]);
+  for (const field of ["attachmentStorageBackend", "relayName", "operatorNote", "softwareVersion"]) {
+    if (Object.hasOwn(value, field)) validateBoundedText(value[field], `Relay ${field}`, 1_024);
+  }
+  if (Object.hasOwn(value, "hiddenRetrieval")) validateHiddenRetrievalSupport(value.hiddenRetrieval);
+  if (Object.hasOwn(value, "onionTransport")) validateOnionTransportSupport(value.onionTransport);
+  if (Object.hasOwn(value, "mixnetTransport")) validateMixnetTransportSupport(value.mixnetTransport);
+  if (Object.hasOwn(value, "wakeSupport")) validateWakeSupport(value.wakeSupport);
+  if (Object.hasOwn(value, "protocolCapabilities")) {
+    validateRelayCapabilityManifestV2(value.protocolCapabilities);
+  }
+  if (Object.hasOwn(value, "transport") && !["tcp", "http", "websocket"].includes(value.transport)) {
+    throw new TypeError("Relay transport is invalid.");
+  }
+  if (Object.hasOwn(value, "federationCoordinatorEndpoints")) {
+    validateEndpointList(value.federationCoordinatorEndpoints, "Federation coordinator endpoints", 16);
+  }
+  if (Object.hasOwn(value, "coordinatorReportedRelayCount")) {
+    requireInteger(value.coordinatorReportedRelayCount, "Coordinator relay count", 0, 1_000_000);
+  }
+  if (Object.hasOwn(value, "curatedCoordinatorQuorum")) {
+    requireInteger(value.curatedCoordinatorQuorum, "Curated coordinator quorum", 1, 16);
+  }
+  if (Object.hasOwn(value, "federationDirectoryPublicKey")) {
+    const key = requireBase64(value.federationDirectoryPublicKey, undefined, "Federation directory public key");
+    if (key.byteLength > 4_096) throw new TypeError("Federation directory public key exceeds its bound.");
+  }
+  if (Object.hasOwn(value, "knownOpenPeers")) {
+    validateEndpointList(value.knownOpenPeers, "Known open peers", 128);
+  }
+  if (Object.hasOwn(value, "openFederationDiscovery")) {
+    validateOpenFederationDiscoverySupport(value.openFederationDiscovery);
+  }
+  return value;
+}
+
+function validateFederationDescriptor(value) {
+  requireExactRecord(value, ["mode"], ["name", "description"], "Federation descriptor");
+  if (!["solo", "manual", "curated", "open"].includes(value.mode)) {
+    throw new TypeError("Federation mode is invalid.");
+  }
+  if (Object.hasOwn(value, "name")) validateBoundedText(value.name, "Federation name", 1_024);
+  if (Object.hasOwn(value, "description")) {
+    validateBoundedText(value.description, "Federation description", 1_024);
+  }
+}
+
+function validateRelayCapabilityManifestV2(value) {
+  requireExactRecord(value, ["architectureVersion", "modules"], [], "Relay capability manifest");
+  if (value.architectureVersion !== 2 || !Array.isArray(value.modules) ||
+      value.modules.length === 0 || value.modules.length > 64) {
+    throw new TypeError("Relay capability manifest is outside its protocol bounds.");
+  }
+  const modules = value.modules.map(validateProtocolModuleCapability);
+  const moduleNames = modules.map(({ module }) => module);
+  if (moduleNames.some((module, index) => index > 0 && module <= moduleNames[index - 1]) ||
+      !modules.some(({ module, versions }) => module === "nw.core" && versions.includes(2))) {
+    throw new TypeError("Relay capability modules must be unique, sorted, and include nw.core v2.");
+  }
+}
+
+function validateHiddenRetrievalSupport(value) {
+  requireExactRecord(
+    value,
+    ["mode", "defaultCoverSetSize", "maxCoverSetSize"],
+    ["replicatedXorPIRReplicas"],
+    "Hidden retrieval support"
+  );
+  if (!["coverQuery", "replicatedXorPIR"].includes(value.mode)) {
+    throw new TypeError("Hidden retrieval mode is invalid.");
+  }
+  requireInteger(value.defaultCoverSetSize, "Default cover set size", 2, 4_096);
+  requireInteger(value.maxCoverSetSize, "Maximum cover set size", value.defaultCoverSetSize, 4_096);
+  if (Object.hasOwn(value, "replicatedXorPIRReplicas")) {
+    if (!Array.isArray(value.replicatedXorPIRReplicas) ||
+        value.replicatedXorPIRReplicas.length === 0 ||
+        value.replicatedXorPIRReplicas.length > 256) {
+      throw new TypeError("Hidden retrieval replicas exceed their protocol bounds.");
+    }
+    const identities = new Set();
+    const operators = new Set();
+    const endpoints = new Set();
+    for (const replica of value.replicatedXorPIRReplicas) {
+      requireExactRecord(replica, ["replicaId", "operatorId", "endpoint"], [], "Hidden retrieval replica");
+      validateBoundedText(replica.replicaId, "Hidden retrieval replica ID", 1_024);
+      validateBoundedText(replica.operatorId, "Hidden retrieval operator ID", 1_024);
+      const endpointKey = validateRelayEndpoint(replica.endpoint);
+      const identity = replica.replicaId.toLowerCase();
+      const operator = replica.operatorId.toLowerCase();
+      if (identities.has(identity) || operators.has(operator) || endpoints.has(endpointKey)) {
+        throw new TypeError("Hidden retrieval replicas must be distinct.");
+      }
+      identities.add(identity);
+      operators.add(operator);
+      endpoints.add(endpointKey);
+    }
+  }
+  if (value.mode === "replicatedXorPIR" &&
+      (!Object.hasOwn(value, "replicatedXorPIRReplicas") || value.replicatedXorPIRReplicas.length < 2)) {
+    throw new TypeError("Replicated XOR-PIR requires at least two replicas.");
+  }
+}
+
+function validateOnionTransportSupport(value) {
+  requireExactRecord(
+    value,
+    ["enabled", "maxHops", "requiresFixedSizePackets"],
+    [],
+    "Onion transport support"
+  );
+  validateBoolean(value.enabled, "Onion transport enabled");
+  requireInteger(value.maxHops, "Onion transport maxHops", 1, 8);
+  validateBoolean(value.requiresFixedSizePackets, "Onion fixed-size packet requirement");
+}
+
+function validateMixnetTransportSupport(value) {
+  requireExactRecord(
+    value,
+    ["enabled", "batchIntervalSeconds", "minBatchSize", "coverPacketsPerBatch", "maxDelaySeconds"],
+    [],
+    "Mixnet transport support"
+  );
+  validateBoolean(value.enabled, "Mixnet transport enabled");
+  requireInteger(value.batchIntervalSeconds, "Mixnet batch interval", 5, 3_600);
+  requireInteger(value.minBatchSize, "Mixnet minimum batch size", 1, 256);
+  requireInteger(value.coverPacketsPerBatch, "Mixnet cover packets", 0, 256);
+  requireInteger(value.maxDelaySeconds, "Mixnet maximum delay", 0, 3_600);
+}
+
+function validateWakeSupport(value) {
+  requireExactRecord(
+    value,
+    ["mode", "minPollIntervalSeconds", "maxPollIntervalSeconds", "jitterPermille", "longPollTimeoutSeconds"],
+    [],
+    "Wake support"
+  );
+  if (!["pullOnly", "longPoll"].includes(value.mode)) throw new TypeError("Wake mode is invalid.");
+  requireInteger(value.minPollIntervalSeconds, "Wake minimum poll interval", 5, 86_400);
+  requireInteger(
+    value.maxPollIntervalSeconds,
+    "Wake maximum poll interval",
+    value.minPollIntervalSeconds,
+    86_400
+  );
+  requireInteger(value.jitterPermille, "Wake jitter", 0, 1_000);
+  if (value.mode === "pullOnly") {
+    if (value.longPollTimeoutSeconds !== null) throw new TypeError("Pull-only wake timeout must be null.");
+  } else {
+    requireInteger(
+      value.longPollTimeoutSeconds,
+      "Wake long-poll timeout",
+      5,
+      value.maxPollIntervalSeconds
+    );
+  }
+}
+
+function validateOpenFederationDiscoverySupport(value) {
+  requireExactRecord(
+    value,
+    [
+      "dhtNodeEnabled",
+      "peerExchangeEnabled",
+      "peerExchangeLimit",
+      "requirePublicEndpoint",
+      "maxDHTRecords",
+      "maxDHTRecordsPerHost",
+      "maxDHTQueryRecords"
+    ],
+    [],
+    "Open federation discovery support"
+  );
+  validateBoolean(value.dhtNodeEnabled, "DHT node enabled");
+  validateBoolean(value.peerExchangeEnabled, "Peer exchange enabled");
+  validateBoolean(value.requirePublicEndpoint, "Public endpoint requirement");
+  requireInteger(value.peerExchangeLimit, "Peer exchange limit", 0, 128);
+  requireInteger(value.maxDHTRecords, "Maximum DHT records", 1, 256);
+  requireInteger(value.maxDHTRecordsPerHost, "Maximum DHT records per host", 1, 16);
+  if (value.maxDHTRecordsPerHost > value.maxDHTRecords) {
+    throw new TypeError("DHT records per host cannot exceed the total record bound.");
+  }
+  requireInteger(value.maxDHTQueryRecords, "Maximum DHT query records", 1, 512);
+}
+
+function validateEndpointList(value, label, maximum) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
+    throw new TypeError(`${label} exceed their protocol bounds.`);
+  }
+  const endpointKeys = value.map(validateRelayEndpoint);
+  if (new Set(endpointKeys).size !== endpointKeys.length) {
+    throw new TypeError(`${label} must be unique.`);
+  }
+}
+
+function validateRelayEndpoint(value) {
+  requireExactRecord(
+    value,
+    ["host", "port", "useTLS", "transport"],
+    ["tlsCertificateFingerprintSHA256", "directorySigningPublicKey"],
+    "Relay endpoint"
+  );
+  const normalized = normalizeRelayEndpoint(value);
+  validateBoundedText(normalized.host, "Relay endpoint host", 255);
+  if (Object.hasOwn(value, "tlsCertificateFingerprintSHA256") &&
+      value.tlsCertificateFingerprintSHA256 !== null) {
+    requireBase64(value.tlsCertificateFingerprintSHA256, 32, "TLS certificate fingerprint");
+  }
+  if (Object.hasOwn(value, "directorySigningPublicKey") && value.directorySigningPublicKey !== null) {
+    const key = requireBase64(value.directorySigningPublicKey, undefined, "Directory signing public key");
+    if (key.byteLength > 4_096) throw new TypeError("Directory signing public key exceeds its bound.");
+  }
+  return `${normalized.host.toLowerCase()}\0${normalized.port}\0${normalized.useTLS}\0${normalized.transport}`;
+}
+
+function validateAttachmentChunkResponse(value, requestBody) {
+  requireExactRecord(value, ["attachmentId", "chunkIndex", "payload"], [], "Attachment chunk");
+  validateAttachmentCoordinates(value);
+  validateEncryptedAttachmentPayload(value.payload);
+  if (value.attachmentId.toLowerCase() !== requestBody.attachmentId.toLowerCase() ||
+      value.chunkIndex !== requestBody.chunkIndex) {
+    throw new TypeError("Attachment response does not correlate to its request coordinates.");
+  }
+}
+
+function validateCanonicalIntegerList(value, label, minimumCount, maximumCount, minimum, maximum) {
+  if (!Array.isArray(value) || value.length < minimumCount || value.length > maximumCount) {
+    throw new TypeError(`${label} exceeds its protocol bounds.`);
+  }
+  const normalized = value.map((entry) => requireInteger(entry, label, minimum, maximum));
+  if (new Set(normalized).size !== normalized.length ||
+      normalized.some((entry, index) => index > 0 && entry <= normalized[index - 1])) {
+    throw new TypeError(`${label} must be unique and sorted.`);
+  }
+}
+
+function validateOptionalBooleanFields(value, fields) {
+  for (const field of fields) {
+    if (Object.hasOwn(value, field)) validateBoolean(value[field], `Relay ${field}`);
+  }
+}
+
+function validateBoolean(value, label) {
+  if (typeof value !== "boolean") throw new TypeError(`${label} must be a boolean.`);
+}
+
+function validateBoundedText(value, label, maximumBytes) {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value ||
+      new TextEncoder().encode(value).byteLength > maximumBytes || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new TypeError(`${label} is outside its protocol bounds.`);
+  }
 }
 
 function makeRequest(binding, body, authToken) {
