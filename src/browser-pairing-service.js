@@ -376,6 +376,7 @@ export function validateBrowserPersonaState(value) {
     }
     pendingPairingIDs.add(pending.pairingID);
   }
+  requireUniqueRelationshipScopes(value);
   return value;
 }
 
@@ -424,6 +425,64 @@ function pendingPairingIndex(persona, pairingID) {
 
 function requirePendingPairing(persona, pairingID) {
   return persona.pendingPairings[pendingPairingIndex(persona, pairingID)];
+}
+
+function requireUniqueRelationshipScopes(persona) {
+  const identityIDs = new Set();
+  const signingKeys = new Set();
+  const agreementKeys = new Set();
+  const endpointHandles = new Set();
+  const routeIDs = new Set();
+  const routePayloadKeys = new Set();
+
+  for (const relationship of persona.relationships) {
+    const local = relationship.localIdentity;
+    const peer = relationship.peerIdentity;
+    insertUniqueScope(identityIDs, local?.id);
+    insertUniqueScope(identityIDs, peer?.id);
+    insertUniqueScope(signingKeys, local?.signing?.publicKey);
+    insertUniqueScope(signingKeys, local?.localEndpoint?.signing?.publicKey);
+    insertUniqueScope(signingKeys, peer?.signingPublicKey);
+    insertUniqueScope(signingKeys, peer?.endpointBinding?.signingPublicKey);
+    insertUniqueScope(agreementKeys, local?.agreement?.publicKey);
+    insertUniqueScope(agreementKeys, local?.localEndpoint?.agreement?.publicKey);
+    insertUniqueScope(agreementKeys, peer?.agreementPublicKey);
+    insertUniqueScope(agreementKeys, peer?.endpointBinding?.agreementPublicKey);
+    insertUniqueScope(endpointHandles, relationship.localEndpointHandle?.rawValue);
+    insertUniqueScope(endpointHandles, peer?.sendRoutes?.ownerEndpointHandle?.rawValue);
+    insertUniqueRoutes(local?.relationshipID, relationship.localAdvertisedRoutes?.routes);
+    insertUniqueRoutes(peer?.relationshipID, peer?.sendRoutes?.routes);
+  }
+
+  for (const pairing of persona.pendingPairings) {
+    const participant = pairing.participant;
+    const local = participant?.localIdentity;
+    insertUniqueScope(identityIDs, local?.id);
+    insertUniqueScope(signingKeys, local?.signing?.publicKey);
+    insertUniqueScope(signingKeys, local?.localEndpoint?.signing?.publicKey);
+    insertUniqueScope(agreementKeys, local?.agreement?.publicKey);
+    insertUniqueScope(agreementKeys, local?.localEndpoint?.agreement?.publicKey);
+    insertUniqueScope(endpointHandles, participant?.localEndpointHandle?.rawValue);
+    insertUniqueScope(routeIDs, participant?.localReceiveRoute?.route?.routeID?.rawValue);
+    insertUniqueScope(routePayloadKeys, participant?.localReceiveRoute?.payloadKey?.rawValue);
+  }
+
+  function insertUniqueRoutes(relationshipID, routes) {
+    if (typeof relationshipID !== "string" || !Array.isArray(routes)) {
+      throw new Error("The browser persona contains malformed relationship-scoped routes.");
+    }
+    for (const route of routes) {
+      insertUniqueScope(routeIDs, route?.routeID?.rawValue);
+      insertUniqueScope(routePayloadKeys, route?.payloadKey?.rawValue);
+    }
+  }
+}
+
+function insertUniqueScope(set, value) {
+  if (typeof value !== "string" || value.length === 0 || set.has(value)) {
+    throw new Error("The browser persona reuses relationship-scoped authority, endpoint, or route material.");
+  }
+  set.add(value);
 }
 
 function requireExactRecord(value, fields, label) {

@@ -75,6 +75,16 @@ test("browser personas persist independent crash-resumable pairing machines", as
   assert.equal(offererPersona.pendingPairings.length, 1);
   assert.equal(responderPersona.pendingPairings.length, 1);
 
+  const duplicatedPending = persisted(offererPersona);
+  duplicatedPending.pendingPairings.push({
+    ...persisted(duplicatedPending.pendingPairings[0]),
+    pairingID: "different-pairing"
+  });
+  assert.throws(
+    () => validateBrowserPersonaState(duplicatedPending),
+    /reuses relationship-scoped/
+  );
+
   const offererPrivate = offererPersona.pendingPairings[0].participant.localIdentity.signing.secretKey;
   const responderPrivate = responderPersona.pendingPairings[0].participant.localIdentity.signing.secretKey;
   assert.equal(JSON.stringify(offererPersona).includes(responderPrivate), false);
@@ -155,6 +165,17 @@ test("browser personas persist independent crash-resumable pairing machines", as
   assert.equal(offererFinal.relationship.relationshipID, responderFinal.relationship.relationshipID);
   assert.equal(offererFinal.relationship.peerIdentity.relationshipPseudonym, "Bob for Alice");
   assert.equal(JSON.stringify(offererFinal.relationship).includes(offererPersona.displayName), false);
+
+  const duplicatedRelationship = persisted(offererFinal.persona);
+  const reused = persisted(duplicatedRelationship.relationships[0]);
+  reused.relationshipID = "11111111-2222-4333-8444-555555555555";
+  reused.localIdentity.relationshipID = reused.relationshipID;
+  reused.peerIdentity.relationshipID = reused.relationshipID;
+  duplicatedRelationship.relationships.push(reused);
+  assert.throws(
+    () => validateBrowserPersonaState(duplicatedRelationship),
+    /reuses relationship-scoped/
+  );
 });
 
 test("browser pairing cancellation removes persisted private pairing state", async () => {
