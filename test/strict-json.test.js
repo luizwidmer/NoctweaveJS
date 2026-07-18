@@ -12,7 +12,14 @@ test("exact JSON accepts valid nested values", () => {
 test("exact JSON rejects duplicate semantic object fields", () => {
   assert.throws(() => parseExactJSON('{"value":1,"value":2}'), /Duplicate JSON field/);
   assert.throws(() => parseExactJSON('{"value":1,"\\u0076alue":2}'), /Duplicate JSON field/);
+  assert.throws(() => parseExactJSON('{"é":1,"e\\u0301":2}'), /Duplicate JSON field/);
   assert.throws(() => parseExactJSON('{"outer":{"field":1,"field":2}}'), /Duplicate JSON field/);
+});
+
+test("exact JSON accepts scalar pairs and rejects unpaired Unicode surrogates", () => {
+  assert.deepEqual(parseExactJSON('{"value":"\\uD83D\\uDE00"}'), { value: "😀" });
+  assert.throws(() => parseExactJSON('{"value":"\\uD800"}'), /Unpaired JSON Unicode surrogate/);
+  assert.throws(() => parseExactJSON('{"value":"\\uDC00"}'), /Unpaired JSON Unicode surrogate/);
 });
 
 test("exact JSON rejects excessive nesting before native decoding", () => {

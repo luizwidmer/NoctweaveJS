@@ -71,7 +71,7 @@ class ExactJSONScanner {
       if (this.text[this.offset] !== "\"") {
         this.fail("Object field must be a JSON string");
       }
-      const key = this.scanString();
+      const key = this.scanString().normalize("NFC");
       if (keys.has(key)) {
         this.fail(`Duplicate JSON field ${JSON.stringify(key)}`);
       }
@@ -116,16 +116,30 @@ class ExactJSONScanner {
         this.offset += 1;
         const escape = this.text[this.offset];
         if (escape === "u") {
-          for (let index = 1; index <= 4; index += 1) {
-            if (!/[0-9A-Fa-f]/u.test(this.text[this.offset + index] ?? "")) {
-              this.fail("Invalid JSON Unicode escape");
+          const first = this.hexCodeUnit(this.offset + 1);
+          if (isHighSurrogate(first)) {
+            if (this.text[this.offset + 5] !== "\\" || this.text[this.offset + 6] !== "u") {
+              this.fail("Unpaired JSON Unicode surrogate");
             }
+            const second = this.hexCodeUnit(this.offset + 7);
+            if (!isLowSurrogate(second)) this.fail("Unpaired JSON Unicode surrogate");
+            this.offset += 11;
+            continue;
           }
+          if (isLowSurrogate(first)) this.fail("Unpaired JSON Unicode surrogate");
           this.offset += 5;
           continue;
         }
         if (!"\"\\/bfnrt".includes(escape ?? "")) this.fail("Invalid JSON string escape");
       }
+      if (isHighSurrogate(code)) {
+        if (!isLowSurrogate(this.text.charCodeAt(this.offset + 1))) {
+          this.fail("Unpaired JSON Unicode surrogate");
+        }
+        this.offset += 2;
+        continue;
+      }
+      if (isLowSurrogate(code)) this.fail("Unpaired JSON Unicode surrogate");
       this.offset += 1;
     }
     this.fail("Unterminated JSON string");
@@ -136,6 +150,16 @@ class ExactJSONScanner {
       this.fail("Invalid JSON value");
     }
     this.offset += literal.length;
+  }
+
+  hexCodeUnit(start) {
+    let value = 0;
+    for (let index = 0; index < 4; index += 1) {
+      const nibble = hexNibble(this.text.charCodeAt(start + index));
+      if (nibble < 0) this.fail("Invalid JSON Unicode escape");
+      value = (value << 4) | nibble;
+    }
+    return value;
   }
 
   scanNumber() {
@@ -166,4 +190,19 @@ class ExactJSONScanner {
   fail(message) {
     throw new SyntaxError(`${message} at offset ${this.offset}.`);
   }
+}
+
+function hexNibble(code) {
+  if (code >= 0x30 && code <= 0x39) return code - 0x30;
+  if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
+  if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10;
+  return -1;
+}
+
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code) {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
