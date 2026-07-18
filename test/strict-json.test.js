@@ -38,5 +38,7 @@ test("exact JSON retains native syntax rejection", () => {
   assert.throws(() => parseExactJSON('{"missing":}'), SyntaxError);
   assert.throws(() => parseExactJSON('{"trailing":true} garbage'), SyntaxError);
   assert.throws(() => parseExactJSON('{"leadingZero":01}'), SyntaxError);
+  assert.throws(() => parseExactJSON('{"overflow":1e400}'), /number exceeds finite range/);
+  assert.throws(() => parseExactJSON('{"overflow":-1e400}'), /number exceeds finite range/);
   assert.throws(() => parseExactJSON('\uFEFF{"bom":true}'), SyntaxError);
 });

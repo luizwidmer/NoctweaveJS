@@ -166,6 +166,7 @@ class ExactJSONScanner {
     const remaining = this.text.slice(this.offset);
     const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u.exec(remaining);
     if (!match) this.fail("Invalid JSON value");
+    if (!Number.isFinite(Number(match[0]))) this.fail("JSON number exceeds finite range");
     this.offset += match[0].length;
   }
 
