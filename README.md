@@ -158,6 +158,14 @@ abandoned. Registration is bounded to ten minutes; each lane accepts at most
 module/version/method envelope and rejects any other field set before network
 I/O.
 
+Relay operators can use the bounded `nw.federation@1` methods
+`registerFederationNode` and `listFederationNodes`. Their exact directories
+contain relay endpoints and operator metadata only; they carry no persona,
+relationship, or account identity. Federation coordinates relay discovery and
+policy. Stable user-message delivery remains direct to the endpoint selected
+from the peer's relationship-encrypted route set and is never forwarded between
+relays.
+
 Run a complete create/enqueue/sync/commit/teardown probe against a local relay:
 
 ```sh
@@ -180,6 +188,24 @@ secrets locally. A peer introduction receives only the send authority and the
 payload key needed for that relationship. The local persona label is never
 copied into the introduction: callers may supply an explicit relationship
 pseudonym, otherwise the service uses the fixed `Noctweave peer` label.
+
+The browser service exposes independent crash-resumable participant flows:
+
+1. The offerer calls `prepareOffererPairing`; the responder imports only its
+   invitation and calls `prepareResponderPairing`.
+2. Persist the returned `persona` after every call. Its pending record contains
+   only that participant's private state and an exact encrypted outbox.
+3. Publish each `outboundTransportFrames` entry without rebuilding it. After
+   durable relay acceptance, remove it with `acknowledgePairingOutbound`.
+4. Feed received rendezvous frames to `processPairingFrame`. After a restart,
+   call `resumePairing` and retry the unchanged outbox.
+5. Once mutual confirmation is complete, call `finalizePairing`, persist the
+   returned relationship, and submit its `rendezvousDeletionRequests`.
+6. If the flow is abandoned, call `cancelPairing` and submit the same bounded
+   lane-deletion requests.
+
+There is deliberately no `establishPairing` production helper: one process
+must never receive both participants' private relationship state.
 
 The browser and desktop shells store:
 
