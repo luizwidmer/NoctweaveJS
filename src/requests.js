@@ -1,15 +1,20 @@
 import {
+  validateOpaqueRouteCommitResponseShapeV2,
   validateOpaqueRouteCommitSubmissionShapeV2,
   validateOpaqueRouteCreateSubmissionShapeV2,
+  validateOpaqueRouteEnqueueResponseShapeV2,
   validateOpaqueRouteEnqueueSubmissionShapeV2,
   validateOpaqueRouteRenewSubmissionShapeV2,
+  validateOpaqueRouteSyncResponseShapeV2,
   validateOpaqueRouteSyncSubmissionShapeV2,
   validateOpaqueRouteTeardownSubmissionShapeV2
 } from "./opaque-route-relay-v2.js";
+import { validateOpaqueReceiveRouteV2 } from "./opaque-route-v2.js";
 import {
   validateAppendRendezvousTransportV2Request,
   validateDeleteRendezvousTransportV2Request,
   validateRegisterRendezvousTransportV2Request,
+  validateRendezvousRelaySyncBatchV2,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
 import { validateProtocolModuleCapability } from "./architecture-v2.js";
@@ -21,13 +26,16 @@ import {
   requireInteger,
   requireRecord
 } from "./private-v2.js";
-import { swiftUUID } from "./crypto/swift-canonical.js";
+import { canonicalJson, swiftUUID } from "./crypto/swift-canonical.js";
 
 const encryptedAttachmentPayloadLimits = Object.freeze({
   nonceBytes: 12,
   tagBytes: 16,
   maximumEncodedBytes: 128 * 1_024
 });
+const mlDsa65PublicKeyBytes = 1_952;
+const mlDsa65SignatureBytes = 3_309;
+const maximumFederationNodes = 10_000;
 
 const relayErrorCodes = new Set([
   "authentication-required",
@@ -62,7 +70,15 @@ const bindings = Object.freeze({
     module: "nw.rendezvous-transport", version: 2, method: "delete", body: null
   }),
   uploadAttachment: Object.freeze({ module: "nw.blobs", version: 1, method: "upload", body: "chunk" }),
-  fetchAttachment: Object.freeze({ module: "nw.blobs", version: 1, method: "fetch", body: "chunk" })
+  fetchAttachment: Object.freeze({ module: "nw.blobs", version: 1, method: "fetch", body: "chunk" }),
+  registerFederationNode: Object.freeze({
+    module: "nw.federation", version: 1, method: "register",
+    body: Object.freeze(["nodes", "snapshot"])
+  }),
+  listFederationNodes: Object.freeze({
+    module: "nw.federation", version: 1, method: "list",
+    body: Object.freeze(["nodes", "snapshot"])
+  })
 });
 
 export const relayRequests = Object.freeze({
@@ -115,7 +131,12 @@ export const relayRequests = Object.freeze({
     );
   },
   uploadAttachment(request, authToken) {
-    requireRecord(request, "Attachment upload request");
+    requireExactRecord(
+      request,
+      ["attachmentId", "chunkIndex", "payload"],
+      ["ttlSeconds"],
+      "Attachment upload request"
+    );
     return makeRequest(bindings.uploadAttachment, {
       attachmentId: request.attachmentId,
       chunkIndex: request.chunkIndex,
@@ -126,6 +147,20 @@ export const relayRequests = Object.freeze({
   fetchAttachment(request, authToken) {
     requireRecord(request, "Attachment retrieval request");
     return makeRequest(bindings.fetchAttachment, request, authToken);
+  },
+  registerFederationNode(request, authToken) {
+    return makeRequest(
+      bindings.registerFederationNode,
+      normalizeFederationNodeRegistrationRequest(request),
+      authToken
+    );
+  },
+  listFederationNodes(request = {}, authToken) {
+    return makeRequest(
+      bindings.listFederationNodes,
+      normalizeListFederationNodesRequest(request),
+      authToken
+    );
   }
 });
 
@@ -160,7 +195,9 @@ export function validateRelayResponseEnvelopeV2(value, request) {
   if (value.status === "success") {
     if (value.error !== null) throw new TypeError("Successful relay response error must be null.");
     requireRecord(value.body, "Relay success body");
-    const expected = binding.body === null ? [] : [binding.body];
+    const expected = binding.body === null
+      ? []
+      : Array.isArray(binding.body) ? binding.body : [binding.body];
     requireExactRecord(value.body, expected, [], "Relay success body");
     validateResponseBody(binding, value.body, request);
     return value.body;
@@ -187,18 +224,18 @@ function validateResponseBody(binding, body, request) {
   case "nw.core/info": validateRelayInfoV2(body.relayInfo); break;
   case "nw.blobs/upload":
   case "nw.blobs/fetch": validateAttachmentChunkResponse(body.chunk, request.body); break;
-  // These response families require the request and cryptographic context held
-  // by their high-level client methods, which perform the complete validation.
   case "nw.opaque-route/create":
   case "nw.opaque-route/renew":
-  case "nw.opaque-route/teardown":
-  case "nw.opaque-route/append":
-  case "nw.opaque-route/sync":
-  case "nw.opaque-route/commit":
+  case "nw.opaque-route/teardown": validateOpaqueReceiveRouteV2(body.route); break;
+  case "nw.opaque-route/append": validateOpaqueRouteEnqueueResponseShapeV2(body.receipt); break;
+  case "nw.opaque-route/sync": validateOpaqueRouteSyncResponseShapeV2(body.batch); break;
+  case "nw.opaque-route/commit": validateOpaqueRouteCommitResponseShapeV2(body.commit); break;
   case "nw.rendezvous-transport/register":
   case "nw.rendezvous-transport/append":
-  case "nw.rendezvous-transport/sync":
   case "nw.rendezvous-transport/delete": break;
+  case "nw.rendezvous-transport/sync": validateRendezvousRelaySyncBatchV2(body.batch); break;
+  case "nw.federation/register":
+  case "nw.federation/list": validateFederationNodesResponse(body); break;
   default: throw new TypeError("Relay response binding has no body validator.");
   }
 }
@@ -245,7 +282,7 @@ function validateRelayInfoV2(value) {
   }
   validateFederationDescriptor(value.federation);
   requireInteger(value.temporalBucketSeconds, "Relay temporal bucket", 0, 86_400);
-  requireCanonicalTimestamp(value.advertisedAt, "Relay advertisedAt");
+  boundedRelayTimestamp(value.advertisedAt, "Relay advertisedAt");
 
   if (value.temporalBucketScheduleSeconds !== null) {
     validateCanonicalIntegerList(
@@ -298,8 +335,11 @@ function validateRelayInfoV2(value) {
     requireInteger(value.curatedCoordinatorQuorum, "Curated coordinator quorum", 1, 16);
   }
   if (value.federationDirectoryPublicKey !== null) {
-    const key = requireBase64(value.federationDirectoryPublicKey, undefined, "Federation directory public key");
-    if (key.byteLength > 4_096) throw new TypeError("Federation directory public key exceeds its bound.");
+    requireBase64(
+      value.federationDirectoryPublicKey,
+      mlDsa65PublicKeyBytes,
+      "Federation directory public key"
+    );
   }
   if (value.knownOpenPeers !== null) {
     validateEndpointList(value.knownOpenPeers, "Known open peers", 128);
@@ -488,10 +528,177 @@ function validateRelayEndpoint(value) {
     requireBase64(value.tlsCertificateFingerprintSHA256, 32, "TLS certificate fingerprint");
   }
   if (value.directorySigningPublicKey !== null) {
-    const key = requireBase64(value.directorySigningPublicKey, undefined, "Directory signing public key");
-    if (key.byteLength > 4_096) throw new TypeError("Directory signing public key exceeds its bound.");
+    requireBase64(
+      value.directorySigningPublicKey,
+      mlDsa65PublicKeyBytes,
+      "Directory signing public key"
+    );
   }
   return `${normalized.host.toLowerCase()}\0${normalized.port}\0${normalized.useTLS}\0${normalized.transport}`;
+}
+
+function normalizeFederationNodeRegistrationRequest(value) {
+  requireExactRecord(
+    value,
+    ["endpoint", "relayInfo"],
+    ["ttlSeconds"],
+    "Federation node registration request"
+  );
+  return validateFederationNodeRegistrationRequest({
+    endpoint: value.endpoint,
+    relayInfo: value.relayInfo,
+    ttlSeconds: value.ttlSeconds ?? null
+  });
+}
+
+function validateFederationNodeRegistrationRequest(value) {
+  requireExactRecord(
+    value,
+    ["endpoint", "relayInfo", "ttlSeconds"],
+    [],
+    "Federation node registration request"
+  );
+  validateRelayEndpoint(value.endpoint);
+  validateRelayInfoV2(value.relayInfo);
+  if (value.ttlSeconds !== null) {
+    requireInteger(value.ttlSeconds, "Federation node TTL", 1, 900);
+  }
+  return value;
+}
+
+function normalizeListFederationNodesRequest(value) {
+  requireExactRecord(
+    value,
+    [],
+    ["mode", "federationName", "onlyHealthy", "maxStalenessSeconds", "requireSignedSnapshot"],
+    "Federation node list request"
+  );
+  return validateListFederationNodesRequest({
+    mode: value.mode ?? null,
+    federationName: value.federationName ?? null,
+    onlyHealthy: value.onlyHealthy ?? null,
+    maxStalenessSeconds: value.maxStalenessSeconds ?? null,
+    requireSignedSnapshot: value.requireSignedSnapshot ?? null
+  });
+}
+
+function validateListFederationNodesRequest(value) {
+  requireExactRecord(
+    value,
+    ["mode", "federationName", "onlyHealthy", "maxStalenessSeconds", "requireSignedSnapshot"],
+    [],
+    "Federation node list request"
+  );
+  if (value.mode !== null && !["solo", "manual", "curated", "open"].includes(value.mode)) {
+    throw new TypeError("Federation list mode is invalid.");
+  }
+  if (value.federationName !== null) {
+    validateBoundedText(value.federationName, "Federation list name", 1_024);
+  }
+  if (value.onlyHealthy !== null) validateBoolean(value.onlyHealthy, "Federation healthy filter");
+  if (value.maxStalenessSeconds !== null) {
+    requireInteger(value.maxStalenessSeconds, "Federation maximum staleness", 1, 86_400);
+  }
+  if (value.requireSignedSnapshot !== null) {
+    validateBoolean(value.requireSignedSnapshot, "Federation signed-snapshot requirement");
+  }
+  return value;
+}
+
+function validateFederationNodesResponse(value) {
+  requireExactRecord(value, ["nodes", "snapshot"], [], "Federation nodes response");
+  validateFederationNodeList(value.nodes, "Federation response nodes");
+  if (value.snapshot !== null) {
+    validateFederationDirectorySnapshot(value.snapshot);
+    if (canonicalJson(value.snapshot.nodes) !== canonicalJson(value.nodes)) {
+      throw new TypeError("Federation snapshot nodes do not match the response directory.");
+    }
+  }
+  return value;
+}
+
+function validateFederationNodeList(value, label) {
+  if (!Array.isArray(value) || value.length > maximumFederationNodes) {
+    throw new TypeError(`${label} exceed their protocol bounds.`);
+  }
+  const endpoints = value.map(validateFederationNodeRecord);
+  if (new Set(endpoints).size !== endpoints.length) {
+    throw new TypeError(`${label} must use unique canonical endpoints.`);
+  }
+  return value;
+}
+
+function validateFederationNodeRecord(value) {
+  requireExactRecord(
+    value,
+    ["endpoint", "relayInfo", "lastHeartbeatAt", "expiresAt"],
+    [],
+    "Federation node record"
+  );
+  const endpoint = validateRelayEndpoint(value.endpoint);
+  validateRelayInfoV2(value.relayInfo);
+  const heartbeat = boundedRelayTimestamp(value.lastHeartbeatAt, "Federation node heartbeat");
+  const expiry = boundedRelayTimestamp(value.expiresAt, "Federation node expiry");
+  if (expiry <= heartbeat || expiry - heartbeat > 900_000) {
+    throw new TypeError("Federation node expiry is outside its heartbeat lease.");
+  }
+  return endpoint;
+}
+
+function validateFederationDirectorySnapshot(value) {
+  requireExactRecord(
+    value,
+    [
+      "version",
+      "mode",
+      "federationName",
+      "issuedAt",
+      "validUntil",
+      "maxStalenessSeconds",
+      "nodes",
+      "signatureAlgorithm",
+      "signature"
+    ],
+    [],
+    "Federation directory snapshot"
+  );
+  if (value.version !== 1 || !["solo", "manual", "curated", "open"].includes(value.mode)) {
+    throw new TypeError("Federation directory snapshot version or mode is invalid.");
+  }
+  if (value.federationName !== null) {
+    validateBoundedText(value.federationName, "Federation snapshot name", 1_024);
+  }
+  const issued = boundedRelayTimestamp(value.issuedAt, "Federation snapshot issue time");
+  const validUntil = boundedRelayTimestamp(value.validUntil, "Federation snapshot validity");
+  const maximumStaleness = requireInteger(
+    value.maxStalenessSeconds,
+    "Federation snapshot maximum staleness",
+    1,
+    86_400
+  );
+  if (validUntil <= issued || validUntil - issued > maximumStaleness * 1_000) {
+    throw new TypeError("Federation snapshot validity is outside its staleness bound.");
+  }
+  validateFederationNodeList(value.nodes, "Federation snapshot nodes");
+  if (value.signatureAlgorithm === null || value.signature === null) {
+    if (value.signatureAlgorithm !== null || value.signature !== null) {
+      throw new TypeError("Federation snapshot signature fields must both be null or both be present.");
+    }
+  } else {
+    if (value.signatureAlgorithm !== "ML-DSA-65") {
+      throw new TypeError("Federation snapshot signature algorithm is invalid.");
+    }
+    requireBase64(value.signature, mlDsa65SignatureBytes, "Federation snapshot signature");
+  }
+  return value;
+}
+
+function boundedRelayTimestamp(value, label) {
+  const timestamp = new Date(requireCanonicalTimestamp(value, label)).getTime();
+  if (timestamp > 4_102_444_800_000) {
+    throw new TypeError(`${label} exceeds the protocol timestamp horizon.`);
+  }
+  return timestamp;
 }
 
 function validateAttachmentChunkResponse(value, requestBody) {
@@ -572,14 +779,16 @@ function validateRequestBody(binding, body) {
       "Attachment upload body");
     validateAttachmentCoordinates(body);
     validateEncryptedAttachmentPayload(body.payload);
-    if (body.ttlSeconds !== null && (!Number.isSafeInteger(body.ttlSeconds) || body.ttlSeconds < 1)) {
-      throw new TypeError("Attachment TTL is invalid.");
+    if (body.ttlSeconds !== null) {
+      requireInteger(body.ttlSeconds, "Attachment TTL", 60, 2_592_000);
     }
     break;
   case "nw.blobs/fetch":
     requireExactRecord(body, ["attachmentId", "chunkIndex"], [], "Attachment fetch body");
     validateAttachmentCoordinates(body);
     break;
+  case "nw.federation/register": validateFederationNodeRegistrationRequest(body); break;
+  case "nw.federation/list": validateListFederationNodesRequest(body); break;
   default: throw new TypeError("Relay request binding has no body validator.");
   }
 }

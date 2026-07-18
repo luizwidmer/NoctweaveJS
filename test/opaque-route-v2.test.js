@@ -59,8 +59,19 @@ test("opaque route creation keeps four authorities independent and relay state d
   ];
   assert.equal(new Set(rawAuthorities).size, 4);
   assert.equal(route.status, "active");
+  assert.equal(route.tornDownAt, null);
   assert.equal(route.routeID.rawValue, fixture.capabilities.routeID.rawValue);
   assert.deepEqual(validateOpaqueReceiveRouteV2(route), route);
+  const missingTornDownAt = structuredClone(route);
+  delete missingTornDownAt.tornDownAt;
+  assert.throws(
+    () => validateOpaqueReceiveRouteV2(missingTornDownAt),
+    /current protocol fields/
+  );
+  assert.throws(
+    () => validateOpaqueReceiveRouteV2({ ...route, tornDownAt: issuedAt }),
+    (error) => error instanceof OpaqueRouteV2Error && error.code === "invalidRequest"
+  );
 
   const relayProjection = JSON.stringify(route);
   for (const authority of rawAuthorities) {

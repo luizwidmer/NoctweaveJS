@@ -99,7 +99,7 @@ export function validateProtocolModuleCapability(value) {
     throw new TypeError("Protocol module status is invalid.");
   }
 
-  const rawLimits = value.limits ?? {};
+  const rawLimits = value.limits;
   requireRecord(rawLimits, "Protocol module limits");
   const entries = Object.entries(rawLimits);
   if (entries.length > 32) {

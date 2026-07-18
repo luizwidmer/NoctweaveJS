@@ -82,6 +82,14 @@ export class NoctweaveWebClient {
     return this.relay.deleteRendezvousTransportV2(request, options);
   }
 
+  async registerFederationNode(request, options) {
+    return this.relay.registerFederationNode(request, options);
+  }
+
+  async listFederationNodes(request, options) {
+    return this.relay.listFederationNodes(request, options);
+  }
+
   async syncOpaqueRoute(localReceiveRouteValue, {
     limit = 256,
     requestID,

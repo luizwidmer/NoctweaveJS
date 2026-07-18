@@ -23,6 +23,7 @@ import {
   validateRendezvousRelaySyncBatchV2,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
+import { canonicalJson } from "./crypto/swift-canonical.js";
 import { parseExactJSON } from "./strict-json.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -192,6 +193,20 @@ export class NoctweaveRelayClient {
   async deleteRendezvousTransportV2(request, options = {}) {
     const deletion = validateDeleteRendezvousTransportV2Request(request);
     await this.send(relayRequests.deleteRendezvousTransportV2(deletion), options);
+  }
+
+  async registerFederationNode(request, options = {}) {
+    const relayRequest = relayRequests.registerFederationNode(request);
+    const response = await this.send(relayRequest, options);
+    if (response.nodes.length !== 1 ||
+        canonicalJson(response.nodes[0].endpoint) !== canonicalJson(relayRequest.body.endpoint)) {
+      throw new TypeError("Federation registration response does not match the registered endpoint.");
+    }
+    return response;
+  }
+
+  async listFederationNodes(request = {}, options = {}) {
+    return this.send(relayRequests.listFederationNodes(request), options);
   }
 
   async send(request, options = {}) {

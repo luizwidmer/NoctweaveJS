@@ -136,7 +136,7 @@ export function opaqueRoutePacketAuthenticatedDataV2({
   );
 }
 
-export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
+export function validateOpaqueRoutePacketShapeV2(value) {
   requireExactRecord(value, [
     "routeID",
     "packetID",
@@ -152,16 +152,10 @@ export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
   );
   validatePaddingBucket(sealedBytes.byteLength);
   const authorization = validateOpaqueRouteAuthorizationProofV2(value.authorization);
-  const operationDigest = await opaqueRoutePacketOperationDigestV2({
-    crypto,
-    routeID,
-    packetID,
-    sealedFrame: value.sealedFrame
-  });
-  if (authorization.authority !== "send" || authorization.operationDigest !== operationDigest) {
+  if (authorization.authority !== "send") {
     throw new OpaqueRoutePacketV2Error(
       "invalidPacket",
-      "Opaque route packet authorization is not bound to its relay projection."
+      "Opaque route packet requires send authorization."
     );
   }
   return freezeWire({
@@ -170,6 +164,23 @@ export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
     sealedFrame: value.sealedFrame,
     authorization
   });
+}
+
+export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
+  const packet = validateOpaqueRoutePacketShapeV2(value);
+  const operationDigest = await opaqueRoutePacketOperationDigestV2({
+    crypto,
+    routeID: packet.routeID,
+    packetID: packet.packetID,
+    sealedFrame: packet.sealedFrame
+  });
+  if (packet.authorization.operationDigest !== operationDigest) {
+    throw new OpaqueRoutePacketV2Error(
+      "invalidPacket",
+      "Opaque route packet authorization is not bound to its relay projection."
+    );
+  }
+  return packet;
 }
 
 export async function sealOpaqueRouteBundleV2({

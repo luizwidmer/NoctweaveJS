@@ -123,6 +123,16 @@ test("relay info responses require the exact bounded recursive current shape", (
     () => validate({
       ...current,
       protocolCapabilities: {
+        ...current.protocolCapabilities,
+        modules: [{ ...current.protocolCapabilities.modules[0], limits: null }]
+      }
+    }),
+    /limits must be an object/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      protocolCapabilities: {
         architectureVersion: 2,
         modules: Array.from({ length: 65 }, (_, index) => ({
           module: `nw.module-${String(index).padStart(2, "0")}`,
@@ -165,6 +175,35 @@ test("relay info responses require the exact bounded recursive current shape", (
   assert.throws(
     () => validate({ ...current, federationCoordinatorEndpoints: [missingEndpointNullable] }),
     /Relay endpoint.*current protocol fields/
+  );
+
+  const directorySigningPublicKey = base64(new Uint8Array(1_952).fill(0x5a));
+  assert.equal(
+    validate({ ...current, federationDirectoryPublicKey: directorySigningPublicKey })
+      .relayInfo.federationDirectoryPublicKey,
+    directorySigningPublicKey
+  );
+  assert.deepEqual(
+    validate({
+      ...current,
+      federationCoordinatorEndpoints: [{ ...endpoint, directorySigningPublicKey }]
+    }).relayInfo.federationCoordinatorEndpoints,
+    [{ ...endpoint, directorySigningPublicKey }]
+  );
+  const shortDirectorySigningPublicKey = base64(new Uint8Array(1_951).fill(0x5a));
+  assert.throws(
+    () => validate({ ...current, federationDirectoryPublicKey: shortDirectorySigningPublicKey }),
+    /invalid encoding or length/
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      federationCoordinatorEndpoints: [{
+        ...endpoint,
+        directorySigningPublicKey: shortDirectorySigningPublicKey
+      }]
+    }),
+    /invalid encoding or length/
   );
 });
 
@@ -211,6 +250,218 @@ test("attachment success chunks are exact, bounded, and request-correlated", () 
       }), request),
       /protocol size limit/
     );
+  }
+});
+
+test("generic relay responses recursively validate opaque-route and rendezvous bodies", async () => {
+  const crypto = new WebCryptoPrimitives();
+  const capabilities = await createOpaqueRouteClientCapabilityMaterialV2(crypto);
+  const payloadKey = await createOpaqueRoutePayloadKeyV2(crypto);
+  const bundle = await sealOpaqueRouteBundleV2({
+    crypto,
+    payload: new TextEncoder().encode("generic response shape"),
+    routeRevision: 1,
+    paddingBucket: 4_096,
+    payloadKey,
+    routeCapabilities: capabilities,
+    authorizedAt: "2026-07-18T12:00:00Z"
+  });
+  const sync = await makeOpaqueRouteSyncRequestV2({
+    crypto,
+    capabilities,
+    limit: 1,
+    authorizedAt: "2026-07-18T12:00:00Z"
+  });
+  const opaqueRequest = relayRequests.syncOpaqueRoute({
+    request: sync,
+    readCredential: capabilities.readCredential
+  });
+  const cursor = opaqueValue(0x61, 68);
+  const initialDigest = base64(new Uint8Array(32));
+  const recordDigest = base64(new Uint8Array(32).fill(0x62));
+  const received = {
+    sequence: 1,
+    previousRecordDigest: initialDigest,
+    recordDigest,
+    routeRevision: 1,
+    packet: bundle.packets[0]
+  };
+  const opaqueBatch = {
+    packets: [received],
+    startsAfterSequence: 0,
+    startsAfterRecordDigest: initialDigest,
+    nextSequence: 1,
+    nextRecordDigest: recordDigest,
+    highWatermarkSequence: 1,
+    retentionFloorSequence: 0,
+    nextCursor: cursor,
+    highWatermark: cursor,
+    retentionFloor: cursor,
+    hasMore: false
+  };
+  assert.deepEqual(
+    validateRelayResponseEnvelopeV2(relaySuccess(opaqueRequest, { batch: opaqueBatch }), opaqueRequest),
+    { batch: opaqueBatch }
+  );
+  assert.throws(
+    () => validateRelayResponseEnvelopeV2(relaySuccess(opaqueRequest, {
+      batch: {
+        ...opaqueBatch,
+        packets: [{ ...received, packet: { ...received.packet, legacy: true } }]
+      }
+    }), opaqueRequest),
+    /Opaque route packet.*current protocol fields/
+  );
+
+  const rendezvousRequest = relayRequests.syncRendezvousTransportV2({
+    routeCapability: opaqueValue(0x71, 32),
+    laneId: opaqueValue(0x72, 32),
+    readCapability: opaqueValue(0x73, 32),
+    afterSequence: 0,
+    maxCount: 1
+  });
+  const frame = {
+    frameId: opaqueValue(0x74, 16),
+    sequence: 1,
+    ciphertext: base64(new Uint8Array(4_096).fill(0x75))
+  };
+  const rendezvousBatch = {
+    frames: [frame],
+    highWatermark: 1,
+    nextSequence: 1,
+    hasMore: false
+  };
+  assert.deepEqual(
+    validateRelayResponseEnvelopeV2(
+      relaySuccess(rendezvousRequest, { batch: rendezvousBatch }),
+      rendezvousRequest
+    ),
+    { batch: rendezvousBatch }
+  );
+  assert.throws(
+    () => validateRelayResponseEnvelopeV2(relaySuccess(rendezvousRequest, {
+      batch: { ...rendezvousBatch, frames: [{ ...frame, legacy: true }] }
+    }), rendezvousRequest),
+    /Rendezvous relay ciphertext frame.*current protocol fields/
+  );
+});
+
+test("federation v1 builders and responses are exact, bounded, and identity-free", async () => {
+  const relayInfo = relayInfoFixture();
+  const endpoint = {
+    host: "node.example",
+    port: 443,
+    useTLS: true,
+    transport: "http",
+    tlsCertificateFingerprintSHA256: null,
+    directorySigningPublicKey: null
+  };
+  const registration = relayRequests.registerFederationNode({ endpoint, relayInfo });
+  assert.deepEqual(
+    {
+      module: registration.module,
+      version: registration.version,
+      method: registration.method,
+      body: registration.body
+    },
+    {
+      module: "nw.federation",
+      version: 1,
+      method: "register",
+      body: { endpoint, relayInfo, ttlSeconds: null }
+    }
+  );
+  assert.throws(
+    () => relayRequests.registerFederationNode({ endpoint, relayInfo, legacy: true }),
+    /current protocol fields/
+  );
+  assert.throws(
+    () => relayRequests.registerFederationNode({ endpoint, relayInfo, ttlSeconds: 901 }),
+    /Federation node TTL/
+  );
+
+  const listing = relayRequests.listFederationNodes();
+  assert.deepEqual(listing.body, {
+    mode: null,
+    federationName: null,
+    onlyHealthy: null,
+    maxStalenessSeconds: null,
+    requireSignedSnapshot: null
+  });
+  assert.throws(
+    () => relayRequests.listFederationNodes({ legacy: true }),
+    /current protocol fields/
+  );
+
+  const node = {
+    endpoint,
+    relayInfo,
+    lastHeartbeatAt: "2026-07-18T12:00:00Z",
+    expiresAt: "2026-07-18T12:05:00Z"
+  };
+  const snapshot = {
+    version: 1,
+    mode: "solo",
+    federationName: null,
+    issuedAt: "2026-07-18T12:00:00Z",
+    validUntil: "2026-07-18T12:05:00Z",
+    maxStalenessSeconds: 300,
+    nodes: [node],
+    signatureAlgorithm: null,
+    signature: null
+  };
+  assert.deepEqual(
+    validateRelayResponseEnvelopeV2(
+      relaySuccess(listing, { nodes: [node], snapshot }),
+      listing
+    ),
+    { nodes: [node], snapshot }
+  );
+  assert.throws(
+    () => validateRelayResponseEnvelopeV2(relaySuccess(listing, {
+      nodes: [node],
+      snapshot: { ...snapshot, nodes: [] }
+    }), listing),
+    /snapshot nodes do not match/
+  );
+  assert.throws(
+    () => validateRelayResponseEnvelopeV2(relaySuccess(listing, {
+      nodes: [{ ...node, relayInfo: { ...relayInfo, legacy: true } }],
+      snapshot: null
+    }), listing),
+    /Relay info.*current protocol fields/
+  );
+  assert.throws(
+    () => validateRelayResponseEnvelopeV2(relaySuccess(listing, {
+      nodes: [node, structuredClone(node)],
+      snapshot: null
+    }), listing),
+    /unique canonical endpoints/
+  );
+
+  const client = new NoctweaveRelayClient("https://coordinator.example", {
+    fetch: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      if (request.method === "register") {
+        return jsonResponse(relaySuccess(request, {
+          nodes: [{ ...node, endpoint: request.body.endpoint, relayInfo: request.body.relayInfo }],
+          snapshot: null
+        }));
+      }
+      return jsonResponse(relaySuccess(request, { nodes: [node], snapshot }));
+    }
+  });
+  assert.deepEqual(
+    await client.registerFederationNode({ endpoint, relayInfo, ttlSeconds: 300 }),
+    { nodes: [node], snapshot: null }
+  );
+  assert.deepEqual(
+    await client.listFederationNodes({ mode: "solo", onlyHealthy: true }),
+    { nodes: [node], snapshot }
+  );
+  const visible = JSON.stringify([registration, listing, node]).toLowerCase();
+  for (const forbidden of ["account", "installation", "recoveryauthority", "globalidentity"]) {
+    assert.equal(visible.includes(forbidden), false, forbidden);
   }
 });
 
@@ -395,6 +646,17 @@ test("relay client runs the exact opaque route lifecycle", async () => {
     limit: 16,
     authorizedAt: issuedAt
   });
+  assert.equal(Object.hasOwn(syncRequest, "after"), true);
+  assert.equal(syncRequest.after, null);
+  const missingAfter = structuredClone(syncRequest);
+  delete missingAfter.after;
+  assert.throws(
+    () => relayRequests.syncOpaqueRoute({
+      request: missingAfter,
+      readCredential: capabilities.readCredential
+    }),
+    /current protocol fields/
+  );
   const synced = await client.syncOpaqueRoute({
     request: syncRequest,
     readCredential: capabilities.readCredential
@@ -538,7 +800,9 @@ test("relay request surface rejects operations outside the current protocol befo
     "syncRendezvousTransportV2",
     "deleteRendezvousTransportV2",
     "uploadAttachment",
-    "fetchAttachment"
+    "fetchAttachment",
+    "registerFederationNode",
+    "listFederationNodes"
   ]);
 });
 
@@ -555,6 +819,25 @@ test("attachment upload requires an exact bounded encrypted payload", () => {
   };
   const request = relayRequests.uploadAttachment(input);
   assert.deepEqual(request.body.payload, payload);
+  assert.equal(request.body.ttlSeconds, null);
+
+  assert.throws(
+    () => relayRequests.uploadAttachment({ ...input, legacy: true }),
+    /Attachment upload request.*current protocol fields/
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({ ...input, ttlSeconds: 59 }),
+    /Attachment TTL.*60 through 2592000/
+  );
+  assert.equal(relayRequests.uploadAttachment({ ...input, ttlSeconds: 60 }).body.ttlSeconds, 60);
+  assert.equal(
+    relayRequests.uploadAttachment({ ...input, ttlSeconds: 2_592_000 }).body.ttlSeconds,
+    2_592_000
+  );
+  assert.throws(
+    () => relayRequests.uploadAttachment({ ...input, ttlSeconds: 2_592_001 }),
+    /Attachment TTL.*60 through 2592000/
+  );
 
   assert.throws(
     () => relayRequests.uploadAttachment({
@@ -612,7 +895,9 @@ test("web client exposes current opaque route and rendezvous transport operation
     "registerRendezvousTransportV2",
     "appendRendezvousTransportV2",
     "syncRendezvousTransportV2",
-    "deleteRendezvousTransportV2"
+    "deleteRendezvousTransportV2",
+    "registerFederationNode",
+    "listFederationNodes"
   ]) {
     assert.equal(typeof web[method], "function");
   }

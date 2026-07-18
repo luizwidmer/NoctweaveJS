@@ -519,6 +519,7 @@ export async function createOpaqueReceiveRouteV2({
     lease: request.lease,
     status: "active",
     createdAt: request.lease.issuedAt,
+    tornDownAt: null,
     creationIdempotencyKey: request.idempotencyKey,
     creationDigest: transitionDigest,
     lastIdempotencyKey: request.idempotencyKey,
@@ -604,11 +605,12 @@ export function validateOpaqueReceiveRouteV2(value) {
     "lease",
     "status",
     "createdAt",
+    "tornDownAt",
     "creationIdempotencyKey",
     "creationDigest",
     "lastIdempotencyKey",
     "lastTransitionDigest"
-  ], ["tornDownAt"], "Opaque receive route");
+  ], [], "Opaque receive route");
   if (value.version !== 2 || !statuses.has(value.status)) throw new OpaqueRouteV2Error("invalidRequest");
   const digests = [value.sendCapabilityDigest, value.readCredentialDigest, value.renewCapabilityDigest, value.teardownCapabilityDigest];
   digests.forEach((digest) => requireBase64(digest, 32, "Opaque route credential digest"));
@@ -626,6 +628,7 @@ export function validateOpaqueReceiveRouteV2(value) {
     lease,
     status: value.status,
     createdAt,
+    tornDownAt: value.status === "active" ? null : undefined,
     creationIdempotencyKey: validateFixedValue(value.creationIdempotencyKey, "Opaque route creation idempotency key"),
     creationDigest: validateDigestString(value.creationDigest, "Opaque route creation digest"),
     lastIdempotencyKey: validateFixedValue(value.lastIdempotencyKey, "Opaque route last idempotency key"),
@@ -634,7 +637,7 @@ export function validateOpaqueReceiveRouteV2(value) {
   if (value.status === "tornDown") {
     result.tornDownAt = requireCanonicalTimestamp(value.tornDownAt, "Opaque route teardown time");
     if (timestampMilliseconds(result.tornDownAt) < timestampMilliseconds(createdAt)) throw new OpaqueRouteV2Error("invalidRequest");
-  } else if (Object.hasOwn(value, "tornDownAt")) {
+  } else if (value.tornDownAt !== null) {
     throw new OpaqueRouteV2Error("invalidRequest");
   }
   return freezeWire(result);

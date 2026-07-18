@@ -11,7 +11,10 @@ import {
   validateOpaqueRouteTeardownRequestV2,
   verifyOpaqueRouteAuthorizationProofV2
 } from "./opaque-route-v2.js";
-import { validateOpaqueRoutePacketV2 } from "./opaque-route-packet-v2.js";
+import {
+  validateOpaqueRoutePacketShapeV2,
+  validateOpaqueRoutePacketV2
+} from "./opaque-route-packet-v2.js";
 import {
   concatBytes,
   cryptoSha256,
@@ -72,7 +75,7 @@ export async function makeOpaqueRouteSyncRequestV2({
   const unsigned = syncProjection({
     routeID,
     requestID: idempotencyKey,
-    ...(after === null ? {} : { after: validateOpaqueRouteCursorV2(after) }),
+    after: after === null ? null : validateOpaqueRouteCursorV2(after),
     limit
   });
   const operationDigest = await opaqueRouteSyncOperationDigestV2(crypto, unsigned);
@@ -150,7 +153,7 @@ export async function opaqueRouteSyncOperationDigestV2(crypto, value) {
   return encodeBase64(await storeDigest(crypto, "org.noctweave.opaque-route.sync/v2", [
     requireBase64(request.routeID.rawValue, 32, "Opaque route ID"),
     requireBase64(request.requestID.rawValue, 32, "Opaque route request ID"),
-    request.after === undefined
+    request.after === null
       ? Uint8Array.of(0)
       : requireBase64(request.after.rawValue, cursorBytes, "Opaque route cursor"),
     uint16Bytes(request.limit)
@@ -324,14 +327,21 @@ export function validateOpaqueRouteStateResponseV2(value, transition) {
 }
 
 export function validateOpaqueRouteEnqueueResponseV2(value, packet) {
-  const receipt = enqueueReceiptProjection(value);
+  const receipt = validateOpaqueRouteEnqueueResponseShapeV2(value);
   if (receipt.packetID.rawValue !== packet.packetID.rawValue) {
     throw new TypeError("Relay accepted a different opaque route packet.");
   }
   return receipt;
 }
 
-export async function validateOpaqueRouteSyncResponseV2({ crypto, response: value, request }) {
+export function validateOpaqueRouteEnqueueResponseShapeV2(value) {
+  return enqueueReceiptProjection(value);
+}
+
+export function validateOpaqueRouteSyncResponseShapeV2(value, {
+  maximumPackets = maximumSyncPage
+} = {}) {
+  requireInteger(maximumPackets, "Opaque route sync response bound", 1, maximumSyncPage);
   const batch = value;
   requireExactRecord(batch, [
     "packets",
@@ -346,7 +356,7 @@ export async function validateOpaqueRouteSyncResponseV2({ crypto, response: valu
     "retentionFloor",
     "hasMore"
   ], [], "Opaque route sync batch");
-  if (!Array.isArray(batch.packets) || batch.packets.length > request.limit ||
+  if (!Array.isArray(batch.packets) || batch.packets.length > maximumPackets ||
       typeof batch.hasMore !== "boolean") {
     throw new TypeError("Opaque route sync batch is outside its bounds.");
   }
@@ -417,23 +427,12 @@ export async function validateOpaqueRouteSyncResponseV2({ crypto, response: valu
       0,
       Number.MAX_SAFE_INTEGER
     );
-    const packet = await validateOpaqueRoutePacketV2({ crypto, packet: received.packet });
+    const packet = validateOpaqueRoutePacketShapeV2(received.packet);
     if (expectedSequence >= Number.MAX_SAFE_INTEGER ||
         sequence !== expectedSequence + 1 ||
         previousRecordDigest !== expectedPreviousDigest ||
-        packet.routeID.rawValue !== request.routeID.rawValue ||
         packetIDs.has(packet.packetID.rawValue)) {
       throw new TypeError("Opaque route sync batch contains a gap, mismatch, or duplicate packet.");
-    }
-    const expectedRecordDigest = await opaqueRouteRecordDigestV2({
-      crypto,
-      previousRecordDigest,
-      sequence,
-      routeRevision,
-      packet
-    });
-    if (recordDigest !== expectedRecordDigest) {
-      throw new TypeError("Opaque route sync record digest is invalid.");
     }
     packetIDs.add(packet.packetID.rawValue);
     packets.push(freezeWire({
@@ -464,6 +463,31 @@ export async function validateOpaqueRouteSyncResponseV2({ crypto, response: valu
   });
 }
 
+export async function validateOpaqueRouteSyncResponseV2({ crypto, response: value, request }) {
+  const batch = validateOpaqueRouteSyncResponseShapeV2(value, {
+    maximumPackets: request.limit
+  });
+  const packets = [];
+  for (const received of batch.packets) {
+    const packet = await validateOpaqueRoutePacketV2({ crypto, packet: received.packet });
+    if (packet.routeID.rawValue !== request.routeID.rawValue) {
+      throw new TypeError("Opaque route sync batch contains a packet for a different route.");
+    }
+    const expectedRecordDigest = await opaqueRouteRecordDigestV2({
+      crypto,
+      previousRecordDigest: received.previousRecordDigest,
+      sequence: received.sequence,
+      routeRevision: received.routeRevision,
+      packet
+    });
+    if (received.recordDigest !== expectedRecordDigest) {
+      throw new TypeError("Opaque route sync record digest is invalid.");
+    }
+    packets.push(freezeWire({ ...received, packet }));
+  }
+  return freezeWire({ ...batch, packets });
+}
+
 export async function opaqueRouteRecordDigestV2({
   crypto,
   previousRecordDigest,
@@ -490,6 +514,14 @@ export async function opaqueRouteRecordDigestV2({
 }
 
 export function validateOpaqueRouteCommitResponseV2(value, request) {
+  const response = validateOpaqueRouteCommitResponseShapeV2(value);
+  if (response.committedCursor.rawValue !== request.cursor.rawValue) {
+    throw new TypeError("Relay committed a different opaque route cursor.");
+  }
+  return response;
+}
+
+export function validateOpaqueRouteCommitResponseShapeV2(value) {
   const response = value;
   requireExactRecord(response, [
     "committedCursor",
@@ -497,9 +529,6 @@ export function validateOpaqueRouteCommitResponseV2(value, request) {
     "retentionFloor"
   ], [], "Opaque route commit receipt");
   const committedCursor = validateOpaqueRouteCursorV2(response.committedCursor);
-  if (committedCursor.rawValue !== request.cursor.rawValue) {
-    throw new TypeError("Relay committed a different opaque route cursor.");
-  }
   return freezeWire({
     committedCursor,
     highWatermark: validateOpaqueRouteCursorV2(response.highWatermark),
@@ -508,18 +537,15 @@ export function validateOpaqueRouteCommitResponseV2(value, request) {
 }
 
 function syncProjection(value, withAuthorization = false) {
-  requireExactRecord(value, ["routeID", "requestID", "limit"], [
-    "after",
+  requireExactRecord(value, ["routeID", "requestID", "after", "limit"], [
     ...(withAuthorization ? ["authorization"] : [])
   ], "Opaque route sync request");
   const result = {
     routeID: fixedValue(value.routeID, "Opaque route ID"),
     requestID: fixedValue(value.requestID, "Opaque route request ID"),
+    after: value.after === null ? null : validateOpaqueRouteCursorV2(value.after),
     limit: requireInteger(value.limit, "Opaque route sync limit", 1, maximumSyncPage)
   };
-  if (Object.hasOwn(value, "after")) {
-    result.after = validateOpaqueRouteCursorV2(value.after);
-  }
   return freezeWire(result);
 }
 

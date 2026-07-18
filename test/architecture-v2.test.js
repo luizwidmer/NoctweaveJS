@@ -20,7 +20,8 @@ import {
   validateConversationEvent,
   validateEncodedContent,
   validateContentTypeCapabilityV2,
-  validateProtocolCapabilityManifest
+  validateProtocolCapabilityManifest,
+  validateProtocolModuleCapability
 } from "../src/index.js";
 import {
   createDeliveryReceiptEncodedContent,
@@ -205,6 +206,15 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
   assert.deepEqual(
     protocolKnownModuleCatalog.find(({ module }) => module === "nw.open-discovery"),
     { module: "nw.open-discovery", versions: [1], status: "experimental", limits: {} }
+  );
+  assert.throws(
+    () => validateProtocolModuleCapability({
+      module: "nw.core",
+      versions: [2],
+      status: "stable",
+      limits: null
+    }),
+    /limits must be an object/
   );
   for (const inactive of [
     "nw.opaque-route",
