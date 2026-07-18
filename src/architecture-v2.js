@@ -418,6 +418,7 @@ const knownModuleValues = [
   { module: "nw.groups", versions: [2], status: "experimental" },
   { module: "nw.wake", versions: [1], status: "experimental" },
   { module: "nw.federation", versions: [1], status: "stable" },
+  { module: "nw.open-discovery", versions: [1], status: "experimental" },
   { module: "nw.privacy.hidden-retrieval", versions: [1], status: "experimental" },
   { module: "nw.privacy.onion", versions: [1], status: "experimental" },
   { module: "nw.privacy.mixnet", versions: [1], status: "experimental" }

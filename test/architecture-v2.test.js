@@ -190,7 +190,7 @@ test("direct-v4 negotiation is symmetric, bounded, and requires every implemente
 
 test("capability manifests are bounded and require the architecture-v2 core", () => {
   const defaults = createProtocolCapabilityManifest();
-  assert.equal(protocolKnownModuleCatalog.length, 11);
+  assert.equal(protocolKnownModuleCatalog.length, 12);
   assert.deepEqual(defaultActiveEndpointModules.map(({ module }) => module), [
     "nw.core",
     "nw.direct"
@@ -202,6 +202,10 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
     protocolKnownModuleCatalog.find(({ module }) => module === "nw.direct"),
     { module: "nw.direct", versions: [4], status: "stable", limits: {} }
   );
+  assert.deepEqual(
+    protocolKnownModuleCatalog.find(({ module }) => module === "nw.open-discovery"),
+    { module: "nw.open-discovery", versions: [1], status: "experimental", limits: {} }
+  );
   for (const inactive of [
     "nw.opaque-route",
     "nw.rendezvous-transport",
@@ -209,6 +213,7 @@ test("capability manifests are bounded and require the architecture-v2 core", ()
     "nw.groups",
     "nw.wake",
     "nw.federation",
+    "nw.open-discovery",
     "nw.privacy.hidden-retrieval",
     "nw.privacy.onion",
     "nw.privacy.mixnet"
