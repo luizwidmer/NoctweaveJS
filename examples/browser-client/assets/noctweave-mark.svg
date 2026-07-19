@@ -1,4 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" aria-hidden="true">
-  <defs><linearGradient id="nw" x1="36" y1="44" x2="220" y2="212" gradientUnits="userSpaceOnUse"><stop stop-color="#7B61FF"/><stop offset=".5" stop-color="#5B9CFA"/><stop offset="1" stop-color="#3DD5C5"/></linearGradient></defs>
-  <path d="M48 208V48L208 208V48" fill="none" stroke="url(#nw)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M96 32H224V176L140 134V110L96 88Z" fill="#FAF3EA"/>
+  <path d="M32 80L116 122V146L160 168V224H32Z" fill="#C96A61"/>
 </svg>

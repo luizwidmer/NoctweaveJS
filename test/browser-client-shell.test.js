@@ -231,7 +231,11 @@ test("browser surfaces package the canonical Noctweave mark", async () => {
   for (const svg of files) {
     assert.match(svg, /<svg/);
     assert.match(svg, /viewBox=/);
+    assert.match(svg, /#FAF3EA/);
+    assert.match(svg, /#C96A61/);
+    assert.match(svg, /M96 32H224V176L140 134V110L96 88Z/);
   }
+  assert.equal(files[0], files[1]);
 });
 
 test("development server serves SVG branding with a non-sniffed image type", async () => {

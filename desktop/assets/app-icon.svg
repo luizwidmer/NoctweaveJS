@@ -1,20 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Noctweave app icon</title>
+  <desc id="desc">The Offset Veil mark on a plum-black rounded square.</desc>
   <defs>
-    <linearGradient id="surface" x1="140" y1="105" x2="884" y2="919" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#171a30"/>
-      <stop offset="1" stop-color="#080b16"/>
+    <linearGradient id="surface" x1="120" y1="88" x2="904" y2="936" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2D1C23"/>
+      <stop offset="1" stop-color="#1B1217"/>
     </linearGradient>
-    <linearGradient id="mark" x1="290" y1="298" x2="743" y2="733" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7b61ff"/>
-      <stop offset=".52" stop-color="#5b9cfa"/>
-      <stop offset="1" stop-color="#3dd5c5"/>
-    </linearGradient>
-    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
-      <feGaussianBlur stdDeviation="28"/>
-    </filter>
   </defs>
-  <rect x="52" y="52" width="920" height="920" rx="220" fill="#050711" opacity=".42"/>
-  <rect x="64" y="58" width="896" height="896" rx="210" fill="url(#surface)" stroke="#333854" stroke-width="7"/>
-  <path d="M286 734V290L738 734V290" fill="none" stroke="#6958df" stroke-opacity=".35" stroke-width="126" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)"/>
-  <path d="M286 734V290L738 734V290" fill="none" stroke="url(#mark)" stroke-width="102" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="50" y="50" width="924" height="924" rx="218" fill="#120B0F" opacity=".5"/>
+  <rect x="62" y="56" width="900" height="900" rx="210" fill="url(#surface)" stroke="#56313A" stroke-width="7"/>
+  <g transform="translate(128 128) scale(3)">
+    <path d="M96 32H224V176L140 134V110L96 88Z" fill="#FAF3EA"/>
+    <path d="M32 80L116 122V146L160 168V224H32Z" fill="#C96A61"/>
+  </g>
 </svg>
