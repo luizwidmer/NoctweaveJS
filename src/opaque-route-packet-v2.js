@@ -12,15 +12,17 @@ import {
   requireInteger,
   requireNonzeroFixedBase64,
   requireRecord,
+  timestampMilliseconds,
   uint16Bytes,
   uint32Bytes,
   uint64Bytes
 } from "./private-v2.js";
 import {
   createOpaqueRouteProofNonceV2,
-  makeOpaqueRouteUseAuthorizationV2,
+  makeOpaqueRouteSendAuthorizationV2,
+  noctweaveOpaqueRoutesV2,
   validateOpaqueRouteAuthorizationProofV2,
-  validateOpaqueRouteClientCapabilityMaterialV2
+  validateOpaqueRouteSendAuthorityV2
 } from "./opaque-route-v2.js";
 
 const encoder = new TextEncoder();
@@ -210,13 +212,71 @@ export async function validateOpaqueRoutePacketV2({ crypto, packet: value }) {
   return packet;
 }
 
+export function opaqueRoutePacketSendAuthorizationExpiredV2({
+  packet: packetValue,
+  at = new Date()
+}) {
+  const packet = validateOpaqueRoutePacketShapeV2(packetValue);
+  const reference = requireCanonicalTimestamp(at, "Opaque route retry time");
+  return Math.abs(timestampMilliseconds(reference) -
+    timestampMilliseconds(packet.authorization.authorizedAt)) >
+      noctweaveOpaqueRoutesV2.maximumAuthorizationClockSkewSeconds * 1_000;
+}
+
+/**
+ * Refreshes only the time-bounded send proof. Packet identity, ciphertext,
+ * route binding, and operation digest remain byte-identical.
+ */
+export async function refreshOpaqueRoutePacketSendAuthorizationV2({
+  crypto,
+  packet: packetValue,
+  sendAuthority: sendAuthorityValue,
+  authorizedAt = new Date(),
+  nonce
+}) {
+  const packet = await validateOpaqueRoutePacketV2({ crypto, packet: packetValue });
+  const sendAuthority = validateOpaqueRouteSendAuthorityV2(sendAuthorityValue);
+  if (packet.routeID.rawValue !== sendAuthority.routeID.rawValue) {
+    throw new OpaqueRoutePacketV2Error(
+      "invalidPacket",
+      "Opaque route retry authority belongs to another route."
+    );
+  }
+  const authorizationTime = requireCanonicalTimestamp(
+    authorizedAt,
+    "Opaque route retry authorization time"
+  );
+  if (!opaqueRoutePacketSendAuthorizationExpiredV2({
+    packet,
+    at: authorizationTime
+  })) {
+    return packet;
+  }
+  const authorization = await makeOpaqueRouteSendAuthorizationV2({
+    crypto,
+    sendAuthority,
+    operationDigest: packet.authorization.operationDigest,
+    authorizedAt: authorizationTime,
+    nonce: nonce ?? await createOpaqueRouteProofNonceV2(crypto)
+  });
+  return validateOpaqueRoutePacketV2({
+    crypto,
+    packet: {
+      routeID: packet.routeID,
+      packetID: packet.packetID,
+      sealedFrame: packet.sealedFrame,
+      authorization
+    }
+  });
+}
+
 export async function sealOpaqueRouteBundleV2({
   crypto,
   payload,
   routeRevision,
   paddingBucket,
   payloadKey: payloadKeyValue,
-  routeCapabilities: routeCapabilitiesValue,
+  sendAuthority: sendAuthorityValue,
   authorizedAt = new Date(),
   bundleID: bundleIDValue = undefined
 }) {
@@ -230,9 +290,7 @@ export async function sealOpaqueRouteBundleV2({
   const revision = validateRouteRevision(routeRevision);
   const bucket = validatePaddingBucket(paddingBucket);
   const payloadKey = validateOpaqueRoutePayloadKeyV2(payloadKeyValue);
-  const routeCapabilities = validateOpaqueRouteClientCapabilityMaterialV2(
-    routeCapabilitiesValue
-  );
+  const sendAuthority = validateOpaqueRouteSendAuthorityV2(sendAuthorityValue);
   const authorizationTime = requireCanonicalTimestamp(
     authorizedAt,
     "Opaque route authorization time"
@@ -275,7 +333,7 @@ export async function sealOpaqueRouteBundleV2({
     });
     const nonce = await cryptoRandomBytes(crypto, noctweaveOpaqueRoutePacketsV2.nonceBytes);
     const additionalData = opaqueRoutePacketAuthenticatedDataV2({
-      routeID: routeCapabilities.routeID,
+      routeID: sendAuthority.routeID,
       packetID,
       routeRevision: revision,
       paddingBucket: bucket
@@ -301,14 +359,13 @@ export async function sealOpaqueRouteBundleV2({
     const sealedFrame = encodeBase64(concatBytes(nonce, ciphertextAndTag));
     const operationDigest = await opaqueRoutePacketOperationDigestV2({
       crypto,
-      routeID: routeCapabilities.routeID,
+      routeID: sendAuthority.routeID,
       packetID,
       sealedFrame
     });
-    const authorization = await makeOpaqueRouteUseAuthorizationV2({
+    const authorization = await makeOpaqueRouteSendAuthorizationV2({
       crypto,
-      capabilities: routeCapabilities,
-      authority: "send",
+      sendAuthority,
       operationDigest,
       authorizedAt: authorizationTime,
       nonce: await createOpaqueRouteProofNonceV2(crypto)
@@ -316,7 +373,7 @@ export async function sealOpaqueRouteBundleV2({
     const packet = await validateOpaqueRoutePacketV2({
       crypto,
       packet: {
-        routeID: routeCapabilities.routeID,
+        routeID: sendAuthority.routeID,
         packetID,
         sealedFrame,
         authorization

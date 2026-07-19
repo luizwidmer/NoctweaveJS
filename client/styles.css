@@ -238,6 +238,36 @@ dialog form { padding: 27px; }
 .pendingPairingList button { min-height: 34px; padding-inline: 11px; font-size: .8rem; }
 .identityDetails { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .identityDetails dd { margin: 0; }
+.relationshipChoice { width: 100%; min-height: 58px; display: grid; justify-items: start; padding: 12px 14px; border-color: var(--line); color: var(--text); background: rgba(255,255,255,.025); text-align: left; }
+.relationshipChoice[aria-pressed="true"] { border-color: rgba(139,124,255,.55); background: var(--accent-soft); }
+.relationshipChoice strong, .relationshipChoice span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relationshipChoice span { color: var(--muted); font-size: .8rem; }
+.messagingPanel { display: grid; gap: 13px; }
+.messageHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.messageHeader h3, .messageHeader p, .secondaryHeader h2, .secondaryHeader p { margin-bottom: 0; }
+.messageHeader .buttonRow { justify-content: flex-end; margin-top: 0; }
+.relationshipState { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: rgba(255,255,255,.025); }
+.relationshipState[data-state="blocked"], .relationshipState[data-state="routeExpired"], .relationshipState[data-state="continuityGap"] { border-color: rgba(255,120,136,.32); color: #ffc0c8; background: rgba(255,120,136,.07); }
+.relationshipState[data-state="routeTeardownPending"], .relationshipState[data-state="routesTornDown"] { border-color: rgba(255,120,136,.32); color: #ffc0c8; background: rgba(255,120,136,.07); }
+.relationshipState[data-state="expiresSoon"], .relationshipState[data-state="pendingRequest"] { border-color: rgba(255,197,106,.3); color: #ffe0ad; background: rgba(255,197,106,.06); }
+.relationshipControls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 18px; }
+.relationshipControls > label:first-child { min-width: min(260px, 100%); }
+.relationshipControls select { margin-top: 6px; }
+.checkControl { min-height: 42px; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.checkControl input { width: auto; }
+.safetyNumber { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.025); }
+.safetyNumber span, .safetyNumber small { color: var(--muted); }
+.safetyNumber code { color: var(--text); font-size: .82rem; line-height: 1.55; overflow-wrap: anywhere; user-select: all; }
+.messagingPanel .messageList { min-height: 190px; max-height: 430px; display: grid; align-content: start; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; color: var(--muted); background: rgba(4,6,11,.2); }
+.messagingPanel .messageBubble { display: grid; gap: 5px; color: var(--text); }
+.messagingPanel .messageBubble.outbound { margin-left: auto; border-radius: 17px 17px 5px 17px; background: linear-gradient(145deg, rgba(101,84,207,.72), rgba(68,58,148,.72)); }
+.messagingPanel .messageBubble.inbound { margin-right: auto; }
+.messagingPanel .messageBubble span { color: rgba(255,255,255,.58); font-size: .7rem; }
+.messagingPanel .messageBubble button { min-height: 30px; width: fit-content; margin-top: 4px; padding: 4px 9px; font-size: .74rem; }
+.messageComposerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.disabledFile { min-height: 42px; display: inline-flex; align-items: center; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; color: var(--muted); background: rgba(255,255,255,.025); cursor: not-allowed; }
+.disabledFile input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.secondaryHeader { margin-top: 9px; }
 
 @media (max-width: 760px) {
   body { overflow: auto; }
@@ -247,6 +277,8 @@ dialog form { padding: 27px; }
   .sideRail, .chatPanel { overflow: visible; }
   .sideRail { border-right: 0; border-bottom: 1px solid var(--line); }
   .pendingPairingList article { align-items: flex-start; flex-direction: column; }
+  .messageHeader { flex-direction: column; }
+  .messageHeader .buttonRow { justify-content: flex-start; }
 }
 
 @media (max-width: 980px) {

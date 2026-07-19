@@ -38,7 +38,7 @@
         <h1>Pairwise Protocol Shell</h1>
         <p>One-use rendezvous pairing without accounts, reusable identities, or public addresses.</p>
       </div></div>
-      <div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button></div>
+      <div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button><button id="burnProfile" class="danger">Burn local persona</button></div>
     </section>
 
     <section class="workspace">
@@ -61,7 +61,28 @@
       </aside>
 
       <section class="chatPanel">
-        <div class="chatHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh relationship rendezvous</h2></div></div>
+        <div class="chatHeader"><div><p class="eyebrow">Durable pairwise messaging</p><h2>Encrypted relationship workspace</h2></div></div>
+        <div class="panel messagingPanel">
+          <div class="messageHeader">
+            <div><p class="eyebrow">Selected relationship</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>
+            <div class="buttonRow"><button id="syncMessages" class="subtle" disabled>Sync</button><button id="resumeOutbox" class="subtle" disabled>Retry outbox</button><button id="retryRouteTeardown" class="danger" hidden disabled>Retry route teardown</button><button id="muteRelationship" class="subtle" disabled>Mute 8 hours</button></div>
+          </div>
+          <p id="selectedRelationshipState" class="relationshipState" role="status">Complete a fresh pairing to begin messaging.</p>
+          <p class="fieldHint">Durable messaging requires an embedding host with an authenticated, atomic relationship-local monotonic anchor. Ordinary browser storage is not hardware rollback-resistant.</p>
+          <div class="relationshipControls">
+            <label for="relationshipConsent">Local consent<select id="relationshipConsent" disabled><option value="accepted">Accepted</option><option value="pendingRequest">Message request</option><option value="blocked">Block and tear down</option></select></label>
+            <label class="checkControl"><input id="deliveryReceiptsEnabled" type="checkbox" disabled>Permit delivery receipts</label>
+            <label class="checkControl"><input id="readReceiptsEnabled" type="checkbox" disabled>Permit read receipts</label>
+          </div>
+          <div class="safetyNumber"><span>Relationship safety number</span><code id="safetyNumber">Unavailable until a relationship is selected.</code><small>Compare out of band. This number is unique to this disposable relationship, not to a persona.</small></div>
+          <div id="messageList" class="messageList" aria-live="polite">Select a relationship to view its encrypted local history.</div>
+          <label for="messageText">Message</label>
+          <textarea id="messageText" rows="4" maxlength="16384" placeholder="Write inside this pairwise relationship" disabled></textarea>
+          <div class="messageComposerActions"><button id="sendMessage" disabled>Encrypt and send</button><label class="disabledFile" for="attachmentFile">Attach file<input id="attachmentFile" type="file" disabled></label></div>
+          <p id="attachmentStatus" class="fieldHint">Encrypted attachment upload is not yet exposed by the durable browser runtime.</p>
+          <p id="outboxStatus" class="info" role="status">Select a relationship to begin.</p>
+        </div>
+        <div class="chatHeader secondaryHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh relationship rendezvous</h2></div></div>
         <div class="panel compact">
           <p>Each invitation is ephemeral, expires after ten minutes, and can be redeemed once. Relationship keys and route capabilities are created fresh behind the encrypted rendezvous.</p>
           <label for="relationshipPseudonym">Relationship-scoped name</label>

@@ -11,6 +11,24 @@ export type DesktopRelayResponse = {
   body: string;
 };
 
+export type DesktopRelationshipStateCapability = {
+  available: boolean;
+  kind: string;
+  reason: string | null;
+};
+
+export type DesktopRelationshipStateAnchor = {
+  version: 2;
+  relationshipID: string;
+  generation: number;
+  stateDigest: string;
+  authenticationTag: string;
+};
+
+export type DesktopRelationshipStateScope = {
+  relationshipID: string;
+};
+
 export type NoctweaveDesktopRPC = {
   bun: RPCSchema<{
     requests: {
@@ -21,6 +39,36 @@ export type NoctweaveDesktopRPC = {
       relayFetch: {
         params: DesktopRelayRequest;
         response: DesktopRelayResponse;
+      };
+      relationshipStateCapability: {
+        params: Record<never, never>;
+        response: DesktopRelationshipStateCapability;
+      };
+      relationshipStateErasureStatus: {
+        params: DesktopRelationshipStateScope;
+        response: { erased: boolean };
+      };
+      loadRelationshipState: {
+        params: DesktopRelationshipStateScope;
+        response: {
+          anchor: DesktopRelationshipStateAnchor | null;
+          encryptedRecord: unknown | null;
+        };
+      };
+      commitRelationshipState: {
+        params: DesktopRelationshipStateScope & {
+          expectedAnchor: DesktopRelationshipStateAnchor | null;
+          nextGeneration: number;
+          nextStateDigest: string;
+          encryptedRecord: unknown;
+        };
+        response: DesktopRelationshipStateAnchor;
+      };
+      destroyRelationshipState: {
+        params: DesktopRelationshipStateScope & {
+          expectedAnchor: DesktopRelationshipStateAnchor | null;
+        };
+        response: { destroyed: true };
       };
     };
     messages: Record<never, never>;

@@ -268,7 +268,10 @@ test("generic relay responses recursively validate opaque-route and rendezvous b
     routeRevision: 1,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities: capabilities,
+    sendAuthority: {
+      routeID: capabilities.routeID,
+      sendCapability: capabilities.sendCapability
+    },
     authorizedAt: "2026-07-18T12:00:00Z"
   });
   const sync = await makeOpaqueRouteSyncRequestV2({
@@ -638,7 +641,10 @@ test("relay client runs the exact opaque route lifecycle", async () => {
     routeRevision: 1,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities: capabilities,
+    sendAuthority: {
+      routeID: capabilities.routeID,
+      sendCapability: capabilities.sendCapability
+    },
     authorizedAt: issuedAt
   });
   await client.enqueueOpaqueRoute({

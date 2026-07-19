@@ -3,6 +3,7 @@ import type {
   DesktopRelayRequest,
   NoctweaveDesktopRPC
 } from "../rpc.js";
+import { installDesktopRelationshipStateAnchorFactory } from "./relationship-state-anchor.js";
 
 document.documentElement.dataset.runtime = "desktop";
 
@@ -20,6 +21,10 @@ const desktopRPC = Electroview.defineRPC<NoctweaveDesktopRPC>({
 });
 
 const desktop = new Electrobun.Electroview({ rpc: desktopRPC });
+
+await installDesktopRelationshipStateAnchorFactory({
+  requests: desktop.rpc!.request
+});
 
 globalThis.__noctweaveDesktopWasmBinary = decodeBase64(
   await desktop.rpc!.request.loadPostQuantumWasm({})

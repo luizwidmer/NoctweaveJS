@@ -614,24 +614,37 @@ export function pairwiseRouteSetV2SignableBytes(value) {
 }
 
 export function verifyPairwiseRouteSetV2({ pqc, routeSet: routeSetValue, ownerSigningPublicKey }) {
-  let routeSet;
   try {
-    routeSet = validatePairwiseRouteSetV2(routeSetValue);
+    return verifyPairwiseRouteSetV2Throwing({
+      pqc,
+      routeSet: routeSetValue,
+      ownerSigningPublicKey
+    });
   } catch {
     return false;
   }
+}
+
+/** Production verification path. Structural/signature invalidity returns
+ * false; unavailable or failing PQ runtime operations propagate. */
+export function verifyPairwiseRouteSetV2Throwing({
+  pqc,
+  routeSet: routeSetValue,
+  ownerSigningPublicKey
+}) {
+  const routeSet = validatePairwiseRouteSetV2(routeSetValue);
   if (typeof pqc?.verify !== "function") {
     throw new TypeError("Pairwise route-set verification requires ML-DSA verification.");
   }
-  try {
-    return pqc.verify(
-      swiftCanonicalBytes(routeSetSignatureProjection(routeSet)),
-      requireBase64(routeSet.signature, ML_DSA_SIGNATURE_BYTES, "Pairwise route-set signature"),
-      requireBase64(ownerSigningPublicKey, ML_DSA_PUBLIC_KEY_BYTES, "Route owner signing key")
-    );
-  } catch {
-    return false;
+  const verified = pqc.verify(
+    swiftCanonicalBytes(routeSetSignatureProjection(routeSet)),
+    requireBase64(routeSet.signature, ML_DSA_SIGNATURE_BYTES, "Pairwise route-set signature"),
+    requireBase64(ownerSigningPublicKey, ML_DSA_PUBLIC_KEY_BYTES, "Route owner signing key")
+  );
+  if (typeof verified !== "boolean") {
+    throw new Error("ML-DSA route-set verification returned an invalid result.");
   }
+  return verified;
 }
 
 export function createPairwiseRouteSetV2({
@@ -943,7 +956,7 @@ export async function abandonTestingPairwiseRouteV2({
 
 export function validateContactIntroductionV2(value, { pqc } = {}) {
   const introduction = normalizeContactIntroductionV2(value);
-  if (!verifyPairwiseRouteSetV2({
+  if (!verifyPairwiseRouteSetV2Throwing({
     pqc,
     routeSet: introduction.receiveRoutes,
     ownerSigningPublicKey: introduction.endpointBinding.signingPublicKey
@@ -1065,7 +1078,7 @@ export async function createContactIntroductionV2({
     })) {
       throw new TypeError("Contact introduction route set belongs to a different relationship.");
     }
-    if (!verifyPairwiseRouteSetV2({
+    if (!verifyPairwiseRouteSetV2Throwing({
       pqc,
       routeSet: receiveRoutes,
       ownerSigningPublicKey: endpointBinding?.signingPublicKey
@@ -1184,7 +1197,7 @@ export async function verifyContactIntroductionV2({
       endpointBinding: introduction.endpointBinding,
       now: introduction.endpointBinding.prekeyBundle.createdAt
     });
-    if (!verifyPairwiseRouteSetV2({
+    if (!verifyPairwiseRouteSetV2Throwing({
       pqc,
       routeSet: introduction.receiveRoutes,
       ownerSigningPublicKey: introduction.endpointBinding.signingPublicKey
@@ -1244,7 +1257,7 @@ function signPairwiseRouteSetV2({
     throw new PairwiseRouteSetV2Error("invalidState", "Route-set signing returned an invalid signature.");
   }
   const result = validatePairwiseRouteSetV2({ ...unsigned, signature: encodeBase64(signature) });
-  if (!verifyPairwiseRouteSetV2({ pqc, routeSet: result, ownerSigningPublicKey })) {
+  if (!verifyPairwiseRouteSetV2Throwing({ pqc, routeSet: result, ownerSigningPublicKey })) {
     throw new PairwiseRouteSetV2Error("invalidState", "Route-set signing key does not match its endpoint.");
   }
   return result;
@@ -1261,7 +1274,7 @@ async function transitionPairwiseRouteSetV2({
 }) {
   const routeSet = validatePairwiseRouteSetV2(current);
   const transitionTime = requireCanonicalTimestamp(issuedAt, "Pairwise route-set transition time");
-  if (!verifyPairwiseRouteSetV2({ pqc, routeSet, ownerSigningPublicKey }) ||
+  if (!verifyPairwiseRouteSetV2Throwing({ pqc, routeSet, ownerSigningPublicKey }) ||
       routeSet.revision >= Number.MAX_SAFE_INTEGER ||
       timestampMilliseconds(transitionTime) < timestampMilliseconds(routeSet.issuedAt)) {
     throw new PairwiseRouteSetV2Error("invalidTransition");

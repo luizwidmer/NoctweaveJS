@@ -99,6 +99,30 @@ export function validateOpaqueRouteClientCapabilityMaterialV2(value) {
   return freezeWire(result);
 }
 
+/** The complete authority a sender needs, and the only authority peers receive. */
+export function createOpaqueRouteSendAuthorityV2({ routeID, sendCapability }) {
+  return validateOpaqueRouteSendAuthorityV2({ routeID, sendCapability });
+}
+
+export function validateOpaqueRouteSendAuthorityV2(value) {
+  requireExactRecord(value, [
+    "routeID",
+    "sendCapability"
+  ], [], "Opaque route send authority");
+  const routeID = validateFixedValue(value.routeID, "Opaque route ID");
+  const sendCapability = validateFixedValue(
+    value.sendCapability,
+    "Opaque route send capability"
+  );
+  if (routeID.rawValue === sendCapability.rawValue) {
+    throw new OpaqueRouteV2Error(
+      "invalidCredential",
+      "Opaque route identifier and send capability must be independent."
+    );
+  }
+  return freezeWire({ routeID, sendCapability });
+}
+
 export function createOpaqueRoutePolicyV2({ paddingBucket, retentionBucket, quotaBucket }) {
   return validateOpaqueRoutePolicyV2({
     paddingBucket,
@@ -654,6 +678,28 @@ export async function makeOpaqueRouteUseAuthorizationV2({ crypto, capabilities: 
     authorizedAt,
     nonce,
     secret: authority === "send" ? capabilities.sendCapability : capabilities.readCredential
+  });
+}
+
+export async function makeOpaqueRouteSendAuthorizationV2({
+  crypto,
+  sendAuthority: authorityValue,
+  operationDigest,
+  authorizedAt,
+  nonce
+}) {
+  const authority = validateOpaqueRouteSendAuthorityV2(authorityValue);
+  return makeOpaqueRouteAuthorizationProofV2({
+    crypto,
+    authority: "send",
+    routeID: authority.routeID,
+    operationDigest: validateDigestString(
+      operationDigest,
+      "Opaque route operation digest"
+    ),
+    authorizedAt,
+    nonce,
+    secret: authority.sendCapability
   });
 }
 

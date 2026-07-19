@@ -3,9 +3,11 @@ import { join } from "node:path";
 import { BrowserView, BrowserWindow, PATHS } from "electrobun/bun";
 import type { NoctweaveDesktopRPC } from "../rpc.js";
 import { proxyRelayRequest } from "./relay-proxy.js";
+import { DesktopRelationshipStateStore } from "./relationship-state-store.js";
 
 const maximumWasmBytes = 2 * 1024 * 1024;
 let cachedWasmBase64: string | undefined;
+const relationshipStateStore = new DesktopRelationshipStateStore();
 
 async function loadPostQuantumWasm(): Promise<string> {
   if (cachedWasmBase64) {
@@ -20,11 +22,16 @@ async function loadPostQuantumWasm(): Promise<string> {
 }
 
 const desktopRPC = BrowserView.defineRPC<NoctweaveDesktopRPC>({
-  maxRequestTime: 20_000,
+  maxRequestTime: 60_000,
   handlers: {
     requests: {
       loadPostQuantumWasm: () => loadPostQuantumWasm(),
-      relayFetch: (request) => proxyRelayRequest(request)
+      relayFetch: (request) => proxyRelayRequest(request),
+      relationshipStateCapability: () => relationshipStateStore.capabilityReport(),
+      relationshipStateErasureStatus: (request) => relationshipStateStore.erasureStatus(request),
+      loadRelationshipState: (request) => relationshipStateStore.load(request),
+      commitRelationshipState: (request) => relationshipStateStore.commit(request),
+      destroyRelationshipState: (request) => relationshipStateStore.destroy(request)
     },
     messages: {}
   }

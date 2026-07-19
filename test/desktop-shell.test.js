@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
-test("Electrobun desktop shell packages the existing client and PQ WASM", async () => {
-  const [config, main, view, html] = await Promise.all([
+test("Electrobun desktop shell packages the existing client, PQ WASM, and secure state bridge", async () => {
+  const [config, main, view, html, hostState, viewAnchor, rpc] = await Promise.all([
     readFile(new URL("../electrobun.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../desktop/bun/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../desktop/view/index.ts", import.meta.url), "utf8"),
-    readFile(new URL("../client/index.html", import.meta.url), "utf8")
+    readFile(new URL("../client/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/bun/relationship-state-store.js", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/view/relationship-state-anchor.ts", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/rpc.ts", import.meta.url), "utf8")
   ]);
 
   assert.match(config, /identifier:\s*"org\.noctweave\.js-client"/);
@@ -18,13 +21,30 @@ test("Electrobun desktop shell packages the existing client and PQ WASM", async 
   assert.equal((config.match(/bundleCEF:\s*false/g) ?? []).length, 3);
   assert.match(main, /proxyRelayRequest/);
   assert.match(main, /loadPostQuantumWasm/);
+  assert.match(main, /DesktopRelationshipStateStore/);
+  assert.match(main, /relationshipStateErasureStatus/);
+  assert.match(main, /commitRelationshipState/);
+  assert.match(main, /destroyRelationshipState/);
   assert.match(view, /__noctweaveDesktopRelayFetch/);
   assert.match(view, /__noctweaveDesktopWasmBinary/);
   assert.match(view, /dataset\.runtime\s*=\s*"desktop"/);
+  assert.match(view, /installDesktopRelationshipStateAnchorFactory/);
   assert.match(view, /await import\("\.\.\/\.\.\/client\/app\.js"\)/);
   assert.match(html, /src="\.\/index\.js"/);
   assert.match(html, /Pairwise Protocol Shell/);
   assert.match(html, /One-use pairing/);
+  assert.match(hostState, /MacOSKeychainVault/);
+  assert.match(hostState, /afterSecureCommit/);
+  assert.match(hostState, /afterSecureDestroy/);
+  assert.match(hostState, /digestEncryptedRecord/);
+  assert.match(hostState, /acquireScopeLock/);
+  assert.match(hostState, /erasedRelationshipError/);
+  assert.match(hostState, /Desktop host accepts only encrypted Noctweave records/);
+  assert.match(viewAnchor, /encryptedStateStoreBackend/);
+  assert.match(viewAnchor, /persistEncryptedState/);
+  assert.match(viewAnchor, /destroyEncryptedState/);
+  assert.match(viewAnchor, /erasureStatus/);
+  assert.match(rpc, /relationshipStateCapability/);
 
   const [macIcon, linuxIcon, windowsIcon] = await Promise.all([
     stat(new URL("../desktop/assets/app-icon.icns", import.meta.url)),

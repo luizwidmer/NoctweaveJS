@@ -259,6 +259,72 @@ The browser and desktop shells store:
 They do not mint a persona-wide protocol key, provider identity, recovery
 authority, or cross-contact route identifier.
 
+## Durable pairwise messaging
+
+`DurablePairwiseMessagingRuntimeV2` journals one relationship's encrypted
+events, exact retry packets, ratchets, route/lifecycle state, and receive cursor. Its
+rollback anchor is mandatory and relationship-local. Host-local policy is
+stored in that same monotonic relationship record; `blocked` is terminal and
+an older aggregate vault cannot restore it to accepted. This does not publish
+policy or create protocol identity. Completed histories, quarantines, retired-route evidence,
+and unused sessions compact without removing pending or in-flight dependencies.
+Transient relay failure remains retryable after any number of attempts, and a
+logical send is relay-accepted once at least one independently attempted route
+accepts its complete bundle.
+
+Ordinary browser storage cannot honestly provide the required monotonic CAS,
+so the browser shell leaves durable messaging unavailable unless its embedding
+host supplies `noctweaveRelationshipStateAnchorStoreFactory`. The Electrobun
+client supplies that boundary on macOS:
+
+- the encrypted local persona aggregate uses one fixed host application-state
+  slot. Its random vault scope and salt come only from the authenticated slot,
+  never a URL, profile name, or Web Storage selector. The slot is local storage
+  coordination, not a persona or protocol identity;
+- aggregate burn advances `active -> burning -> burned`. `burning` cannot be
+  unlocked for ordinary use or replaced with a fresh scope; it can only decrypt
+  into the terminal recovery path. Every relationship is then blocked and
+  tombstoned before aggregate ciphertext is removed, and relay cleanup begins
+  only afterward. Fresh post-burn initialization requires CAS from the
+  authenticated burned generation;
+- the WebView encrypts each relationship record with the unlocked vault key;
+- Bun receives only the relationship ID that binds a fixed application scope and the
+  `EncryptedNoctweaveStore` envelope, never message content, decrypted protocol
+  state, WebView storage keys, URL profile names, or the vault key; changing
+  those WebView details cannot mint a new burn scope, and this remains a local
+  encryption boundary rather than anonymity from the desktop host;
+- a fsynced filesystem journal uses hashed scope identifiers, stages the
+  ciphertext and transition, and a fail-closed scope lock serializes competing
+  host processes without race-prone stale-lock reclamation;
+- macOS Keychain stores the OS-protected current generation, host-computed
+  ciphertext digest, and permanent burn tombstone, and is the transaction
+  commit point;
+- startup recovery completes or aborts interrupted commits and destructive
+  relationship burns; a valid older ciphertext cannot be paired with the
+  newer Keychain generation, and restored files cannot resurrect a burned
+  relationship scope.
+
+This boundary assumes the user's macOS login Keychain is available and that
+the operating system and logged-in user session are not compromised. A locked,
+missing, reset, or conflicting Keychain item is an availability failure; the
+client does not recreate authority over existing relationship files.
+
+The macOS `security` command has no generic-password stdin form. The host never
+passes a secret through it: the Keychain value contains only opaque hashed
+scope metadata, generations, digests, erasure state, and a corruption
+checksum. Encryption keys and plaintext remain in the WebView. The Keychain
+item itself—not that checksum—is the independent rollback authority.
+
+The current Linux and Windows Electrobun builds have no audited OS-backed
+monotonic coordinator and therefore fail closed for durable messaging. A file,
+Web Storage, or IndexedDB HMAC stored beside its ciphertext is not accepted as
+rollback resistance.
+
+Swift and JavaScript freeze the direct-v4 root/session KDF in
+`NoctweaveDocumentation/test_vectors/direct_v4_root_session_v1.json`. The JS
+test imports the implementation module directly; the derivation helper is
+intentionally absent from the package's public index.
+
 ## Storage
 
 Raw adapters (`MemoryNoctweaveStore`, `BrowserLocalStorageStore`,
@@ -295,6 +361,10 @@ const repository = new NoctweaveStateRepository(encrypted);
   capabilities; two-field manifests without `contentTypes` are invalid.
 - Direct-v4 authenticates the shared content families in its session transcript
   and refuses outbound application or receipt types the peer did not advertise.
+- Signed-prekey freshness gates only a new bootstrap at its authenticated send
+  time. Established sessions remain valid after prekey expiry, and bounded
+  retired private prekeys admit delayed pre-expiry bootstraps within the receive
+  retention window.
 - Relationship route updates, targeted route probes, and endpoint-prekey updates
   use independently signed, relationship-scoped control frames.
 - Unknown application content may be retained. Unknown authenticated controls are

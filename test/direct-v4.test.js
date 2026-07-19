@@ -108,6 +108,26 @@ test("direct-v4 uses only rendezvous-established pairwise identity state", async
   }), /fields must match the current schema exactly/);
 });
 
+test("direct-v4 session identifiers bind each KEM-derived root", async () => {
+  const { crypto, pqc, alice } = await paired("Alice session roots", "Bob session roots");
+  const first = await createNativeOutboundSession({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    now: Date.parse(openedAt)
+  });
+  const second = await createNativeOutboundSession({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    now: Date.parse(openedAt)
+  });
+  assert.notEqual(first.conversation.rootKey, second.conversation.rootKey);
+  assert.notEqual(first.conversation.sessionId, second.conversation.sessionId);
+});
+
 test("typed application payloads remain extensible while authenticated known semantics fail closed", async () => {
   const customType = createContentTypeId({ authority: "org.example", name: "poll", major: 1, minor: 0 });
   const endpointCapabilities = createProtocolCapabilityManifest({
@@ -278,6 +298,46 @@ test("prekey renewal retains an in-flight pairwise bootstrap without creating re
     now: renewalTime
   });
   assert.equal(inbound.id, outbound.conversation.id);
+  const delayedInbound = await createNativeInboundSession({
+    crypto,
+    pqc,
+    localIdentity: bob.localIdentity,
+    peerIdentity: bob.peerIdentity,
+    bootstrap: outbound.bootstrap,
+    now: Date.parse(original.expiresAt) + 60 * 60_000,
+    bootstrapSentAt: renewalTime - 1
+  });
+  assert.equal(delayedInbound.id, outbound.conversation.id);
+  const establishedSentAt = new Date(Date.parse(original.expiresAt) + 2 * 60 * 60_000)
+    .toISOString().replace(".000Z", "Z");
+  const establishedEnvelope = await encryptNativeTextEnvelope({
+    crypto,
+    pqc,
+    localIdentity: alice.localIdentity,
+    peerIdentity: alice.peerIdentity,
+    conversation: outbound.conversation,
+    text: "established sessions outlive bootstrap prekeys",
+    bootstrap: { kind: "none" },
+    sentAt: establishedSentAt
+  });
+  assert.equal(await decryptNativeEnvelope({
+    crypto,
+    pqc,
+    localIdentity: bob.localIdentity,
+    peerIdentity: bob.peerIdentity,
+    conversation: inbound,
+    envelope: establishedEnvelope,
+    receivedAt: establishedSentAt
+  }), "established sessions outlive bootstrap prekeys");
+  await assert.rejects(() => createNativeInboundSession({
+    crypto,
+    pqc,
+    localIdentity: bob.localIdentity,
+    peerIdentity: bob.peerIdentity,
+    bootstrap: outbound.bootstrap,
+    now: Date.parse(original.expiresAt) + 60 * 60_000,
+    bootstrapSentAt: Date.parse(original.expiresAt)
+  }), /expired or unknown signed prekey/);
 });
 
 test("relationship endpoint binding tampering fails closed", async () => {

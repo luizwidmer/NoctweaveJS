@@ -12,7 +12,9 @@ import {
   opaqueRouteBundleDigestV2,
   opaqueRoutePacketMaximumFragmentPayloadBytesV2,
   opaqueRoutePacketOperationDigestV2,
+  opaqueRoutePacketSendAuthorizationExpiredV2,
   openOpaqueRoutePacketV2,
+  refreshOpaqueRoutePacketSendAuthorizationV2,
   sealOpaqueRouteBundleV2,
   validateOpaqueRoutePacketV2,
   validateOpaqueRouteSealedBundleV2
@@ -193,7 +195,7 @@ test("each padding bucket seals a relay-minimal packet with exact route proof bi
       routeRevision: 7,
       paddingBucket,
       payloadKey,
-      routeCapabilities,
+      sendAuthority: sendOnly(routeCapabilities),
       authorizedAt
     });
     const validated = await validateOpaqueRouteSealedBundleV2({ crypto, bundle });
@@ -227,6 +229,103 @@ test("each padding bucket seals a relay-minimal packet with exact route proof bi
   }
 });
 
+test("packet sealing accepts exactly route ID and send capability", async () => {
+  const crypto = testCrypto();
+  const capabilities = await createOpaqueRouteClientCapabilityMaterialV2(crypto);
+  const payloadKey = await createOpaqueRoutePayloadKeyV2(crypto);
+  const sendAuthority = sendOnly(capabilities);
+  assert.deepEqual(Object.keys(sendAuthority).sort(), ["routeID", "sendCapability"]);
+  const bundle = await sealOpaqueRouteBundleV2({
+    crypto,
+    payload: Uint8Array.of(1, 2, 3),
+    routeRevision: 0,
+    paddingBucket: 4_096,
+    payloadKey,
+    sendAuthority,
+    authorizedAt
+  });
+  assert.equal(bundle.packets[0].routeID.rawValue, capabilities.routeID.rawValue);
+  await assert.rejects(
+    () => sealOpaqueRouteBundleV2({
+      crypto,
+      payload: Uint8Array.of(1),
+      routeRevision: 0,
+      paddingBucket: 4_096,
+      payloadKey,
+      sendAuthority: {
+        ...sendAuthority,
+        readCredential: capabilities.readCredential
+      },
+      authorizedAt
+    }),
+    /send authority/
+  );
+});
+
+test("past- and future-skewed send proofs refresh without changing packet ciphertext", async () => {
+  const crypto = testCrypto();
+  const capabilities = await createOpaqueRouteClientCapabilityMaterialV2(crypto);
+  const sendAuthority = sendOnly(capabilities);
+  const bundle = await sealOpaqueRouteBundleV2({
+    crypto,
+    payload: Uint8Array.of(4, 5, 6),
+    routeRevision: 0,
+    paddingBucket: 4_096,
+    payloadKey: await createOpaqueRoutePayloadKeyV2(crypto),
+    sendAuthority,
+    authorizedAt
+  });
+  const original = bundle.packets[0];
+  const earlierRetryAt = "2026-07-16T11:54:59Z";
+  assert.equal(opaqueRoutePacketSendAuthorizationExpiredV2({
+    packet: original,
+    at: earlierRetryAt
+  }), true);
+  const futureSkewRefreshed = await refreshOpaqueRoutePacketSendAuthorizationV2({
+    crypto,
+    packet: original,
+    sendAuthority,
+    authorizedAt: earlierRetryAt
+  });
+  assert.deepEqual(futureSkewRefreshed.packetID, original.packetID);
+  assert.equal(futureSkewRefreshed.sealedFrame, original.sealedFrame);
+  assert.equal(futureSkewRefreshed.authorization.authorizedAt, earlierRetryAt);
+  const retryAt = "2026-07-16T12:05:01Z";
+  assert.equal(opaqueRoutePacketSendAuthorizationExpiredV2({
+    packet: original,
+    at: retryAt
+  }), true);
+  const refreshed = await refreshOpaqueRoutePacketSendAuthorizationV2({
+    crypto,
+    packet: original,
+    sendAuthority,
+    authorizedAt: retryAt
+  });
+  assert.deepEqual(refreshed.packetID, original.packetID);
+  assert.equal(refreshed.sealedFrame, original.sealedFrame);
+  assert.equal(
+    refreshed.authorization.operationDigest,
+    original.authorization.operationDigest
+  );
+  assert.notDeepEqual(refreshed.authorization, original.authorization);
+  assert.equal(refreshed.authorization.authorizedAt, retryAt);
+  assert.equal(await verifyOpaqueRouteAuthorizationProofV2({
+    crypto,
+    proof: refreshed.authorization,
+    expectedAuthority: "send",
+    routeID: refreshed.routeID,
+    operationDigest: refreshed.authorization.operationDigest,
+    secret: capabilities.sendCapability
+  }), true);
+  const stillFresh = await refreshOpaqueRoutePacketSendAuthorizationV2({
+    crypto,
+    packet: refreshed,
+    sendAuthority,
+    authorizedAt: retryAt
+  });
+  assert.deepEqual(stillFresh, refreshed);
+});
+
 test("fragmentation reassembles out of order and exact repeats remain duplicates", async () => {
   const crypto = testCrypto();
   const routeCapabilities = await createOpaqueRouteClientCapabilityMaterialV2(crypto);
@@ -239,7 +338,7 @@ test("fragmentation reassembles out of order and exact repeats remain duplicates
     routeRevision: 12,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt
   });
   assert.equal(bundle.packets.length, 3);
@@ -290,7 +389,7 @@ test("AAD and relay-projection tampering fail closed", async () => {
     routeRevision: 19,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt
   });
   const packet = bundle.packets[0];
@@ -355,7 +454,7 @@ test("reassembly rejects packet IDs, bundles, and capacity conflicts", async () 
     routeRevision: 5,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt,
     bundleID
   });
@@ -365,7 +464,7 @@ test("reassembly rejects packet IDs, bundles, and capacity conflicts", async () 
     routeRevision: 5,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt,
     bundleID
   });
@@ -392,7 +491,7 @@ test("reassembly rejects packet IDs, bundles, and capacity conflicts", async () 
     routeRevision: 5,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt
   });
   const reusedID = first.packets[0].packetID;
@@ -458,7 +557,7 @@ test("same fragment bytes are idempotent while aggregate buffered bytes stay bou
     routeRevision: 3,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt,
     bundleID
   });
@@ -468,7 +567,7 @@ test("same fragment bytes are idempotent while aggregate buffered bytes stay bou
     routeRevision: 3,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt,
     bundleID
   });
@@ -495,7 +594,7 @@ test("same fragment bytes are idempotent while aggregate buffered bytes stay bou
     routeRevision: 3,
     paddingBucket: 4_096,
     payloadKey,
-    routeCapabilities,
+    sendAuthority: sendOnly(routeCapabilities),
     authorizedAt
   });
   await assert.rejects(
@@ -520,7 +619,7 @@ test("empty and over-fragmented payloads are rejected before sealing", async () 
       routeRevision: 1,
       paddingBucket: 4_096,
       payloadKey,
-      routeCapabilities,
+      sendAuthority: sendOnly(routeCapabilities),
       authorizedAt
     }),
     packetError("emptyPayload")
@@ -533,7 +632,7 @@ test("empty and over-fragmented payloads are rejected before sealing", async () 
       routeRevision: 1,
       paddingBucket: 4_096,
       payloadKey,
-      routeCapabilities,
+      sendAuthority: sendOnly(routeCapabilities),
       authorizedAt
     }),
     packetError("fragmentCountExceeded")
@@ -585,6 +684,13 @@ function patternedBytes(length, offset = 0) {
 
 function createFixedValue(octet) {
   return Object.freeze({ rawValue: base64(new Uint8Array(32).fill(octet)) });
+}
+
+function sendOnly(capabilities) {
+  return Object.freeze({
+    routeID: capabilities.routeID,
+    sendCapability: capabilities.sendCapability
+  });
 }
 
 function packetError(code) {

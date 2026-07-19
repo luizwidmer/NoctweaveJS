@@ -103,7 +103,7 @@ test("opaque route creation keeps four authorities independent and relay state d
   );
 });
 
-test("opaque route transition digests use the Swift sorted-JSON projection", async () => {
+test("opaque route transition digests use the NCJ-1 projection", async () => {
   const crypto = testCrypto();
   const fixture = await createFixture(crypto);
   const request = await makeOpaqueRouteCreateRequestV2({

@@ -136,7 +136,10 @@ test("partial bundles persist inside a local route and complete after exact rest
     routeRevision: 0,
     paddingBucket: 4_096,
     payloadKey: fixture.payloadKey,
-    routeCapabilities: fixture.clientCapabilities,
+    sendAuthority: {
+      routeID: fixture.clientCapabilities.routeID,
+      sendCapability: fixture.clientCapabilities.sendCapability
+    },
     authorizedAt
   });
 
@@ -193,7 +196,10 @@ test("reassembly pressure retires the deterministic oldest bundle", async () => 
       routeRevision: 4,
       paddingBucket: 4_096,
       payloadKey,
-      routeCapabilities,
+      sendAuthority: {
+        routeID: routeCapabilities.routeID,
+        sendCapability: routeCapabilities.sendCapability
+      },
       authorizedAt
     }));
   }
@@ -301,7 +307,10 @@ async function receiveFixture() {
     routeRevision: 0,
     paddingBucket: 4_096,
     payloadKey: fixture.payloadKey,
-    routeCapabilities: fixture.clientCapabilities,
+    sendAuthority: {
+      routeID: fixture.clientCapabilities.routeID,
+      sendCapability: fixture.clientCapabilities.sendCapability
+    },
     authorizedAt
   });
   const zeroDigest = base64(new Uint8Array(32));

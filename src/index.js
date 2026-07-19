@@ -38,6 +38,7 @@ export * from "./pairwise-opaque-route-v2.js";
 export * from "./relationship-control-v2.js";
 export * from "./relationship-local-policy-v2.js";
 export * from "./contact-pairing-v2.js";
+export * from "./durable-pairwise-messaging-v2.js";
 export {
   advanceDeliveryState,
   contentTypeCanonicalName,
@@ -102,7 +103,10 @@ export {
   createNativeOutboundSession,
   decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
+  decryptNativeProtocolEnvelope,
+  decryptNativeRelationshipControlEnvelope,
   encryptNativeApplicationEnvelope,
+  encryptNativeRelationshipControlEnvelope,
   encryptNativeTextEnvelope,
   findPairwiseRelationshipForEnvelope,
   pairwiseConversationKey,
@@ -120,5 +124,6 @@ export {
   relationshipEndpointAuthorizationDigestV4,
   renewPairwiseDirectV4PrekeyIfNeeded,
   validateRelationshipEndpointBindingV4,
+  verifyRelationshipEndpointAuthorityV4,
   verifyRelationshipEndpointBindingV4
 } from "./crypto/direct-v4.js";

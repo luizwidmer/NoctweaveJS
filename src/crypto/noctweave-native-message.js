@@ -24,6 +24,7 @@ import {
   directV4SessionBindingBytes,
   isPeerPairwiseIdentityV2,
   negotiateNativeDirectV4,
+  verifyRelationshipEndpointAuthorityV4,
   verifyRelationshipEndpointBindingV4
 } from "./direct-v4.js";
 import {
@@ -33,7 +34,10 @@ import {
   validateDirectEnvelopeV4
 } from "./noctweave-wire.js";
 import {
+  createAuthenticatedRelationshipControlV2,
   createApplicationWirePayloadV2,
+  createRelationshipControlWirePayloadV2,
+  relationshipControlDispositionV2,
   validateWirePayloadV2
 } from "../relationship-control-v2.js";
 
@@ -153,15 +157,15 @@ export async function createNativeInboundSession({
   localIdentity,
   peerIdentity,
   bootstrap,
-  now = Date.now()
+  now = Date.now(),
+  bootstrapSentAt = now
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
-  await verifyRelationshipEndpointBindingV4({
+  await verifyRelationshipEndpointAuthorityV4({
     crypto,
     pqc,
     authoritySigningPublicKey: peerIdentity.signingPublicKey,
-    endpointBinding: peerIdentity.endpointBinding,
-    now
+    endpointBinding: peerIdentity.endpointBinding
   });
   const local = localIdentity.localEndpoint;
   const localEndpoint = localIdentity.endpointBinding;
@@ -174,7 +178,7 @@ export async function createNativeInboundSession({
     pqc,
     local,
     prekeyId: validatedBootstrap.prekey.id,
-    now
+    now: bootstrapSentAt
   });
   const prekeySecret = fromBase64(
     prekeyRecord.privateKey,
@@ -200,7 +204,7 @@ export async function createNativeInboundSession({
       peerIdentity,
       binding
     });
-    validateNegotiatedPrekeyFreshness(prekeyRecord, negotiation, now);
+    validateNegotiatedPrekeyFreshness(prekeyRecord, negotiation, bootstrapSentAt);
     return await conversationFromSharedSecret({
       crypto,
       sharedSecret,
@@ -320,29 +324,12 @@ async function encryptNativeEnvelopePayload({
     endpointSession: conversation.endpointSession
   });
   const negotiation = negotiated.manifest;
-  const binding = negotiated.binding;
   const outboundContent = content ?? createTextEncodedContent(text);
   if (!negotiatedContentTypeSupports(negotiation, outboundContent.type)) {
     throw new Error(
       `Peer relationship endpoint did not advertise ${contentTypeCanonicalName(outboundContent.type)}.`
     );
   }
-  await verifyRelationshipEndpointBindingV4({
-    crypto,
-    pqc,
-    authoritySigningPublicKey: peerIdentity.signingPublicKey,
-    endpointBinding: peerIdentity.endpointBinding,
-    now: Date.parse(sentAt)
-  });
-  const ownSigning = deserializeKeypair(
-    localIdentity.localEndpoint.signing,
-    {
-    publicKeyBytes: ML_DSA_PUBLIC_KEY_BYTES,
-    secretKeyBytes: ML_DSA_SECRET_KEY_BYTES,
-    label: "local endpoint signing keypair"
-  });
-  const candidateSendChain = cloneChain(conversation.sendChain);
-  const prepared = await nextMessageKey(crypto, candidateSendChain);
   const canonicalSentAt = swiftISODate(new Date(sentAt));
   const applicationEvent = createConversationEvent({
     id: eventId,
@@ -363,27 +350,141 @@ async function encryptNativeEnvelopePayload({
     paddedBytes: plaintext.byteLength,
     negotiation
   });
-  const validatedBootstrap = validateDirectBootstrapV4(bootstrap);
-  const envelopeHeader = {
-    version: 4,
-    id: swiftUUID(),
-    payloadFormat: "nw.wire-payload.v2",
-    conversationId: conversation.id,
-    sessionId: conversation.sessionId,
-    eventId,
+  return encryptNativePreparedWireEnvelope({
+    crypto,
+    pqc,
+    localIdentity,
+    peerIdentity,
+    conversation,
+    plaintext,
+    eventId: applicationEvent.id,
+    canonicalSentAt,
+    bootstrap,
+    negotiated
+  });
+}
+
+// Relationship controls are a closed protocol path. They are independently
+// authenticated inside the direct envelope and cannot be supplied through the
+// extensible application-content API above.
+export async function encryptNativeRelationshipControlEnvelope({
+  crypto,
+  pqc,
+  localIdentity,
+  peerIdentity,
+  conversation,
+  kind,
+  payload,
+  bootstrap = { kind: "none" },
+  eventId = swiftUUID(),
+  clientTransactionId = swiftUUID(),
+  sentAt = swiftISODate()
+}) {
+  requirePeerPairwiseIdentity(peerIdentity);
+  validateDirectV4Conversation(conversation);
+  const canonicalSentAt = swiftISODate(new Date(sentAt));
+  const control = createAuthenticatedRelationshipControlV2({
+    pqc,
+    kind,
+    payload,
+    relationshipID: peerIdentity.relationshipID,
+    eventID: eventId,
     senderEndpointHandle: conversation.endpointSession.localEndpointHandle,
-    senderBindingDigest: conversation.endpointSession.localBindingReferenceDigest,
-    recipientEndpointHandle: conversation.endpointSession.peerEndpointHandle,
-    recipientBindingDigest: conversation.endpointSession.peerBindingReferenceDigest,
-    cipherSuite: binding.cipherSuite,
-    negotiatedCapabilitiesDigest: binding.negotiatedCapabilitiesDigest,
-    bootstrap: validatedBootstrap,
+    issuedAt: canonicalSentAt,
+    nonce: clientTransactionId,
+    senderSigningSecretKey: localIdentity.localEndpoint.signing.secretKey
+  });
+  const wirePayload = createRelationshipControlWirePayloadV2(control);
+  const disposition = relationshipControlDispositionV2({
+    pqc,
+    wirePayload,
+    relationshipID: peerIdentity.relationshipID,
+    senderEndpointHandle: conversation.endpointSession.localEndpointHandle,
+    eventID: control.eventID,
     sentAt: canonicalSentAt,
-    messageCounter: prepared.counter
-  };
-  const aad = directEnvelopeV4AuthenticatedDataBytes(envelopeHeader);
-  const nonce = crypto.randomBytes(12);
+    receivedAt: canonicalSentAt,
+    senderSigningPublicKey: localIdentity.localEndpoint.signing.publicKey
+  });
+  if (disposition.kind !== "control") {
+    throw new Error("Locally created relationship control is not implemented.");
+  }
+  const negotiated = await validateCurrentDirectV4Negotiation({
+    crypto,
+    localIdentity,
+    peerIdentity,
+    endpointSession: conversation.endpointSession
+  });
+  const plaintext = encodePaddedBody(
+    wirePayload,
+    NPAD_V2_MAGIC,
+    (length) => crypto.randomBytes(length)
+  );
+  const envelope = await encryptNativePreparedWireEnvelope({
+    crypto,
+    pqc,
+    localIdentity,
+    peerIdentity,
+    conversation,
+    plaintext,
+    eventId: control.eventID,
+    canonicalSentAt,
+    bootstrap,
+    negotiated
+  });
+  return Object.freeze({ envelope, control, event: disposition.event });
+}
+
+async function encryptNativePreparedWireEnvelope({
+  crypto,
+  pqc,
+  localIdentity,
+  peerIdentity,
+  conversation,
+  plaintext,
+  eventId,
+  canonicalSentAt,
+  bootstrap,
+  negotiated
+}) {
+  let ownSigning;
+  let prepared;
   try {
+    await verifyRelationshipEndpointAuthorityV4({
+      crypto,
+      pqc,
+      authoritySigningPublicKey: peerIdentity.signingPublicKey,
+      endpointBinding: peerIdentity.endpointBinding
+    });
+    ownSigning = deserializeKeypair(
+      localIdentity.localEndpoint.signing,
+      {
+        publicKeyBytes: ML_DSA_PUBLIC_KEY_BYTES,
+        secretKeyBytes: ML_DSA_SECRET_KEY_BYTES,
+        label: "local endpoint signing keypair"
+      }
+    );
+    const candidateSendChain = cloneChain(conversation.sendChain);
+    prepared = await nextMessageKey(crypto, candidateSendChain);
+    const binding = negotiated.binding;
+    const envelopeHeader = {
+      version: 4,
+      id: swiftUUID(),
+      payloadFormat: "nw.wire-payload.v2",
+      conversationId: conversation.id,
+      sessionId: conversation.sessionId,
+      eventId,
+      senderEndpointHandle: conversation.endpointSession.localEndpointHandle,
+      senderBindingDigest: conversation.endpointSession.localBindingReferenceDigest,
+      recipientEndpointHandle: conversation.endpointSession.peerEndpointHandle,
+      recipientBindingDigest: conversation.endpointSession.peerBindingReferenceDigest,
+      cipherSuite: binding.cipherSuite,
+      negotiatedCapabilitiesDigest: binding.negotiatedCapabilitiesDigest,
+      bootstrap: validateDirectBootstrapV4(bootstrap),
+      sentAt: canonicalSentAt,
+      messageCounter: prepared.counter
+    };
+    const aad = directEnvelopeV4AuthenticatedDataBytes(envelopeHeader);
+    const nonce = crypto.randomBytes(12);
     const encrypted = await crypto.aesGcmEncrypt({
       key: prepared.key,
       nonce,
@@ -407,8 +508,8 @@ async function encryptNativeEnvelopePayload({
     commitChain(conversation.sendChain, candidateSendChain);
     return validateDirectEnvelopeV4(envelope);
   } finally {
-    wipeBytes(ownSigning.secretKey);
-    wipeBytes(prepared.key);
+    wipeBytes(ownSigning?.secretKey);
+    wipeBytes(prepared?.key);
     wipeBytes(plaintext);
   }
 }
@@ -420,7 +521,8 @@ export async function verifyNativeEnvelope({
   peerIdentity,
   conversation,
   envelope,
-  binding = null
+  binding = null,
+  observedAt = swiftISODate()
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
   validateDirectV4Conversation(conversation);
@@ -436,12 +538,11 @@ export async function verifyNativeEnvelope({
     envelope,
     binding: currentBinding
   });
-  await verifyRelationshipEndpointBindingV4({
+  await verifyRelationshipEndpointAuthorityV4({
     crypto,
     pqc,
     authoritySigningPublicKey: peerIdentity.signingPublicKey,
-    endpointBinding: peerIdentity.endpointBinding,
-    now: Date.parse(directEnvelope.sentAt)
+    endpointBinding: peerIdentity.endpointBinding
   });
   const signature = fromBase64(
     directEnvelope.signature,
@@ -470,18 +571,24 @@ export async function verifyNativeEnvelope({
 }
 
 export async function decryptNativeApplicationEnvelope(options) {
-  const decoded = await decryptNativeEnvelopePayload(options);
-  if (decoded.kind !== "application" && decoded.kind !== "receipt") {
-    throw new Error("Typed application decoding requires a direct-v4 envelope.");
-  }
-  return decoded;
+  return decryptNativeEnvelopePayload({ ...options, expectedWireKind: "application" });
+}
+
+export async function decryptNativeRelationshipControlEnvelope(options) {
+  return decryptNativeEnvelopePayload({ ...options, expectedWireKind: "control" });
+}
+
+// Runtime orchestration may accept either closed protocol branch, but callers
+// cannot inject controls through encryptNativeApplicationEnvelope.
+export async function decryptNativeProtocolEnvelope(options) {
+  return decryptNativeEnvelopePayload({ ...options, expectedWireKind: null });
 }
 
 // Text-oriented projection. Unknown visible application content becomes its
 // authenticated fallback; silent content is returned as `null` and must not
 // create a chat bubble.
 export async function decryptNativeEnvelope(options) {
-  const decoded = await decryptNativeEnvelopePayload(options);
+  const decoded = await decryptNativeApplicationEnvelope(options);
   if (decoded.projection.kind === "text") {
     return decoded.projection.text;
   }
@@ -496,7 +603,9 @@ async function decryptNativeEnvelopePayload({
   localIdentity,
   peerIdentity,
   conversation,
-  envelope
+  envelope,
+  receivedAt,
+  expectedWireKind = null
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
   const negotiated = await validateCurrentDirectV4Negotiation({
@@ -513,7 +622,8 @@ async function decryptNativeEnvelopePayload({
     peerIdentity,
     conversation,
     envelope,
-    binding: negotiated.binding
+    binding: negotiated.binding,
+    observedAt: receivedAt ?? swiftISODate()
   });
   const candidateReceiveChain = cloneChain(conversation.receiveChain);
   const key = await receiveMessageKey(
@@ -535,22 +645,51 @@ async function decryptNativeEnvelopePayload({
         directEnvelopeHeader(directEnvelope)
       )
     });
-    let decoded;
+    let wirePayload;
     try {
-      const event = decodePaddedDirectV4Application(plaintext, directEnvelope);
-      const projection = projectDirectV4Application(event);
-      validateNegotiatedApplicationLimits({
-        event,
-        paddedBytes: plaintext.byteLength,
-        negotiation
-      });
-      decoded = { kind: event.kind, event, projection };
+      wirePayload = decodePaddedDirectV4WirePayload(plaintext, directEnvelope);
     } catch (error) {
       throw new NoctweaveRemoteEnvelopeError(
         "unsupportedPayload",
         "The authenticated envelope contains an unsupported payload.",
         { cause: error }
       );
+    }
+    if (expectedWireKind !== null && wirePayload.kind !== expectedWireKind) {
+      throw new NoctweaveRemoteEnvelopeError(
+        "unsupportedPayload",
+        `The authenticated envelope is ${wirePayload.kind}, not ${expectedWireKind}.`
+      );
+    }
+    let decoded;
+    if (wirePayload.kind === "application") {
+      try {
+        const event = wirePayload.application;
+        const projection = projectDirectV4Application(event);
+        validateNegotiatedApplicationLimits({
+          event,
+          paddedBytes: plaintext.byteLength,
+          negotiation
+        });
+        decoded = { kind: event.kind, event, projection };
+      } catch (error) {
+        throw new NoctweaveRemoteEnvelopeError(
+          "unsupportedPayload",
+          "The authenticated envelope contains an unsupported application payload.",
+          { cause: error }
+        );
+      }
+    } else {
+      decoded = relationshipControlDispositionV2({
+        pqc,
+        wirePayload,
+        relationshipID: peerIdentity.relationshipID,
+        senderEndpointHandle: directEnvelope.senderEndpointHandle,
+        eventID: directEnvelope.eventId,
+        sentAt: directEnvelope.sentAt,
+        receivedAt: receivedAt ?? directEnvelope.sentAt,
+        senderSigningPublicKey: peerIdentity.endpointBinding.signingPublicKey
+      });
     }
     commitChain(conversation.receiveChain, candidateReceiveChain);
     return decoded;
@@ -825,6 +964,62 @@ function isCanonicalSwiftUUID(value) {
     /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(value);
 }
 
+/**
+ * Internal cross-language derivation surface. This is intentionally exported
+ * only from this implementation module and is not part of the package index.
+ * Production session creation consumes the same returned material as vectors.
+ */
+export async function deriveDirectV4RootSessionMaterial({
+  crypto,
+  sharedSecret,
+  binding
+}) {
+  const directBinding = directV4SessionBindingBytes(binding);
+  const negotiatedCapabilitiesDigest = fromBase64(
+    binding.negotiatedCapabilitiesDigest,
+    "direct-v4 negotiated capabilities digest",
+    32,
+    32
+  );
+  let rootInfo;
+  let rootKey;
+  let sessionTranscript;
+  let sessionDigest;
+  try {
+    rootInfo = concatBytes(
+      encoder.encode("Noctweave/direct-v4/root"),
+      encoder.encode(binding.relationshipId.toLowerCase()),
+      negotiatedCapabilitiesDigest
+    );
+    rootKey = await crypto.hkdfSha256({
+      ikm: sharedSecret,
+      salt: "NOCTWEAVE-ROOT",
+      info: rootInfo,
+      length: 32
+    });
+    sessionTranscript = concatBytes(
+      encoder.encode("NOCTWEAVE-SESSION"),
+      directBinding,
+      rootKey
+    );
+    sessionDigest = await crypto.sha256(sessionTranscript);
+    return {
+      rootInfo: new Uint8Array(rootInfo),
+      rootKey: new Uint8Array(rootKey),
+      sessionTranscript: new Uint8Array(sessionTranscript),
+      sessionDigest: new Uint8Array(sessionDigest),
+      sessionId: base64(sessionDigest)
+    };
+  } finally {
+    wipeBytes(negotiatedCapabilitiesDigest);
+    wipeBytes(rootInfo);
+    wipeBytes(rootKey);
+    wipeBytes(sessionTranscript);
+    wipeBytes(sessionDigest);
+    wipeBytes(directBinding);
+  }
+}
+
 async function conversationFromSharedSecret({
   crypto,
   sharedSecret,
@@ -839,45 +1034,28 @@ async function conversationFromSharedSecret({
       conversationId !== relationshipID.toLowerCase()) {
     throw new Error("A direct-v4 conversation binding is required.");
   }
-  const directBinding = directV4SessionBindingBytes(binding);
-  const rootInfo = concatBytes(
-    encoder.encode("Noctweave/direct-v4/root"),
-    encoder.encode(binding.relationshipId.toLowerCase()),
-    fromBase64(
-      binding.negotiatedCapabilitiesDigest,
-      "direct-v4 negotiated capabilities digest",
-      32,
-      32
-    )
-  );
-  const rootKey = await crypto.hkdfSha256({
-    ikm: sharedSecret,
-    salt: "NOCTWEAVE-ROOT",
-    info: rootInfo,
-    length: 32
-  });
+  const derived = await deriveDirectV4RootSessionMaterial({ crypto, sharedSecret, binding });
+  const rootKey = derived.rootKey;
   const [sendLabel, receiveLabel] = labelsForAgreement(ownAgreementPublicKey, peerAgreementPublicKey);
-  const sendKey = await crypto.hkdfSha256({
-    ikm: rootKey,
-    salt: "NOCTWEAVE-CHAIN",
-    info: sendLabel,
-    length: 32
-  });
-  const receiveKey = await crypto.hkdfSha256({
-    ikm: rootKey,
-    salt: "NOCTWEAVE-CHAIN",
-    info: receiveLabel,
-    length: 32
-  });
-  let sessionMaterial;
-  let sessionHash;
+  let sendKey;
+  let receiveKey;
   try {
-    sessionMaterial = concatBytes(encoder.encode("NOCTWEAVE-SESSION"), directBinding, rootKey);
-    sessionHash = await crypto.sha256(sessionMaterial);
+    sendKey = await crypto.hkdfSha256({
+      ikm: rootKey,
+      salt: "NOCTWEAVE-CHAIN",
+      info: sendLabel,
+      length: 32
+    });
+    receiveKey = await crypto.hkdfSha256({
+      ikm: rootKey,
+      salt: "NOCTWEAVE-CHAIN",
+      info: receiveLabel,
+      length: 32
+    });
     const conversation = {
       id: conversationId,
       relationshipID,
-      sessionId: base64(sessionHash),
+      sessionId: derived.sessionId,
       rootKey: base64(rootKey),
       sendChain: serializeChain(sendKey),
       receiveChain: serializeChain(receiveKey)
@@ -888,10 +1066,9 @@ async function conversationFromSharedSecret({
     wipeBytes(rootKey);
     wipeBytes(sendKey);
     wipeBytes(receiveKey);
-    wipeBytes(sessionMaterial);
-    wipeBytes(sessionHash);
-    wipeBytes(rootInfo);
-    wipeBytes(directBinding);
+    wipeBytes(derived.rootInfo);
+    wipeBytes(derived.sessionTranscript);
+    wipeBytes(derived.sessionDigest);
   }
 }
 
@@ -979,10 +1156,17 @@ function encodePaddedBody(body, magic, randomBytes) {
   }
 }
 
-function decodePaddedDirectV4Application(data, envelope) {
+function decodePaddedDirectV4WirePayload(data, envelope) {
   const body = validateWirePayloadV2(decodePaddedBody(data, NPAD_V2_MAGIC));
-  if (body.kind !== "application") {
-    throw new Error("Direct-v4 control and application payloads are separated.");
+  if (body.kind === "control") {
+    const control = body.control;
+    if (control.eventID !== envelope.eventId ||
+        control.relationshipID.toLowerCase() !== envelope.conversationId ||
+        control.senderEndpointHandle.rawValue !== envelope.senderEndpointHandle.rawValue ||
+        control.issuedAt !== envelope.sentAt) {
+      throw new Error("Direct-v4 control payload does not match its authenticated envelope header.");
+    }
+    return body;
   }
   const event = validateConversationEvent(body.application);
   if (event.id !== envelope.eventId ||
@@ -992,7 +1176,7 @@ function decodePaddedDirectV4Application(data, envelope) {
       (event.kind !== "application" && event.kind !== "receipt")) {
     throw new Error("Direct-v4 wire payload does not match its authenticated envelope header.");
   }
-  return event;
+  return body;
 }
 
 function projectDirectV4Application(event) {
@@ -1294,10 +1478,14 @@ function fromBase64(value, label = "base64 value", maximumBytes = 128 * 1024, ex
   return output;
 }
 
-function concatBytes(a, b) {
-  const output = new Uint8Array(a.byteLength + b.byteLength);
-  output.set(a, 0);
-  output.set(b, a.byteLength);
+function concatBytes(...values) {
+  const output = new Uint8Array(values.reduce((total, value) =>
+    total + value.byteLength, 0));
+  let offset = 0;
+  for (const value of values) {
+    output.set(value, offset);
+    offset += value.byteLength;
+  }
   return output;
 }
 

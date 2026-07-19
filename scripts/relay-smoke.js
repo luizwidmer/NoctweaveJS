@@ -73,7 +73,10 @@ const bundle = await sealOpaqueRouteBundleV2({
   routeRevision: 0,
   paddingBucket: lease.policy.paddingBucket,
   payloadKey,
-  routeCapabilities: capabilities,
+  sendAuthority: {
+    routeID: capabilities.routeID,
+    sendCapability: capabilities.sendCapability
+  },
   authorizedAt: createdAtValue
 });
 for (const packet of bundle.packets) {

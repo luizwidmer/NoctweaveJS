@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoctweaveJS Pairwise Example</title>
   <link rel="icon" href="./assets/noctweave-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="../../client/styles.css">
 </head>
 <body>
   <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
@@ -13,30 +13,101 @@
       <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
       <p class="eyebrow">Encrypted local persona</p>
       <h1 id="vaultTitle">Open Noctweave</h1>
-      <p>A persona is only a local label. Every relationship receives fresh post-quantum keys and an opaque route.</p>
-      <label for="displayName">Local display name</label><input id="displayName" maxlength="128" value="Anonymous">
-      <label for="vaultPassphrase">Persona passphrase</label><input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
-      <div id="vaultConfirmationRow"><label for="vaultConfirmation">Repeat passphrase</label><input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024"></div>
+      <p>A persona is only a local label. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.</p>
+      <label for="displayName">Local display name</label>
+      <input id="displayName" maxlength="128" value="Anonymous">
+      <label for="vaultPassphrase">Persona passphrase</label>
+      <input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+      <div id="vaultConfirmationRow">
+        <label for="vaultConfirmation">Repeat passphrase</label>
+        <input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024">
+      </div>
       <p class="fieldHint">Use at least 12 characters. There is no account recovery or identity linkage.</p>
-      <div class="vaultActions"><button id="unlockVault" class="primaryWide">Create encrypted persona</button><button id="forgetVault" class="subtle danger" hidden>Delete local persona</button></div>
+      <div class="vaultActions">
+        <button id="unlockVault" class="primaryWide">Create encrypted persona</button>
+        <button id="forgetVault" class="subtle danger" hidden>Delete local persona</button>
+      </div>
       <p class="vaultError" id="vaultError" role="alert"></p>
     </div>
   </section>
 
   <main class="shell" id="appShell" hidden inert>
-    <section class="hero"><div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div><p class="eyebrow">Integration shell</p><h1>Pairwise Protocol Shell</h1><p>One-use rendezvous pairing without accounts or reusable public identities.</p></div></div><div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button></div></section>
+    <section class="hero">
+      <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
+        <p class="eyebrow">NoctweaveJS 1.0 base</p>
+        <h1>Pairwise Protocol Shell</h1>
+        <p>One-use rendezvous pairing without accounts, reusable identities, or public addresses.</p>
+      </div></div>
+      <div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button><button id="burnProfile" class="danger">Burn local persona</button></div>
+    </section>
+
     <section class="workspace">
       <aside class="sideRail">
-        <section class="panel compact"><p class="eyebrow">Local persona</p><h2 id="personaName"></h2><dl class="identityDetails"><dt>Pairwise relationships</dt><dd id="relationshipCount">0</dd></dl><p class="info">This label has no protocol key or routable identifier.</p></section>
-        <section class="panel compact"><p class="eyebrow">Opaque delivery</p><h2>Relay</h2><label for="relay">Relay URL</label><input id="relay" value="http://127.0.0.1:9340" spellcheck="false"><button id="verifyRelay">Verify opaque-route support</button><div id="relayInfo" class="info">Not checked yet.</div></section>
+        <section class="panel compact">
+          <p class="eyebrow">Local persona</p>
+          <h2 id="personaName"></h2>
+          <dl class="identityDetails"><dt>Pairwise relationships</dt><dd id="relationshipCount">0</dd></dl>
+          <p class="info">This label has no protocol key or routable identifier. It never leaves this encrypted vault.</p>
+        </section>
+
+        <section class="panel compact">
+          <p class="eyebrow">Opaque delivery</p>
+          <h2>Relay</h2>
+          <label for="relay">Relay URL</label>
+          <input id="relay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url">
+          <button id="verifyRelay">Verify route and pairing transport</button>
+          <div id="relayInfo" class="info">Not checked yet.</div>
+        </section>
       </aside>
+
       <section class="chatPanel">
-        <div class="chatHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh rendezvous invitation</h2></div></div>
-        <div class="panel compact"><p>Invitations expire after ten minutes and can be redeemed once.</p><div class="buttonRow"><button id="createInvitation">Create fresh invitation</button><button id="copyInvitation" class="subtle">Copy</button></div><textarea id="pairingInvitation" rows="8" readonly></textarea><label for="peerInvitation">Inspect a received invitation</label><textarea id="peerInvitation" rows="8" placeholder="Paste a one-use invitation"></textarea><button id="inspectInvitation">Validate invitation</button><p id="invitationResult" class="info">No reusable public relationship material is generated.</p></div>
-        <div class="panel compact"><p class="eyebrow">Established relationships</p><div id="relationshipList" class="contactList">No completed pairwise relationships yet.</div></div>
+        <div class="chatHeader"><div><p class="eyebrow">Durable pairwise messaging</p><h2>Encrypted relationship workspace</h2></div></div>
+        <div class="panel messagingPanel">
+          <div class="messageHeader">
+            <div><p class="eyebrow">Selected relationship</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>
+            <div class="buttonRow"><button id="syncMessages" class="subtle" disabled>Sync</button><button id="resumeOutbox" class="subtle" disabled>Retry outbox</button><button id="retryRouteTeardown" class="danger" hidden disabled>Retry route teardown</button><button id="muteRelationship" class="subtle" disabled>Mute 8 hours</button></div>
+          </div>
+          <p id="selectedRelationshipState" class="relationshipState" role="status">Complete a fresh pairing to begin messaging.</p>
+          <p class="fieldHint">Durable messaging requires an embedding host with an authenticated, atomic relationship-local monotonic anchor. Ordinary browser storage is not hardware rollback-resistant.</p>
+          <div class="relationshipControls">
+            <label for="relationshipConsent">Local consent<select id="relationshipConsent" disabled><option value="accepted">Accepted</option><option value="pendingRequest">Message request</option><option value="blocked">Block and tear down</option></select></label>
+            <label class="checkControl"><input id="deliveryReceiptsEnabled" type="checkbox" disabled>Permit delivery receipts</label>
+            <label class="checkControl"><input id="readReceiptsEnabled" type="checkbox" disabled>Permit read receipts</label>
+          </div>
+          <div class="safetyNumber"><span>Relationship safety number</span><code id="safetyNumber">Unavailable until a relationship is selected.</code><small>Compare out of band. This number is unique to this disposable relationship, not to a persona.</small></div>
+          <div id="messageList" class="messageList" aria-live="polite">Select a relationship to view its encrypted local history.</div>
+          <label for="messageText">Message</label>
+          <textarea id="messageText" rows="4" maxlength="16384" placeholder="Write inside this pairwise relationship" disabled></textarea>
+          <div class="messageComposerActions"><button id="sendMessage" disabled>Encrypt and send</button><label class="disabledFile" for="attachmentFile">Attach file<input id="attachmentFile" type="file" disabled></label></div>
+          <p id="attachmentStatus" class="fieldHint">Encrypted attachment upload is not yet exposed by the durable browser runtime.</p>
+          <p id="outboxStatus" class="info" role="status">Select a relationship to begin.</p>
+        </div>
+        <div class="chatHeader secondaryHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh relationship rendezvous</h2></div></div>
+        <div class="panel compact">
+          <p>Each invitation is ephemeral, expires after ten minutes, and can be redeemed once. Relationship keys and route capabilities are created fresh behind the encrypted rendezvous.</p>
+          <label for="relationshipPseudonym">Relationship-scoped name</label>
+          <input id="relationshipPseudonym" maxlength="128" value="Noctweave peer">
+          <p class="fieldHint">This name is encrypted inside this relationship only. Your local persona label is never reused.</p>
+          <div class="buttonRow"><button id="createInvitation">Create fresh invitation</button><button id="copyInvitation" class="subtle">Copy</button></div>
+          <textarea id="pairingInvitation" rows="8" readonly placeholder="Create a fresh invitation when you are ready to share it."></textarea>
+          <label for="peerInvitation">Accept a received invitation</label>
+          <textarea id="peerInvitation" rows="8" placeholder="Paste a one-use invitation"></textarea>
+          <div class="buttonRow"><button id="inspectInvitation" class="subtle">Validate invitation</button><button id="acceptInvitation">Accept and start pairing</button></div>
+          <p id="invitationResult" class="info">No reusable public relationship material is generated.</p>
+        </div>
+        <div class="panel compact">
+          <div class="pairingHeader"><div><p class="eyebrow">Crash-resumable rendezvous</p><h3>Pending pairings</h3></div><button id="resumePairings" class="subtle">Resume all</button></div>
+          <p id="pairingStatus" class="info" role="status">No pending rendezvous.</p>
+          <div id="pendingPairingList" class="pendingPairingList">No pending rendezvous.</div>
+        </div>
+        <div class="panel compact">
+          <p class="eyebrow">Established relationships</p>
+          <div id="relationshipList" class="contactList">No completed pairwise relationships yet.</div>
+        </div>
       </section>
     </section>
   </main>
+
   <script type="module" src="./app.js"></script>
 </body>
 </html>

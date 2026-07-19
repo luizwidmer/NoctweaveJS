@@ -18,6 +18,7 @@ const DIGEST_BYTES = 32;
 const PREKEY_MAX_AGE_MS = 8 * 86_400_000;
 const PREKEY_FUTURE_SKEW_MS = 5 * 60_000;
 const PREKEY_RENEWAL_LEAD_MS = 2 * 86_400_000;
+const PREKEY_INBOUND_RETENTION_MS = 7 * 86_400_000 + PREKEY_FUTURE_SKEW_MS;
 const MAX_RETIRED_SIGNED_PREKEYS = 4;
 
 export const nativeDirectV4 = Object.freeze({
@@ -170,7 +171,8 @@ export async function renewPairwiseDirectV4PrekeyIfNeeded({
     ? prekeys.retiredSignedPrekeys
     : [];
   prekeys.retiredSignedPrekeys = retired.filter((record) =>
-    Number.isFinite(Date.parse(record?.expiresAt)) && Date.parse(record.expiresAt) > nowMs
+    Number.isFinite(Date.parse(record?.expiresAt)) &&
+      Date.parse(record.expiresAt) + PREKEY_INBOUND_RETENTION_MS > nowMs
   );
   if (prekeys.retiredSignedPrekeys.length > MAX_RETIRED_SIGNED_PREKEYS) {
     throw new Error("Direct-v4 retained signed-prekey state exceeds its bound.");
@@ -180,7 +182,7 @@ export async function renewPairwiseDirectV4PrekeyIfNeeded({
   const currentExpiryMs = Date.parse(prekeys.signedPrekeyExpiresAt);
   if (!Number.isFinite(currentExpiryMs)) throw new Error("Direct-v4 signed-prekey expiry is invalid.");
   if (currentExpiryMs > nowMs + PREKEY_RENEWAL_LEAD_MS) return false;
-  if (nowMs < currentExpiryMs) {
+  if (currentExpiryMs + PREKEY_INBOUND_RETENTION_MS > nowMs) {
     if (prekeys.retiredSignedPrekeys.length >= MAX_RETIRED_SIGNED_PREKEYS) {
       throw new Error("Direct-v4 retained signed-prekey capacity is exhausted.");
     }
@@ -216,11 +218,51 @@ export async function verifyRelationshipEndpointBindingV4({
   endpointBinding,
   now = Date.now()
 }) {
+  return verifyRelationshipEndpointBindingAuthorityV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey,
+    endpointBinding,
+    validationTime: now
+  });
+}
+
+/**
+ * Verifies durable endpoint authority without treating signed-prekey expiry as
+ * endpoint revocation. Callers establishing a new KEM bootstrap must use
+ * verifyRelationshipEndpointBindingV4 above with the authenticated send time.
+ */
+export async function verifyRelationshipEndpointAuthorityV4({
+  crypto,
+  pqc,
+  authoritySigningPublicKey,
+  endpointBinding
+}) {
+  const createdAt = Date.parse(endpointBinding?.prekeyBundle?.createdAt);
+  if (!Number.isFinite(createdAt)) {
+    throw new Error("Relationship endpoint prekey creation time is invalid.");
+  }
+  return verifyRelationshipEndpointBindingAuthorityV4({
+    crypto,
+    pqc,
+    authoritySigningPublicKey,
+    endpointBinding,
+    validationTime: createdAt
+  });
+}
+
+async function verifyRelationshipEndpointBindingAuthorityV4({
+  crypto,
+  pqc,
+  authoritySigningPublicKey,
+  endpointBinding,
+  validationTime
+}) {
   if (typeof crypto?.sha256 !== "function" || typeof pqc?.verify !== "function") {
     throw new TypeError("Relationship endpoint verification requires SHA-256 and ML-DSA verification.");
   }
   decodeBase64(authoritySigningPublicKey, "relationship authority signing key", ML_DSA_PUBLIC_KEY_BYTES);
-  const binding = validateRelationshipEndpointBindingV4(endpointBinding, now);
+  const binding = validateRelationshipEndpointBindingV4(endpointBinding, validationTime);
   verifyCanonical(
     pqc,
     endpointAuthorityPayload(binding),

@@ -41,7 +41,8 @@ import {
   validatePairwiseRouteSetV2,
   verifyRelationshipEndpointBindingV4,
   verifyContactIntroductionV2,
-  verifyPairwiseRouteSetV2
+  verifyPairwiseRouteSetV2,
+  verifyPairwiseRouteSetV2Throwing
 } from "../src/index.js";
 
 const issuedAt = "2026-07-16T12:00:00Z";
@@ -129,7 +130,10 @@ test("local receive routes persist verified sequence and record-digest continuit
     routeRevision: 0,
     paddingBucket: 4_096,
     payloadKey: raw.payloadKey,
-    routeCapabilities: raw.clientCapabilities,
+    sendAuthority: {
+      routeID: raw.clientCapabilities.routeID,
+      sendCapability: raw.clientCapabilities.sendCapability
+    },
     authorizedAt: issuedAt
   });
   const packet = bundle.packets[0];
@@ -206,7 +210,10 @@ test("opaque route sync rejects omitted, reordered, and digest-substituted recor
     routeRevision: 0,
     paddingBucket: 4_096,
     payloadKey: raw.payloadKey,
-    routeCapabilities: raw.clientCapabilities,
+    sendAuthority: {
+      routeID: raw.clientCapabilities.routeID,
+      sendCapability: raw.clientCapabilities.sendCapability
+    },
     authorizedAt: issuedAt
   });
   const packet = bundle.packets[0];
@@ -523,6 +530,17 @@ test("pairwise route sets enforce signed make-before-break replacement", async (
     routeSet: initial,
     ownerSigningPublicKey: keys.ownerSigningPublicKey
   }), true);
+  const unavailablePQC = { verify: () => { throw new Error("PQC runtime unavailable"); } };
+  assert.throws(() => verifyPairwiseRouteSetV2Throwing({
+    pqc: unavailablePQC,
+    routeSet: initial,
+    ownerSigningPublicKey: keys.ownerSigningPublicKey
+  }), /PQC runtime unavailable/);
+  assert.equal(verifyPairwiseRouteSetV2({
+    pqc: unavailablePQC,
+    routeSet: initial,
+    ownerSigningPublicKey: keys.ownerSigningPublicKey
+  }), false);
   assert.equal(Object.hasOwn(JSON.parse(new TextDecoder().decode(
     pairwiseRouteSetV2SignableBytes(initial)
   )), "previousDigest"), false);
