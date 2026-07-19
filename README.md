@@ -12,6 +12,20 @@ persona is only a local UI/storage label. Every contact pairing creates fresh
 ML-DSA, ML-KEM, endpoint, prekey, payload-key, and route material scoped to
 that one relationship.
 
+## Screenshots
+
+### Client workspace
+
+![NoctweaveJS client workspace](docs/screenshots/client-overview.png)
+
+### Encrypted persona setup
+
+![NoctweaveJS encrypted persona setup](docs/screenshots/persona-setup.png)
+
+The workspace requires a conforming host that supplies rollback-protected
+state authority. The browser entry surface fails closed when that boundary is
+unavailable.
+
 ## Clone and verify
 
 ```sh
