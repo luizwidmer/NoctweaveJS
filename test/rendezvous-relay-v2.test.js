@@ -19,7 +19,7 @@ import {
 } from "../src/index.js";
 
 const vectors = JSON.parse(readFileSync(
-  new URL("../../NoctweaveDocumentation/test_vectors/rendezvous_opaque_v2.json", import.meta.url),
+  new URL("./fixtures/protocol/rendezvous_opaque_v2.json", import.meta.url),
   "utf8"
 ));
 const offerVector = vectors.rendezvousOffer;

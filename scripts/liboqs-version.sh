@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+LIBOQS_VERSION="0.16.0"
+LIBOQS_COMMIT="5a1a854b0dc9f2141bdc771c555ee60c37950183"

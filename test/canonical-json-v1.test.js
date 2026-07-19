@@ -5,7 +5,7 @@ import { canonicalJson } from "../src/crypto/swift-canonical.js";
 import { parseExactJSON } from "../src/strict-json.js";
 
 const vectors = JSON.parse(await readFile(
-  new URL("../../NoctweaveDocumentation/test_vectors/canonical_json_v1.json", import.meta.url),
+  new URL("./fixtures/protocol/canonical_json_v1.json", import.meta.url),
   "utf8"
 ));
 

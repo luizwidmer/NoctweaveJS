@@ -5,3 +5,9 @@ Licensed under the Apache License, Version 2.0. See LICENSE for the complete
 terms.
 
 Third-party components retain their own copyright and license notices.
+
+Files under examples/ are licensed under the MIT License. See examples/LICENSE.
+
+Shared protocol vectors under test/fixtures/protocol/ originate from the
+Noctweave protocol documentation and retain the CC-BY-SA-4.0 notice in that
+directory.

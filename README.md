@@ -1,5 +1,7 @@
 # NoctweaveJS
 
+[![CI](https://github.com/luizwidmer/NoctweaveJS/actions/workflows/ci.yml/badge.svg)](https://github.com/luizwidmer/NoctweaveJS/actions/workflows/ci.yml)
+
 NoctweaveJS is the JavaScript implementation of the Noctweave 1.0 protocol
 base. It provides bounded HTTP/WebSocket relay access, post-quantum pairwise
 contact establishment, direct-message cryptography, opaque route packets, and
@@ -10,20 +12,31 @@ persona is only a local UI/storage label. Every contact pairing creates fresh
 ML-DSA, ML-KEM, endpoint, prekey, payload-key, and route material scoped to
 that one relationship.
 
-## Install and verify
+## Clone and verify
 
 ```sh
-npm install
+git clone https://github.com/luizwidmer/NoctweaveJS.git
+cd NoctweaveJS
+bun install --frozen-lockfile
 npm test
 npm run typecheck:desktop
 ```
 
+Node.js 20 or later and Bun 1.3 or later are supported. `npm install` can be
+used for local development, but the checked-in Bun lockfile is the reproducible
+dependency source used by CI.
+
 The checked-in liboqs WASM artifact is the reference post-quantum runtime. To
-rebuild it, provide an Emscripten toolchain and run:
+rebuild it, provide Emscripten 6.0.1 and a liboqs checkout at the pinned commit,
+then run:
 
 ```sh
+git clone https://github.com/open-quantum-safe/liboqs.git vendor/liboqs
+git -C vendor/liboqs checkout 5a1a854b0dc9f2141bdc771c555ee60c37950183
 npm run build:oqs-wasm
 ```
+
+Set `NOCTWEAVE_LIBOQS_DIR` when the pinned liboqs checkout lives elsewhere.
 
 ## Relay client
 
@@ -321,7 +334,7 @@ Web Storage, or IndexedDB HMAC stored beside its ciphertext is not accepted as
 rollback resistance.
 
 Swift and JavaScript freeze the direct-v4 root/session KDF in
-`NoctweaveDocumentation/test_vectors/direct_v4_root_session_v1.json`. The JS
+`test/fixtures/protocol/direct_v4_root_session_v1.json`. The JS
 test imports the implementation module directly; the derivation helper is
 intentionally absent from the package's public index.
 
@@ -372,3 +385,15 @@ const repository = new NoctweaveStateRepository(encrypted);
 
 Noctweave relays route and retain ciphertext. They are not plaintext processors,
 key escrow services, identity providers, or required notification providers.
+
+## Related repositories
+
+- [Noctweave](https://github.com/luizwidmer/Noctweave) — protocol specification, Swift core, CLI, and relay server
+- [Noctweave protocol documentation](https://github.com/luizwidmer/Noctweave/tree/main/NoctweaveDocumentation)
+
+## License
+
+The main project is licensed under Apache-2.0. Browser examples under
+`examples/` are MIT licensed. Shared protocol test vectors under
+`test/fixtures/protocol/` retain their CC-BY-SA-4.0 notice. See the nearest
+`LICENSE` file and [NOTICE](NOTICE).

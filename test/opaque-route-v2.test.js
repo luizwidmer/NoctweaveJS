@@ -25,7 +25,7 @@ import { WebCryptoPrimitives } from "../src/crypto/webcrypto.js";
 import { base64, canonicalJson } from "../src/crypto/swift-canonical.js";
 
 const vectors = JSON.parse(readFileSync(
-  new URL("../../NoctweaveDocumentation/test_vectors/rendezvous_opaque_v2.json", import.meta.url),
+  new URL("./fixtures/protocol/rendezvous_opaque_v2.json", import.meta.url),
   "utf8"
 ));
 const routeVector = vectors.opaqueRouteCreate;

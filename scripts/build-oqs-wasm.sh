@@ -13,18 +13,18 @@ command -v emcc >/dev/null 2>&1 || {
   exit 1
 }
 
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-JS_DIR="$ROOT_DIR/NoctweaveJS"
-LIBOQS_DIR="$ROOT_DIR/NoctweaveCore/liboqs"
+JS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LIBOQS_DIR="${NOCTWEAVE_LIBOQS_DIR:-$JS_DIR/vendor/liboqs}"
 BUILD_DIR="$JS_DIR/wasm/build"
 INSTALL_DIR="$BUILD_DIR/liboqs-install"
 DIST_DIR="$JS_DIR/wasm/dist"
-source "$ROOT_DIR/scripts/liboqs-version.sh"
+source "$JS_DIR/scripts/liboqs-version.sh"
 EXPECTED_LIBOQS_COMMIT="$LIBOQS_COMMIT"
 EXPECTED_EMSCRIPTEN_VERSION="6.0.1"
 
 if [ ! -d "$LIBOQS_DIR/.git" ]; then
   echo "Pinned liboqs checkout is missing at $LIBOQS_DIR." >&2
+  echo "Clone liboqs there or set NOCTWEAVE_LIBOQS_DIR to its checkout." >&2
   exit 1
 fi
 

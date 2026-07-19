@@ -8,7 +8,7 @@ import { WebCryptoPrimitives } from "../src/crypto/webcrypto.js";
 import * as publicAPI from "../src/index.js";
 
 const fixtureURL = new URL(
-  "../../NoctweaveDocumentation/test_vectors/direct_v4_root_session_v1.json",
+  "./fixtures/protocol/direct_v4_root_session_v1.json",
   import.meta.url
 );
 

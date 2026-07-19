@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+artifacts/
+build/
+coverage/
+wasm/build/
+vendor/liboqs/
+*.log
+.env
+.env.*
+!.env.example
+

@@ -2,6 +2,14 @@
   "name": "@noctweave/js-client",
   "version": "0.1.0",
   "description": "Noctweave JavaScript protocol library, encrypted storage adapters, and browser integration shell.",
+  "homepage": "https://github.com/luizwidmer/NoctweaveJS#readme",
+  "bugs": {
+    "url": "https://github.com/luizwidmer/NoctweaveJS/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luizwidmer/NoctweaveJS.git"
+  },
   "type": "module",
   "main": "./src/index.js",
   "exports": {

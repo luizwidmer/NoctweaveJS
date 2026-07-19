@@ -32,7 +32,7 @@ const authorizedAt = "2026-07-16T12:00:00Z";
 
 test("frozen Swift packet vector matches the JavaScript codec", async () => {
   const vector = JSON.parse(await readFile(new URL(
-    "../../NoctweaveDocumentation/test_vectors/opaque_route_packet_v2.json",
+    "./fixtures/protocol/opaque_route_packet_v2.json",
     import.meta.url
   ), "utf8"));
   const crypto = testCrypto();

@@ -1,0 +1,56 @@
+{
+  "profile": "ncj-1",
+  "canonicalCases": [
+    {
+      "name": "normalized strings, minimal escapes, and unordered input",
+      "input": " { \"z\" : \"a\\/b\", \"e\\u0301\" : \"e\\u0301\", \"a\" : [3, true, null] } ",
+      "canonical": "{\"a\":[3,true,null],\"z\":\"a/b\",\"é\":\"é\"}"
+    },
+    {
+      "name": "keys are ordered by normalized UTF-8 bytes",
+      "input": "{\"𐀀\":2,\"\":1}",
+      "canonical": "{\"\":1,\"𐀀\":2}"
+    },
+    {
+      "name": "control characters use the NCJ-1 minimal escapes",
+      "input": "[\"\\u0001\\b\\t\\n\\f\\r\\\"\\\\/\"]",
+      "canonical": "[\"\\u0001\\b\\t\\n\\f\\r\\\"\\\\/\"]"
+    },
+    {
+      "name": "interoperable safe integer boundaries remain decimal integers",
+      "input": "[9007199254740991,-9007199254740991,0]",
+      "canonical": "[9007199254740991,-9007199254740991,0]"
+    },
+    {
+      "name": "top-level fragments are permitted",
+      "input": " \"e\\u0301/a\" ",
+      "canonical": "\"é/a\""
+    }
+  ],
+  "rejectedCases": [
+    {
+      "name": "floating point numbers are outside the protocol data model",
+      "input": "{\"value\":1.5}"
+    },
+    {
+      "name": "exponent spellings are outside the protocol data model",
+      "input": "{\"value\":1e3}"
+    },
+    {
+      "name": "negative zero is not a canonical integer",
+      "input": "{\"value\":-0}"
+    },
+    {
+      "name": "integers beyond the interoperable safe range are rejected",
+      "input": "{\"value\":9007199254740992}"
+    },
+    {
+      "name": "keys that collide after NFC normalization are rejected",
+      "input": "{\"e\\u0301\":1,\"\\u00e9\":2}"
+    },
+    {
+      "name": "duplicate object keys are rejected before canonicalization",
+      "input": "{\"a\":1,\"a\":2}"
+    }
+  ]
+}
