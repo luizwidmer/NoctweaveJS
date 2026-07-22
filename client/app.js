@@ -15,6 +15,12 @@ import {
   validateBrowserPersonaState
 } from "../src/index.js";
 import {
+  browserRollbackResistanceWarning,
+  browserSecurityStorageCapabilityV2,
+  browserSecurityStorageProfileV2,
+  createIndexedDBBrowserAnchorStoreFactoryV2
+} from "./browser-security-profile.js";
+import {
   HostAnchoredBrowserApplicationVaultV2,
   NoctweaveBrowserMessagingServiceV2,
   browserMessagingAttachmentBlocker,
@@ -36,6 +42,10 @@ const state = {
   selectedRelationshipID: null,
   messageSnapshot: null,
   messageSyncStatus: "Select a relationship to begin.",
+  securityProfile: null,
+  anchorFactory: null,
+  relayVerifiedEndpoint: null,
+  relayVerifiedSummary: null,
   safetyNumber: null,
   pairingBusy: new Set(),
   messageBusy: false,
@@ -54,6 +64,10 @@ const elements = {
   unlock: $("#unlockVault"),
   forget: $("#forgetVault"),
   error: $("#vaultError"),
+  securityAcknowledgment: $("#securityAcknowledgment"),
+  onboardingRelay: $("#onboardingRelay"),
+  onboardingRelayCheck: $("#onboardingRelayCheck"),
+  onboardingRelayInfo: $("#onboardingRelayInfo"),
   displayName: $("#displayName"),
   relay: $("#relay"),
   relayInfo: $("#relayInfo"),
@@ -87,6 +101,7 @@ const elements = {
 
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
 elements.forget.addEventListener("click", () => run(forgetVault));
+elements.onboardingRelayCheck.addEventListener("click", () => run(verifyOnboardingRelay));
 $("#verifyRelay").addEventListener("click", () => run(verifyRelay));
 $("#createInvitation").addEventListener("click", () => run(createInvitation));
 $("#copyInvitation").addEventListener("click", () => run(copyInvitation));
@@ -122,19 +137,46 @@ async function boot() {
       crypto: state.crypto,
       relayClientFactory: makeRelayClient
     });
-    const anchorFactory = typeof globalThis.noctweaveRelationshipStateAnchorStoreFactory ===
+    const desktopAnchorFactory = typeof globalThis.noctweaveRelationshipStateAnchorStoreFactory ===
       "function"
       ? globalThis.noctweaveRelationshipStateAnchorStoreFactory
       : null;
-    if (anchorFactory !== null) {
+    const desktopMode = document.documentElement.dataset.runtime === "desktop";
+    if (desktopAnchorFactory !== null) {
+      state.anchorFactory = desktopAnchorFactory;
+      state.securityProfile = globalThis.noctweaveDesktopAnchorCapability ?? {
+        id: "electrobun-host-anchor-v3",
+        label: "Electrobun hardened host anchor",
+        hardwareRollbackResistance: true,
+        warning: null,
+        available: true,
+        reason: null
+      };
       state.vault = new HostAnchoredBrowserApplicationVaultV2({
         crypto: state.crypto,
         storageCrypto: globalThis.crypto,
-        stateAnchorStoreFactory: anchorFactory
+        stateAnchorStoreFactory: state.anchorFactory
       });
       state.vaultStatus = (await state.vault.inspect()).status;
+    } else if (!desktopMode) {
+      state.securityProfile = browserSecurityStorageCapabilityV2();
+      state.anchorFactory = createIndexedDBBrowserAnchorStoreFactoryV2();
+      if (state.anchorFactory !== null) {
+        state.vault = new HostAnchoredBrowserApplicationVaultV2({
+          crypto: state.crypto,
+          storageCrypto: globalThis.crypto,
+          stateAnchorStoreFactory: state.anchorFactory
+        });
+        state.vaultStatus = (await state.vault.inspect()).status;
+      } else {
+        state.messageSyncStatus = state.securityProfile.reason;
+      }
     } else {
-      state.messageSyncStatus = browserRollbackAnchorRequirement;
+      state.securityProfile = globalThis.noctweaveDesktopAnchorCapability ?? {
+        available: false,
+        reason: "The hardened Electrobun host anchor is unavailable on this platform."
+      };
+      state.messageSyncStatus = state.securityProfile.reason;
     }
     renderGate();
   });
@@ -177,10 +219,24 @@ function renderGate() {
     : existing ? "Unlock encrypted persona" : "Create encrypted persona";
   elements.forget.hidden = !existing;
   elements.error.textContent = "";
+  const profile = state.securityProfile ?? browserSecurityStorageProfileV2;
+  const available = profile.available !== false && state.vault !== null;
+  elements.unlock.disabled = !available;
+  elements.onboardingRelayCheck.disabled = !available;
+  elements.securityAcknowledgment.disabled = !available;
+  elements.onboardingRelayInfo.textContent = available
+    ? `${profile.label ?? "Storage profile"}. ${profile.warning ?? browserRollbackResistanceWarning}`
+    : profile.reason ?? browserRollbackAnchorRequirement;
 }
 
 async function createVault() {
   if (state.vault === null) throw new Error(browserRollbackAnchorRequirement);
+  if (!elements.securityAcknowledgment.checked) {
+    throw new Error("Acknowledge the selected storage/security profile before creating a persona.");
+  }
+  if (state.relayVerifiedEndpoint === null) {
+    throw new Error("Verify the relay connection before creating a persona.");
+  }
   const passphrase = validatePassphrase();
   if (passphrase !== elements.confirmation.value) throw new Error("Passphrases do not match.");
   const displayName = elements.displayName.value.trim();
@@ -189,6 +245,8 @@ async function createVault() {
       passphrase,
       persona: state.pairing.createPersona({ displayName })
     });
+    elements.relay.value = state.relayVerifiedEndpoint;
+    elements.relayInfo.textContent = state.relayVerifiedSummary ?? "Relay verified during onboarding.";
     activateVaultSession(opened);
     showApp();
   } finally {
@@ -220,6 +278,14 @@ async function unlockVault() {
   }
 }
 
+async function verifyOnboardingRelay() {
+  const endpoint = elements.onboardingRelay.value.trim();
+  const result = await state.pairing.verifyRelay(endpoint);
+  state.relayVerifiedEndpoint = endpoint;
+  state.relayVerifiedSummary = `${result.endpoint.transport.toUpperCase()} route transport verified`;
+  elements.onboardingRelayInfo.textContent = `${state.relayVerifiedSummary}. You can now create the local persona.`;
+}
+
 function activateVaultSession({ persona, encryptedStore }) {
   if (!(encryptedStore instanceof EncryptedNoctweaveStore)) {
     throw new Error("The host-anchored application vault returned an invalid encryption boundary.");
@@ -238,6 +304,7 @@ function createMessagingService(encryptedStore) {
     store: encryptedStore,
     relayClientFactory: makeRelayClient,
     stateAnchorStoreFactory: globalThis.noctweaveRelationshipStateAnchorStoreFactory
+      ?? state.anchorFactory
   });
 }
 
@@ -264,6 +331,9 @@ function lockProfile() {
   state.messageSnapshot = null;
   state.messageSyncStatus = "Select a relationship to begin.";
   state.safetyNumber = null;
+  state.relayVerifiedEndpoint = null;
+  state.relayVerifiedSummary = null;
+  elements.relayInfo.textContent = "Not checked yet.";
   state.messageBusy = false;
   state.lastMaintenanceAt = 0;
   state.pairingBusy.clear();
@@ -285,7 +355,9 @@ async function forgetVault() {
 
 async function verifyRelay() {
   const result = await state.pairing.verifyRelay(elements.relay.value);
-  elements.relayInfo.textContent = `${result.endpoint.transport} route transport verified`;
+  state.relayVerifiedEndpoint = elements.relay.value.trim();
+  state.relayVerifiedSummary = `${result.endpoint.transport.toUpperCase()} route transport verified`;
+  elements.relayInfo.textContent = state.relayVerifiedSummary;
 }
 
 async function createInvitation() {

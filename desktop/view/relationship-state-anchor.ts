@@ -223,6 +223,13 @@ export async function installDesktopRelationshipStateAnchorFactory({
   requests: DesktopRequests;
 }) {
   const capability = await requests.relationshipStateCapability({});
+  globalThis.noctweaveDesktopAnchorCapability = Object.freeze({
+    id: "electrobun-host-anchor-v3",
+    label: capability.kind,
+    hardwareRollbackResistance: capability.available === true,
+    warning: capability.available === true ? null : capability.reason,
+    ...capability
+  });
   if (capability.available !== true) return capability;
   globalThis.noctweaveRelationshipStateAnchorStoreFactory = async ({
     relationshipID,
@@ -243,6 +250,12 @@ declare global {
     anchorKey: string;
     stateKey: string;
   }) => Promise<DesktopRelationshipStateAnchorStore>) | undefined;
+  var noctweaveDesktopAnchorCapability: DesktopRelationshipStateCapability & {
+    id?: string;
+    label?: string;
+    hardwareRollbackResistance?: boolean;
+    warning?: string | null;
+  } | undefined;
 }
 
 // Retain the imported schema in generated declaration output.

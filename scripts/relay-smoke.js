@@ -20,7 +20,7 @@ import {
 } from "../src/index.js";
 
 const options = parseArgs(process.argv.slice(2));
-const endpoint = options.relay ?? "http://127.0.0.1:9339";
+const endpoint = options.relay ?? "http://127.0.0.1:9340";
 const crypto = new WebCryptoPrimitives();
 const client = new NoctweaveRelayClient(endpoint, {
   authToken: options.authToken,

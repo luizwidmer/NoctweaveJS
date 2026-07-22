@@ -17,7 +17,7 @@ import {
 } from "./contact-pairing-v2.js";
 import { createRendezvousRelayAdapterV2 } from "./rendezvous-relay-v2.js";
 import { swiftISODate } from "./crypto/swift-canonical.js";
-import { validateProtocolCapabilityManifest } from "./architecture-v2.js";
+import { validateProtocolModuleCapability } from "./architecture-v2.js";
 import {
   createRelationshipLocalPolicyV2,
   validateRelationshipLocalPolicyV2
@@ -76,7 +76,16 @@ export class NoctweaveBrowserPairingService {
     }
     let capabilities;
     try {
-      capabilities = validateProtocolCapabilityManifest(info.relayInfo.protocolCapabilities);
+      const relayManifest = info.relayInfo.protocolCapabilities;
+      if (!relayManifest || !Array.isArray(relayManifest.modules)) {
+        throw new TypeError("Relay capability modules are missing.");
+      }
+      const modules = relayManifest.modules.map(validateProtocolModuleCapability);
+      if (modules.some((module, index) => index > 0 && module.module <= modules[index - 1].module) ||
+          !modules.some(({ module, versions }) => module === "nw.core" && versions.includes(2))) {
+        throw new TypeError("Relay capability modules are not a sorted current manifest.");
+      }
+      capabilities = relayManifest;
     } catch {
       throw new Error("The relay does not advertise a valid Noctweave architecture-v2 capability manifest.");
     }

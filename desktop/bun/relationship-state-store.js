@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants } from "node:fs";
 import {
   mkdir,
   open,
@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter as pathDelimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -21,12 +21,12 @@ const maximumHostRecordBytes = 20 * 1024 * 1024;
 const keychainServicePrefix = "org.noctweave.js-client.relationship-state.v3";
 const erasedDigest = Buffer.alloc(32).toString("base64");
 
+const secureVaultConfiguration = detectSecureVaultConfiguration();
+
 export const desktopRelationshipStateCapability = Object.freeze({
-  available: process.platform === "darwin",
-  kind: process.platform === "darwin" ? "macos-keychain-journal-v3" : "unavailable",
-  reason: process.platform === "darwin"
-    ? null
-    : "The desktop rollback anchor currently requires macOS Keychain; this platform has no audited secure monotonic backend."
+  available: secureVaultConfiguration.available,
+  kind: secureVaultConfiguration.kind,
+  reason: secureVaultConfiguration.available ? null : secureVaultConfiguration.reason
 });
 
 export class MacOSKeychainVault {
@@ -90,10 +90,87 @@ export class MacOSKeychainVault {
   }
 }
 
+export class LinuxSecretServiceVault {
+  constructor({ secretToolPath = commandPath("secret-tool") } = {}) {
+    this.secretToolPath = secretToolPath;
+  }
+
+  async get({ service, account }) {
+    this.requireAvailable();
+    try {
+      const { stdout } = await execFileAsync(this.secretToolPath, [
+        "lookup", "application", keychainServicePrefix, "service", service, "account", account
+      ], { encoding: "utf8", maxBuffer: 64 * 1024 });
+      return stdout.replace(/[\r\n]+$/u, "");
+    } catch (error) {
+      if (error?.code === 1 || /not found|no such/iu.test(`${error?.stderr ?? ""} ${error?.message ?? ""}`)) return null;
+      throw new Error("Linux Secret Service lookup failed.", { cause: error });
+    }
+  }
+
+  async set({ service, account, value }) {
+    this.requireAvailable();
+    await runWithInput(this.secretToolPath, [
+      "store", "--label", "NoctweaveJS relationship anchor",
+      "application", keychainServicePrefix, "service", service, "account", account
+    ], value);
+  }
+
+  async delete({ service, account }) {
+    this.requireAvailable();
+    try {
+      await execFileAsync(this.secretToolPath, [
+        "clear", "application", keychainServicePrefix, "service", service, "account", account
+      ], { encoding: "utf8", maxBuffer: 64 * 1024 });
+    } catch (error) {
+      if (error?.code === 1) return;
+      throw new Error("Linux Secret Service deletion failed.", { cause: error });
+    }
+  }
+
+  requireAvailable() {
+    if (process.platform !== "linux" || !this.secretToolPath) throw new Error(desktopRelationshipStateCapability.reason ?? "Linux Secret Service is unavailable.");
+  }
+}
+
+export class WindowsCredentialManagerVault {
+  constructor({ powershellPath = commandPath("powershell.exe") } = {}) {
+    this.powershellPath = powershellPath;
+  }
+
+  async get({ service, account }) {
+    this.requireAvailable();
+    const output = await this.run("get", `${service}/${account}`);
+    return output === "" ? null : Buffer.from(output, "base64").toString("utf8");
+  }
+
+  async set({ service, account, value }) {
+    this.requireAvailable();
+    await this.run("set", `${service}/${account}`, Buffer.from(value, "utf8").toString("base64"));
+  }
+
+  async delete({ service, account }) {
+    this.requireAvailable();
+    await this.run("delete", `${service}/${account}`);
+  }
+
+  async run(operation, target, value = "") {
+    const { stdout } = await execFileAsync(this.powershellPath, [
+      "-NoProfile", "-NonInteractive", "-Command", windowsCredentialScript,
+      operation, target, value
+    ], { encoding: "utf8", maxBuffer: 64 * 1024 });
+    return stdout.trim();
+  }
+
+  requireAvailable() {
+    if (process.platform !== "win32" || !this.powershellPath) throw new Error(desktopRelationshipStateCapability.reason ?? "Windows Credential Manager is unavailable.");
+  }
+}
+
 export class DesktopRelationshipStateStore {
   constructor({
     rootDirectory = defaultStateRoot(),
-    secureVault = new MacOSKeychainVault(),
+    secureVault = createDesktopSecureVault(),
     capability = desktopRelationshipStateCapability,
     faultInjector = null
   } = {}) {
@@ -356,6 +433,12 @@ export function relationshipStateScope(
 }
 
 function defaultStateRoot() {
+  if (process.platform === "win32") {
+    return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "NoctweaveJS", "durable-pairwise-v3");
+  }
+  if (process.platform === "linux") {
+    return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "noctweavejs", "durable-pairwise-v3");
+  }
   return join(
     homedir(),
     "Library",
@@ -364,6 +447,70 @@ function defaultStateRoot() {
     "durable-pairwise-v3"
   );
 }
+
+function createDesktopSecureVault() {
+  if (process.platform === "darwin") return new MacOSKeychainVault();
+  if (process.platform === "linux") return new LinuxSecretServiceVault();
+  if (process.platform === "win32") return new WindowsCredentialManagerVault();
+  return new LinuxSecretServiceVault({ secretToolPath: null });
+}
+
+function detectSecureVaultConfiguration() {
+  if (process.platform === "darwin") return { available: Boolean(commandPath("/usr/bin/security")), kind: "macos-keychain-journal-v3", reason: "macOS security(1) is unavailable; the hardened host anchor cannot be enabled." };
+  if (process.platform === "linux") return commandPath("secret-tool")
+    ? { available: true, kind: "linux-secret-service-journal-v3", reason: null }
+    : { available: false, kind: "linux-secret-service-unavailable", reason: "Linux requires an active Secret Service implementation and secret-tool. The hardened host anchor remains disabled until it is available." };
+  if (process.platform === "win32") return commandPath("powershell.exe")
+    ? { available: true, kind: "windows-credential-manager-journal-v3", reason: null }
+    : { available: false, kind: "windows-credential-manager-unavailable", reason: "Windows PowerShell is unavailable; the hardened Credential Manager anchor cannot be enabled." };
+  return { available: false, kind: "unsupported-platform", reason: "This platform has no supported hardened desktop anchor store; onboarding remains disabled." };
+}
+
+function commandPath(command) {
+  if (typeof command !== "string" || command.length === 0) return null;
+  if (command.includes("/") || command.includes("\\")) {
+    try { accessSync(command, fsConstants.X_OK); return command; } catch { return null; }
+  }
+  for (const directory of (process.env.PATH ?? "").split(pathDelimiter).filter(Boolean)) {
+    const candidate = join(directory, command);
+    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* continue */ }
+  }
+  return null;
+}
+
+function runWithInput(command, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 }, (error) => {
+      if (error) reject(new Error("Secure Secret Service write failed.", { cause: error }));
+      else resolve();
+    });
+    child.stdin.end(input);
+  });
+}
+
+const windowsCredentialScript = String.raw`
+param($operation, $target, $value)
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class NoctweaveCredential {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct CREDENTIAL {
+    public uint Flags; public uint Type; public string TargetName; public string Comment; public long LastWritten;
+    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist; public uint AttributeCount;
+    public IntPtr Attributes; public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CredWrite(ref CREDENTIAL credential, uint flags);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CredDelete(string target, uint type, uint flags);
+  [DllImport("advapi32.dll")] static extern void CredFree(IntPtr credential);
+  public static string Get(string target) { IntPtr ptr; if (!CredRead(target, 1, 0, out ptr)) return ""; try { var c=(CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL)); var b=new byte[c.CredentialBlobSize]; Marshal.Copy(c.CredentialBlob,b,0,(int)c.CredentialBlobSize); return Convert.ToBase64String(b); } finally { CredFree(ptr); } }
+  public static void Set(string target, string value) { var b=Convert.FromBase64String(value); var p=Marshal.AllocCoTaskMem(b.Length); Marshal.Copy(b,0,p,b.Length); var c=new CREDENTIAL { Type=1, TargetName=target, CredentialBlob=p, CredentialBlobSize=(uint)b.Length, Persist=2, UserName="NoctweaveJS" }; try { if (!CredWrite(ref c,0)) throw new Exception("CredWrite failed: "+Marshal.GetLastWin32Error()); } finally { Marshal.FreeCoTaskMem(p); } }
+  public static void Delete(string target) { CredDelete(target,1,0); }
+}
+'@
+switch ($operation) { "get" { [NoctweaveCredential]::Get($target) } "set" { [NoctweaveCredential]::Set($target,$value) } "delete" { [NoctweaveCredential]::Delete($target) } }
+`;
 
 function createSecureAnchor({
   scopeDigest,

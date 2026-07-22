@@ -13,10 +13,24 @@ export class MacOSKeychainVault {
   delete(scope: { service: string; account: string }): Promise<void>;
 }
 
+export class LinuxSecretServiceVault {
+  constructor(options?: { secretToolPath?: string | null });
+  get(scope: { service: string; account: string }): Promise<string | null>;
+  set(scope: { service: string; account: string; value: string }): Promise<void>;
+  delete(scope: { service: string; account: string }): Promise<void>;
+}
+
+export class WindowsCredentialManagerVault {
+  constructor(options?: { powershellPath?: string | null });
+  get(scope: { service: string; account: string }): Promise<string | null>;
+  set(scope: { service: string; account: string; value: string }): Promise<void>;
+  delete(scope: { service: string; account: string }): Promise<void>;
+}
+
 export class DesktopRelationshipStateStore {
   constructor(options?: {
     rootDirectory?: string;
-    secureVault?: MacOSKeychainVault;
+    secureVault?: MacOSKeychainVault | LinuxSecretServiceVault | WindowsCredentialManagerVault;
     capability?: DesktopRelationshipStateCapability;
     faultInjector?: ((stage: string, scope: unknown) => Promise<void> | void) | null;
   });

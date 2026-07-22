@@ -22,9 +22,16 @@ that one relationship.
 
 ![NoctweaveJS encrypted persona setup](docs/screenshots/persona-setup.png)
 
-The workspace requires a conforming host that supplies rollback-protected
-state authority. The browser entry surface fails closed when that boundary is
-unavailable.
+The first-run workspace requires an explicit storage/security profile
+acknowledgment, a relay connectivity check, and then creates the encrypted
+local persona. Plain browsers use an authenticated atomic IndexedDB anchor as a
+best-effort, rollbackable profile; ordinary browser storage has no hardware
+rollback resistance and is not equivalent to the hardened Electrobun host
+anchor. There is no silent storage fallback.
+
+Electrobun uses durable host anchors backed by macOS Keychain, Linux Secret
+Service, or Windows Credential Manager. If the platform backend is unavailable,
+onboarding exposes the limitation and keeps persona creation disabled.
 
 ## Clone and verify
 
