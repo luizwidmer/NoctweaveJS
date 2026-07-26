@@ -813,7 +813,11 @@ test("relay request surface rejects operations outside the current protocol befo
     "uploadAttachment",
     "fetchAttachment",
     "registerFederationNode",
-    "listFederationNodes"
+    "listFederationNodes",
+    "putNetHostObject",
+    "getNetHostObject",
+    "hasNetHostObject",
+    "releaseNetHostObject"
   ]);
 });
 

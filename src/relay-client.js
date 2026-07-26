@@ -23,14 +23,22 @@ import {
   validateRendezvousRelaySyncBatchV2,
   validateSyncRendezvousTransportV2Request
 } from "./rendezvous-relay-v2.js";
-import { canonicalJson } from "./crypto/swift-canonical.js";
+import { base64, canonicalJson } from "./crypto/swift-canonical.js";
+import { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
+import {
+  createNoctweaveNetHostPutV1,
+  validateNoctweaveNetHostObjectID,
+  verifyNoctweaveNetHostFetchV1,
+  verifyNoctweaveNetHostingReceiptV1
+} from "./noctweave-net-host-v1.js";
 import { parseExactJSON } from "./strict-json.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
 // Covers one maximally populated rendezvous lane after base64/JSON expansion.
 const DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-const DEFAULT_MAX_REQUEST_BYTES = 512 * 1024;
+// Carries one maximum-size nw.net-host object after base64 and JSON expansion.
+const DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const ABSOLUTE_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const ABSOLUTE_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TCP_PORT = 9339;
@@ -209,6 +217,77 @@ export class NoctweaveRelayClient {
     return this.send(relayRequests.listFederationNodes(request), options);
   }
 
+  async putNetHostObject(request, options = {}) {
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      throw new TypeError("Noctweave Net host put input must be an object.");
+    }
+    const prepared = await createNoctweaveNetHostPutV1({
+      crypto: this.netHostCrypto(options, true),
+      payload: request.payload,
+      ttlSeconds: request.ttlSeconds ?? null,
+      releaseCapability: request.releaseCapability,
+      idempotencyKey: request.idempotencyKey
+    });
+    const response = await this.send(
+      relayRequests.putNetHostObject(prepared.request),
+      options
+    );
+    if (response.receipt.byteCount !== prepared.byteCount ||
+        !await verifyNoctweaveNetHostingReceiptV1(response.receipt, {
+          subtle: options.subtle ?? globalThis.crypto?.subtle
+        })) {
+      throw new TypeError("Noctweave Net host put receipt verification failed.");
+    }
+    this.verifyExpectedNetHostSigningKey(response.receipt, options);
+    return Object.freeze({
+      objectID: prepared.request.objectID,
+      receipt: response.receipt,
+      releaseCapability: prepared.releaseCapability,
+      idempotencyKey: prepared.idempotencyKey
+    });
+  }
+
+  async getNetHostObject(objectID, options = {}) {
+    const normalizedObjectID = validateNoctweaveNetHostObjectID(objectID);
+    const response = await this.send(
+      relayRequests.getNetHostObject({ objectID: normalizedObjectID }),
+      options
+    );
+    const fetched = await verifyNoctweaveNetHostFetchV1(
+      this.netHostCrypto(options, false),
+      response.object,
+      normalizedObjectID,
+      { subtle: options.subtle ?? globalThis.crypto?.subtle }
+    );
+    this.verifyExpectedNetHostSigningKey(fetched.receipt, options);
+    return fetched;
+  }
+
+  async hasNetHostObject(objectID, options = {}) {
+    const normalizedObjectID = validateNoctweaveNetHostObjectID(objectID);
+    const response = await this.send(
+      relayRequests.hasNetHostObject({ objectID: normalizedObjectID }),
+      options
+    );
+    return response.presence;
+  }
+
+  async releaseNetHostObject({ objectID, releaseCapability }, options = {}) {
+    const normalizedObjectID = validateNoctweaveNetHostObjectID(objectID);
+    const capability = bytes(releaseCapability, "Noctweave Net release capability");
+    if (capability.byteLength !== 32) {
+      throw new TypeError("Noctweave Net release capability must contain exactly 32 bytes.");
+    }
+    const response = await this.send(
+      relayRequests.releaseNetHostObject({
+        objectID: normalizedObjectID,
+        releaseCapability: base64(capability)
+      }),
+      options
+    );
+    return response.release;
+  }
+
   async send(request, options = {}) {
     const authenticated = validateRelayRequestEnvelopeV2(this.withAuthToken(request));
     const timeoutMs = normalizedTimeout(options.timeoutMs ?? this.timeoutMs);
@@ -311,6 +390,35 @@ export class NoctweaveRelayClient {
       throw new TypeError("Opaque route operations require SHA-256 and HMAC-SHA-256 primitives.");
     }
     return crypto;
+  }
+
+  netHostCrypto(options, randomnessRequired) {
+    let crypto = options.crypto ?? this.protocolCrypto;
+    if (!crypto) {
+      crypto = new WebCryptoPrimitives();
+    }
+    if (typeof crypto.sha256 !== "function" ||
+        (randomnessRequired && typeof crypto.randomBytes !== "function")) {
+      throw new TypeError(
+        randomnessRequired
+          ? "Noctweave Net hosting requires SHA-256 and cryptographic randomness."
+          : "Noctweave Net hosting requires SHA-256."
+      );
+    }
+    return crypto;
+  }
+
+  verifyExpectedNetHostSigningKey(receipt, options) {
+    if (options.expectedHostSigningPublicKey === undefined) {
+      return;
+    }
+    const expected = bytes(
+      options.expectedHostSigningPublicKey,
+      "Expected Noctweave Net host signing public key"
+    );
+    if (expected.byteLength !== 32 || base64(expected) !== receipt.signingPublicKey) {
+      throw new TypeError("Noctweave Net hosting receipt is not bound to the expected relay key.");
+    }
   }
 }
 

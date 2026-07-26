@@ -11,6 +11,22 @@ export {
   relayClientPolicyDefaults,
   relayClientPolicyLimits
 } from "./relay-client.js";
+export {
+  createNoctweaveNetHostPutV1,
+  noctweaveNetHostObjectID,
+  noctweaveNetHostReleaseDigest,
+  noctweaveNetHostV1Limits,
+  validateNoctweaveNetHostFetchV1,
+  validateNoctweaveNetHostObjectBody,
+  validateNoctweaveNetHostObjectID,
+  validateNoctweaveNetHostPresenceV1,
+  validateNoctweaveNetHostPutBody,
+  validateNoctweaveNetHostReleaseBody,
+  validateNoctweaveNetHostReleaseReceiptV1,
+  validateNoctweaveNetHostingReceiptV1,
+  verifyNoctweaveNetHostFetchV1,
+  verifyNoctweaveNetHostingReceiptV1
+} from "./noctweave-net-host-v1.js";
 export { NoctweaveWebClient } from "./client.js";
 export {
   NoctweaveBrowserPairingService,

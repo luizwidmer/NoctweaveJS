@@ -100,6 +100,41 @@ fresh attachment UUID for replacement content. The payload must already be
 end-to-end encrypted; the relay request never carries plaintext or its content
 key.
 
+Noctweave Net content hosting uses the typed `nw.net-host@1` client:
+
+```js
+const hosted = await relay.putNetHostObject({
+  payload: signedCapsuleBytes,
+  ttlSeconds: 86_400
+}, {
+  expectedHostSigningPublicKey
+});
+
+const fetched = await relay.getNetHostObject(hosted.objectID, {
+  expectedHostSigningPublicKey
+});
+const present = await relay.hasNetHostObject(hosted.objectID);
+
+await relay.releaseNetHostObject({
+  objectID: hosted.objectID,
+  releaseCapability: hosted.releaseCapability
+});
+```
+
+The client derives the lowercase SHA-256 object ID from the exact bytes,
+generates a 32-byte release capability and idempotency key, verifies the
+returned content address and byte count, and verifies the relay's Ed25519
+hosting receipt before reporting a stored or fetched object. Pass the
+32-byte key advertised by the selected relay as `expectedHostSigningPublicKey`
+to bind that receipt to the relay identity rather than merely verifying its
+self-described key. The default bounded request budget carries the full 1 MiB
+host-object profile after base64 and JSON expansion. Preserve
+`releaseCapability` in protected
+publisher state; the relay receives only its domain-separated digest until a
+release request. A hosting receipt means **stored by this relay until the
+stated bound**, not publisher identity, site safety, consensus finality, or
+continued availability.
+
 Route creation returns relay-authoritative state. Enqueue accepts independently
 padded, end-to-end encrypted packets. Every synchronized packet carries a
 monotonic sequence plus previous/current record digests, and every batch binds

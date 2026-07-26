@@ -20,6 +20,15 @@ import {
 import { validateProtocolModuleCapability } from "./architecture-v2.js";
 import { normalizeRelayEndpoint } from "./endpoint.js";
 import {
+  validateNoctweaveNetHostFetchV1,
+  validateNoctweaveNetHostObjectBody,
+  validateNoctweaveNetHostPresenceV1,
+  validateNoctweaveNetHostPutBody,
+  validateNoctweaveNetHostReleaseBody,
+  validateNoctweaveNetHostReleaseReceiptV1,
+  validateNoctweaveNetHostingReceiptV1
+} from "./noctweave-net-host-v1.js";
+import {
   requireBase64,
   requireCanonicalTimestamp,
   requireExactRecord,
@@ -79,6 +88,18 @@ const bindings = Object.freeze({
   listFederationNodes: Object.freeze({
     module: "nw.federation", version: 1, method: "list",
     body: Object.freeze(["nodes", "snapshot"])
+  }),
+  putNetHostObject: Object.freeze({
+    module: "nw.net-host", version: 1, method: "put", body: "receipt"
+  }),
+  getNetHostObject: Object.freeze({
+    module: "nw.net-host", version: 1, method: "get", body: "object"
+  }),
+  hasNetHostObject: Object.freeze({
+    module: "nw.net-host", version: 1, method: "has", body: "presence"
+  }),
+  releaseNetHostObject: Object.freeze({
+    module: "nw.net-host", version: 1, method: "release", body: "release"
   })
 });
 
@@ -163,6 +184,30 @@ export const relayRequests = Object.freeze({
       normalizeListFederationNodesRequest(request),
       authToken
     );
+  },
+  putNetHostObject(request, authToken) {
+    return makeRequest(bindings.putNetHostObject, validateNoctweaveNetHostPutBody(request), authToken);
+  },
+  getNetHostObject(request, authToken) {
+    return makeRequest(
+      bindings.getNetHostObject,
+      validateNoctweaveNetHostObjectBody(request),
+      authToken
+    );
+  },
+  hasNetHostObject(request, authToken) {
+    return makeRequest(
+      bindings.hasNetHostObject,
+      validateNoctweaveNetHostObjectBody(request),
+      authToken
+    );
+  },
+  releaseNetHostObject(request, authToken) {
+    return makeRequest(
+      bindings.releaseNetHostObject,
+      validateNoctweaveNetHostReleaseBody(request),
+      authToken
+    );
   }
 });
 
@@ -238,6 +283,18 @@ function validateResponseBody(binding, body, request) {
   case "nw.rendezvous-transport/sync": validateRendezvousRelaySyncBatchV2(body.batch); break;
   case "nw.federation/register":
   case "nw.federation/list": validateFederationNodesResponse(body); break;
+  case "nw.net-host/put":
+    validateNoctweaveNetHostingReceiptV1(body.receipt, request.body.objectID);
+    break;
+  case "nw.net-host/get":
+    validateNoctweaveNetHostFetchV1(body.object, request.body.objectID);
+    break;
+  case "nw.net-host/has":
+    validateNoctweaveNetHostPresenceV1(body.presence, request.body.objectID);
+    break;
+  case "nw.net-host/release":
+    validateNoctweaveNetHostReleaseReceiptV1(body.release, request.body.objectID);
+    break;
   default: throw new TypeError("Relay response binding has no body validator.");
   }
 }
@@ -279,7 +336,15 @@ function validateRelayInfoV2(value) {
     [],
     "Relay info"
   );
-  if (!["standard", "discovery", "bridge", "privateRelay", "coordinator"].includes(value.kind)) {
+  if (![
+    "standard",
+    "passthrough",
+    "host",
+    "discovery",
+    "bridge",
+    "privateRelay",
+    "coordinator"
+  ].includes(value.kind)) {
     throw new TypeError("Relay kind is invalid.");
   }
   validateFederationDescriptor(value.federation);
@@ -792,6 +857,10 @@ function validateRequestBody(binding, body) {
     break;
   case "nw.federation/register": validateFederationNodeRegistrationRequest(body); break;
   case "nw.federation/list": validateListFederationNodesRequest(body); break;
+  case "nw.net-host/put": validateNoctweaveNetHostPutBody(body); break;
+  case "nw.net-host/get":
+  case "nw.net-host/has": validateNoctweaveNetHostObjectBody(body); break;
+  case "nw.net-host/release": validateNoctweaveNetHostReleaseBody(body); break;
   default: throw new TypeError("Relay request binding has no body validator.");
   }
 }
