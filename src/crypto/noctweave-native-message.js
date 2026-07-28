@@ -504,6 +504,16 @@ async function encryptNativePreparedWireEnvelope({
     if (!(signature instanceof Uint8Array) || signature.byteLength !== ML_DSA_SIGNATURE_BYTES) {
       throw new Error("ML-DSA signing returned an invalid signature.");
     }
+    if (base64(ownSigning.publicKey) !== localIdentity.endpointBinding.signingPublicKey) {
+      throw new Error("Local endpoint signing authority does not match its published binding.");
+    }
+    if (!pqc.verify(
+      directEnvelopeV4SignableBytes(envelope),
+      signature,
+      ownSigning.publicKey
+    )) {
+      throw new Error("Locally generated direct-v4 signature failed self-verification.");
+    }
     envelope.signature = base64(signature);
     commitChain(conversation.sendChain, candidateSendChain);
     return validateDirectEnvelopeV4(envelope);

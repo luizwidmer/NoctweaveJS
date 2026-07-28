@@ -1410,9 +1410,12 @@ function validatePairwiseRelayEndpointV2(value) {
     host: value.host,
     port: requireInteger(value.port, "Pairwise relay port", 1, 0xffff),
     useTLS: value.useTLS,
-    transport: value.transport
+    transport: value.transport,
+    tlsCertificateFingerprintSHA256: null,
+    directorySigningPublicKey: null
   };
-  if (value.tlsCertificateFingerprintSHA256 !== undefined) {
+  if (value.tlsCertificateFingerprintSHA256 !== undefined &&
+      value.tlsCertificateFingerprintSHA256 !== null) {
     requireBase64(
       value.tlsCertificateFingerprintSHA256,
       DIGEST_BYTES,
@@ -1420,7 +1423,8 @@ function validatePairwiseRelayEndpointV2(value) {
     );
     relay.tlsCertificateFingerprintSHA256 = value.tlsCertificateFingerprintSHA256;
   }
-  if (value.directorySigningPublicKey !== undefined) {
+  if (value.directorySigningPublicKey !== undefined &&
+      value.directorySigningPublicKey !== null) {
     requireBase64(
       value.directorySigningPublicKey,
       ML_DSA_PUBLIC_KEY_BYTES,

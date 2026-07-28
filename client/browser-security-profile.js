@@ -132,10 +132,7 @@ export class IndexedDBBrowserAnchorStore {
         throw new Error("Encrypted browser state was not staged for atomic commit.");
       }
       const encryptedRecord = structuredClone(this.stagedRecord);
-      const digest = base64(await this.storageCrypto.subtle.digest(
-        "SHA-256", canonicalJsonBytes(encryptedRecord)
-      ));
-      if (digest !== nextStateDigest) throw new Error("IndexedDB browser state digest does not match its anchor request.");
+      requireCanonicalDigest(nextStateDigest, "IndexedDB browser state digest");
       const database = await this.databasePromise;
       const integrityKey = await this.integrityKeyPromise;
       const committed = await transaction(database, [anchorStoreName, stateStoreName], "readwrite", async (tx) => {
@@ -290,6 +287,21 @@ async function authenticatedAnchor(unsigned, key, storageCrypto) {
 
 function anchorsEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function requireCanonicalDigest(value, label) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9+/]{43}=$/u.test(value)) {
+    throw new Error(`${label} is malformed.`);
+  }
+  let bytes;
+  try {
+    bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error(`${label} is malformed.`);
+  }
+  if (bytes.byteLength !== 32 || base64(bytes) !== value) {
+    throw new Error(`${label} is malformed.`);
+  }
 }
 
 function request(operation) {

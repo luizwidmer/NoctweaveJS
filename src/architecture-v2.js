@@ -649,6 +649,7 @@ export function validateEncodedContent(value) {
     type,
     parameters: Object.freeze(parameters),
     payload,
+    fallbackText: null,
     disposition: value.disposition
   };
   if (value.fallbackText != null) {
@@ -710,7 +711,8 @@ export function validateConversationEvent(value) {
     authorEndpointHandle: validateRelationshipEndpointHandle(value.authorEndpointHandle),
     createdAt,
     kind: value.kind,
-    content
+    content,
+    relation: null
   };
   if (value.relation != null) {
     if (value.kind !== "application") {

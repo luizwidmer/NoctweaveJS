@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRelayEndpoint, relayEndpointURL } from "../../src/endpoint.js";
+import { NoctweaveGroupCompanion } from "./group-companion.js";
 
 const root = normalize(join(fileURLToPath(new URL("../..", import.meta.url))));
 const port = Number(process.env.PORT ?? 5173);
@@ -13,6 +14,19 @@ const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 const defaultClientDocument = process.env.NOCTWEAVE_CLIENT === "production"
   ? "/client/index.html"
   : "/examples/browser-client/index.html";
+const defaultCLIPath = normalize(join(
+  root,
+  "..",
+  ".build-caches",
+  "core-cli",
+  "debug",
+  "NoctweaveCLI"
+));
+const groupCompanion = new NoctweaveGroupCompanion({
+  cliPath: process.env.NOCTWEAVE_CLI_PATH ?? defaultCLIPath,
+  statePath: normalize(join(root, ".local", "group-companion", "client-state.json")),
+  plaintextForTesting: process.env.NOCTWEAVE_GROUP_COMPANION_PLAINTEXT === "1"
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -33,12 +47,83 @@ const server = createServer(async (request, response) => {
       await proxyRelay(request, response);
       return;
     }
+    if (request.url?.startsWith("/api/group-companion")) {
+      await serveGroupCompanion(request, response);
+      return;
+    }
     await serveStatic(request, response);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     writeResponse(response, 500, "Internal server error", "text/plain; charset=utf-8");
   }
 });
+
+async function serveGroupCompanion(request, response) {
+  if (!isSameOriginBrowserRequest(request)) {
+    writeJSON(response, 403, { error: "The group companion accepts same-origin loopback requests only." });
+    return;
+  }
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  const path = url.pathname.replace(/^\/api\/group-companion\/?/u, "");
+  const segments = path.split("/").filter(Boolean);
+  try {
+    if (request.method === "GET" && segments.length === 1 && segments[0] === "status") {
+      writeJSON(response, 200, await groupCompanion.status());
+      return;
+    }
+    if (request.method === "POST" && segments.length === 1 && segments[0] === "setup") {
+      writeJSON(response, 200, await groupCompanion.setup(await readJSONBody(request)));
+      return;
+    }
+    if (request.method === "GET" && segments.length === 1 && segments[0] === "groups") {
+      writeJSON(response, 200, await groupCompanion.groups());
+      return;
+    }
+    if (request.method === "POST" && segments.length === 1 && segments[0] === "groups") {
+      writeJSON(response, 201, await groupCompanion.createGroup(await readJSONBody(request)));
+      return;
+    }
+    if (segments.length === 3 && segments[0] === "groups" && segments[2] === "events") {
+      if (request.method !== "GET") {
+        writeJSON(response, 405, { error: "Method not allowed" });
+        return;
+      }
+      const synchronize = url.searchParams.get("sync") !== "false";
+      const events = synchronize
+        ? await groupCompanion.syncAndReadEvents(segments[1])
+        : await groupCompanion.readEvents(segments[1]);
+      writeJSON(response, 200, events);
+      return;
+    }
+    if (segments.length === 3 && segments[0] === "groups" && segments[2] === "messages") {
+      if (request.method !== "POST") {
+        writeJSON(response, 405, { error: "Method not allowed" });
+        return;
+      }
+      const body = await readJSONBody(request);
+      writeJSON(response, 201, await groupCompanion.sendMessage(segments[1], body.text));
+      return;
+    }
+    if (segments.length === 3 && segments[0] === "groups" && segments[2] === "admissions") {
+      if (request.method !== "POST") {
+        writeJSON(response, 405, { error: "Method not allowed" });
+        return;
+      }
+      const body = await readJSONBody(request);
+      writeJSON(
+        response,
+        201,
+        await groupCompanion.acceptAdmissionRequest(segments[1], body.requestLink)
+      );
+      return;
+    }
+    writeJSON(response, 404, { error: "Not found" });
+  } catch (error) {
+    writeJSON(response, 400, {
+      error: String(error?.message ?? error).slice(0, 2_048)
+    });
+  }
+}
 
 server.listen(port, "127.0.0.1", () => {
   const path = process.env.NOCTWEAVE_CLIENT === "production" ? "/client/" : "/examples/browser-client/";
@@ -151,6 +236,15 @@ function readBody(request) {
   });
 }
 
+async function readJSONBody(request) {
+  const body = await readBody(request);
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error("Request body must be valid JSON.");
+  }
+}
+
 async function readBoundedResponse(relayResponse, maximumBytes) {
   const declaredLength = Number(relayResponse.headers.get("content-length") ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
@@ -217,4 +311,16 @@ function isAllowedLoopbackHost(value) {
   return normalized === `127.0.0.1:${port}` ||
     normalized === `localhost:${port}` ||
     normalized === `[::1]:${port}`;
+}
+
+function isSameOriginBrowserRequest(request) {
+  const fetchSite = request.headers["sec-fetch-site"];
+  if (fetchSite !== undefined && fetchSite !== "same-origin") {
+    return false;
+  }
+  const origin = request.headers.origin;
+  if (origin === undefined) {
+    return fetchSite === "same-origin" || process.env.NODE_ENV === "test";
+  }
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
 }

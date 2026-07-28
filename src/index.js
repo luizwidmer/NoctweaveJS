@@ -1,6 +1,12 @@
 export { normalizeRelayEndpoint, parseRelayEndpoint, relayEndpointURL } from "./endpoint.js";
 export { parseExactJSON, strictJSONMaximumDepth } from "./strict-json.js";
 export {
+  decodeNoctweavePairingLinkV1,
+  encodeNoctweavePairingLinkV1,
+  noctweavePairingLinkV1MaximumCharacters,
+  noctweavePairingLinkV1Prefix
+} from "./pairing-link-v1.js";
+export {
   relayRequests,
   validateRelayRequestEnvelopeV2,
   validateRelayResponseEnvelopeV2

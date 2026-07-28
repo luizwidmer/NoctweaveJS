@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoctweaveJS Groups</title>
+  <link rel="icon" href="./assets/noctweave-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./groups.css">
+</head>
+<body>
+  <div class="appearanceControl" data-appearance-control>
+    <label for="appearancePreference">Appearance</label>
+    <select id="appearancePreference" aria-label="Appearance">
+      <option value="system">System</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
+        <p class="eyebrow">NoctweaveJS + local Core companion</p>
+        <h1>Group workspace</h1>
+        <p>Group-scoped credentials and relay routes remain independent from your pairwise persona.</p>
+      </div></div>
+      <div class="heroActions"><div class="status" id="companionStatus">Checking companion…</div><a class="buttonLink subtle" href="./">Pairwise workspace</a></div>
+    </section>
+
+    <section class="workspace">
+      <aside class="sideRail">
+        <section class="panel compact" id="setupPanel">
+          <p class="eyebrow">One-time local setup</p>
+          <h2>Core companion</h2>
+          <p class="info">The loopback companion runs NoctweaveCore locally. Group keys and plaintext never enter the relay or a remote web service.</p>
+          <label for="groupPersonaName">Local label</label>
+          <input id="groupPersonaName" maxlength="128" value="NoctweaveJS Group User">
+          <label for="groupRelay">Relay URL</label>
+          <input id="groupRelay" value="http://127.0.0.1:9440" spellcheck="false" inputmode="url">
+          <button id="setupCompanion" class="primaryWide">Create group-only state</button>
+          <p class="fieldHint" id="storageProfile">Checking local state protection…</p>
+        </section>
+
+        <section class="panel compact" id="createPanel" hidden>
+          <p class="eyebrow">New group</p>
+          <label for="groupName">Local group name</label>
+          <input id="groupName" maxlength="128" value="Three Client Lab">
+          <label for="createRelay">Relay URL</label>
+          <input id="createRelay" value="http://127.0.0.1:9440" spellcheck="false" inputmode="url">
+          <button id="createGroup" class="primaryWide">Create encrypted group</button>
+        </section>
+
+        <section class="panel compact" id="groupListPanel" hidden>
+          <div class="pairingHeader"><div><p class="eyebrow">Local groups</p><h3>Group book</h3></div><button id="refreshGroups" class="subtle">Refresh</button></div>
+          <div id="groupList" class="contactList">No groups yet.</div>
+        </section>
+      </aside>
+
+      <section class="chatPanel">
+        <div class="chatHeader"><div><p class="eyebrow">Experimental group runtime</p><h2 id="selectedGroupName">Select or create a group</h2></div></div>
+        <section class="panel messagingPanel">
+          <div class="messageHeader">
+            <div><p class="eyebrow">Group conversation</p><h3 id="selectedGroupID">No group selected</h3></div>
+            <div class="buttonRow"><button id="syncGroup" class="subtle" disabled>Sync</button></div>
+          </div>
+          <div id="groupMessages" class="messageList" aria-live="polite">Select a group to view its encrypted local history.</div>
+          <label for="groupMessage">Message</label>
+          <textarea id="groupMessage" rows="3" maxlength="16384" placeholder="Write with this group-only credential" disabled></textarea>
+          <div class="messageComposerActions"><button id="sendGroupMessage" disabled>Encrypt and send</button></div>
+          <p id="groupMessageStatus" class="info" role="status">No group selected.</p>
+        </section>
+
+        <section class="panel compact" id="admissionPanel" hidden>
+          <p class="eyebrow">Invite native member</p>
+          <h3>Accept a one-use group admission</h3>
+          <p class="info">On the macOS or iPhone client, prepare a join request for this group ID and relay. Paste that request here; return the generated Welcome link to the same device.</p>
+          <label for="admissionRequest">Admission request</label>
+          <textarea id="admissionRequest" rows="6" placeholder="noctweave-group-admission-v1:…"></textarea>
+          <button id="acceptAdmission">Generate signed Welcome</button>
+          <label for="admissionResponse">Welcome response</label>
+          <textarea id="admissionResponse" rows="6" readonly placeholder="The one-use Welcome appears here."></textarea>
+          <div class="buttonRow"><button id="copyAdmissionResponse" class="subtle">Copy Welcome</button></div>
+          <p id="admissionStatus" class="info" role="status">No pending admission.</p>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="./groups.js"></script>
+</body>
+</html>

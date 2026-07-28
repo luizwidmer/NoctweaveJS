@@ -1705,6 +1705,7 @@ export function browserMessageTimelineV2({ outbound, received }) {
       deliveryState: intent.delivery?.state ?? "locallyPersisted",
       deliveryLabel: deliveryLabel(intent.delivery?.state ?? "locallyPersisted"),
       intentStatus: intent.status,
+      failureCode: intent.lastFailureCode,
       clientTransactionId: intent.clientTransactionId
     }));
   }
@@ -1723,6 +1724,7 @@ export function browserMessageTimelineV2({ outbound, received }) {
       deliveryState: null,
       deliveryLabel: "Received",
       intentStatus: null,
+      failureCode: null,
       clientTransactionId: null
     }));
   }
@@ -2113,8 +2115,12 @@ function uuidFromDigest(digest) {
 }
 
 function requireFixedBase64(value, label) {
+  requireBase64Bytes(value, 32, label);
+}
+
+function requireBase64Bytes(value, expectedByteLength, label) {
   const bytes = decodeBase64(value);
-  if (bytes.byteLength !== 32 || bytes.every((byte) => byte === 0)) {
+  if (bytes.byteLength !== expectedByteLength || bytes.every((byte) => byte === 0)) {
     bytes.fill(0);
     throw new TypeError(`${label} is invalid.`);
   }
@@ -2140,8 +2146,17 @@ function validateRelayEndpoint(value) {
       !new Set(["tcp", "http", "websocket"]).has(value.transport)) {
     throw new TypeError("Route maintenance relay endpoint is invalid.");
   }
-  if (value.tlsCertificateFingerprintSHA256 !== undefined) {
+  if (value.tlsCertificateFingerprintSHA256 !== undefined &&
+      value.tlsCertificateFingerprintSHA256 !== null) {
     requireFixedBase64(value.tlsCertificateFingerprintSHA256, "Relay TLS fingerprint");
+  }
+  if (value.directorySigningPublicKey !== undefined &&
+      value.directorySigningPublicKey !== null) {
+    requireBase64Bytes(
+      value.directorySigningPublicKey,
+      1_952,
+      "Relay directory signing public key"
+    );
   }
 }
 

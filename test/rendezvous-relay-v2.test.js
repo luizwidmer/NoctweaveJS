@@ -122,7 +122,7 @@ test("rendezvous relay keeps session traffic directional and uses only fixed out
   const adapter = await createRendezvousRelayAdapterV2({ crypto, offer: canonicalOffer() });
   const responderFrame = sessionFrame({
     senderRole: "responder",
-    messageKind: "acceptance",
+    messageKind: "contactAcceptance",
     ciphertextBytes: 4_096
   });
   const responderAppend = await adapter.sealSessionFrame({
@@ -141,7 +141,7 @@ test("rendezvous relay keeps session traffic directional and uses only fixed out
 
   const offererFrame = sessionFrame({
     senderRole: "offerer",
-    messageKind: "introduction",
+    messageKind: "contactOffer",
     ciphertextBytes: 65_536
   });
   const offererAppend = await adapter.sealSessionFrame({

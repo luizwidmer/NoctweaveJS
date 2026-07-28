@@ -61,6 +61,21 @@ body {
 
 button, input, select, textarea { font: inherit; }
 button, .disabledFile { color: var(--text); }
+.buttonLink {
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--raised);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+.buttonLink:hover { border-color: var(--border-strong); background: var(--accent-soft); transform: translateY(-1px); }
+.buttonLink.subtle { background: color-mix(in srgb, var(--raised) 68%, transparent); }
 button {
   min-height: 42px;
   padding: 0 16px;

@@ -28,8 +28,8 @@ const ML_KEM_SHARED_SECRET_BYTES = 32;
 const rendezvousPurpose = "contactPairing";
 const rendezvousRoles = new Set(["offerer", "responder"]);
 const rendezvousMessageKinds = new Set([
-  "introduction",
-  "acceptance",
+  "contactOffer",
+  "contactAcceptance",
   "confirmation",
   "abort"
 ]);

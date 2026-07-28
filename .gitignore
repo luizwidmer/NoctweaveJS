@@ -9,4 +9,4 @@ vendor/liboqs/
 .env
 .env.*
 !.env.example
-
+.local/

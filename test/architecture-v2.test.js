@@ -399,7 +399,8 @@ test("standard relations, reactions, truthful retractions, and receipts match Sw
       content
     });
     assert.equal(receipt.content.disposition, "silent");
-    assert.equal(receipt.relation, undefined);
+    assert.equal(receipt.relation, null);
+    assert.equal(receipt.content.fallbackText, null);
   }
 });
 

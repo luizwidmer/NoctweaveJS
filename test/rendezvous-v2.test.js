@@ -79,7 +79,7 @@ test("one-use ML-KEM rendezvous derives matching directional sessions and fixed-
     crypto,
     session: opened.session,
     plaintext: message,
-    kind: "introduction",
+    kind: "contactOffer",
     at: openedAt
   });
   assert.equal(Buffer.from(sealed.frame.payload.ciphertext, "base64").byteLength, 4_096);

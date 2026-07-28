@@ -2758,7 +2758,9 @@ function boundedFailureCode(error) {
       ? error.reason
       : error?.name === "AbortError"
         ? "timeout"
-        : "relayFailure";
+        : typeof error?.message === "string" && error.message.length > 0
+          ? error.message
+          : "relayFailure";
   const normalized = value.replace(/[^A-Za-z0-9._-]/gu, "_");
   return encoder.encode(normalized).byteLength <= 96 ? normalized : "relayFailure";
 }

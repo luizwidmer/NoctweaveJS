@@ -265,7 +265,9 @@ export async function decodeContactPairingInvitationV2({ crypto, encoded }) {
   } catch (error) {
     throw new ContactPairingV2Error("invalidInvitation", "Contact pairing invitation is malformed.", error);
   }
-  if (!equalBytes(bytes, canonicalJsonBytes(value))) {
+  // Compare the public wire spelling directly. This remains exact while also
+  // avoiding cross-realm Uint8Array identity pitfalls in embedded webviews.
+  if (base64(canonicalJsonBytes(value)) !== encoded) {
     throw new ContactPairingV2Error("invalidInvitation", "Contact pairing invitation is not canonical.");
   }
   return validateContactPairingInvitationV2(crypto, value);
@@ -469,7 +471,7 @@ export async function prepareContactPairingResponderV2({
     crypto,
     session: opened.session,
     value: localBundle.introduction,
-    kind: "acceptance",
+    kind: "contactAcceptance",
     at
   });
   const adapter = await createRendezvousRelayAdapterV2({ crypto, offer: invitation.offer });
@@ -761,7 +763,7 @@ async function processOffererFrame({ crypto, pqc, state, opened, at, adapter }) 
       crypto,
       session: reviveSession(state.session),
       frame: opened.frame,
-      expectedKind: "acceptance",
+      expectedKind: "contactAcceptance",
       at
     });
     const peerIntroduction = await verifyContactIntroductionV2({
@@ -790,7 +792,7 @@ async function processOffererFrame({ crypto, pqc, state, opened, at, adapter }) 
       crypto,
       session: accepted.session,
       value: localBundle.introduction,
-      kind: "introduction",
+      kind: "contactOffer",
       at
     });
     const transport = await adapter.sealSessionFrame({
@@ -860,7 +862,7 @@ async function processResponderFrame({ crypto, pqc, state, opened, at, adapter }
       crypto,
       session: reviveSession(state.session),
       frame: opened.frame,
-      expectedKind: "introduction",
+      expectedKind: "contactOffer",
       at
     });
     const peerIntroduction = await verifyContactIntroductionV2({
@@ -1202,7 +1204,7 @@ async function openJsonFrame({ crypto, session, frame, expectedKind, at }) {
   } catch (error) {
     throw new ContactPairingV2Error("invalidFrame", "Pairing frame is not JSON.", error);
   }
-  if (!equalBytes(opened.plaintext, canonicalJsonBytes(value))) {
+  if (base64(opened.plaintext) !== base64(canonicalJsonBytes(value))) {
     throw new ContactPairingV2Error("invalidFrame", "Pairing frame is not canonical.");
   }
   return { value, session: opened.session };

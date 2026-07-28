@@ -8,7 +8,9 @@ import {
   WebCryptoPrimitives,
   createRendezvousRelayAdapterV2,
   decodeContactPairingInvitationV2,
+  decodeNoctweavePairingLinkV1,
   encodeContactPairingInvitationV2,
+  encodeNoctweavePairingLinkV1,
   parseBrowserRelayEndpoint,
   relayEndpointURL,
   swiftISODate,
@@ -56,6 +58,7 @@ const state = {
   pumpTimer: null,
   messagePumpTimer: null
 };
+const RELAY_PREFERENCE_KEY = "application:relay-preference:v1";
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -189,7 +192,11 @@ function makeRelayClient(endpoint, options = {}) {
   const parsed = typeof endpoint === "string" ? parseBrowserRelayEndpoint(endpoint) : endpoint;
   const endpointURL = typeof endpoint === "string" ? endpoint : relayEndpointURL(parsed, "/");
   const customFetch = parsed.transport === "http" ? proxyFetch(endpointURL) : options.fetch;
-  return new NoctweaveRelayClient(parsed, { ...options, fetch: customFetch });
+  return new NoctweaveRelayClient(parsed, {
+    crypto: state.crypto,
+    ...options,
+    fetch: customFetch
+  });
 }
 
 function proxyFetch(endpoint) {
@@ -251,6 +258,7 @@ async function createVault() {
     elements.relay.value = state.relayVerifiedEndpoint;
     elements.relayInfo.textContent = state.relayVerifiedSummary ?? "Relay verified during onboarding.";
     activateVaultSession(opened);
+    await persistRelayPreference(state.relayVerifiedEndpoint);
     showApp();
   } finally {
     elements.passphrase.value = "";
@@ -275,6 +283,7 @@ async function unlockVault() {
       ...opened,
       persona: validateBrowserPersonaState(opened.persona)
     });
+    await restoreRelayPreference();
     showApp();
   } finally {
     elements.passphrase.value = "";
@@ -361,6 +370,33 @@ async function verifyRelay() {
   state.relayVerifiedEndpoint = elements.relay.value.trim();
   state.relayVerifiedSummary = `${result.endpoint.transport.toUpperCase()} route transport verified`;
   elements.relayInfo.textContent = state.relayVerifiedSummary;
+  await persistRelayPreference(state.relayVerifiedEndpoint);
+}
+
+async function persistRelayPreference(endpoint) {
+  if (!(state.encryptedStore instanceof EncryptedNoctweaveStore)) return;
+  const normalized = endpoint.trim();
+  parseBrowserRelayEndpoint(normalized);
+  await state.encryptedStore.set(RELAY_PREFERENCE_KEY, {
+    version: 1,
+    endpoint: normalized
+  });
+}
+
+async function restoreRelayPreference() {
+  if (!(state.encryptedStore instanceof EncryptedNoctweaveStore)) return;
+  const saved = await state.encryptedStore.get(RELAY_PREFERENCE_KEY);
+  if (saved === null) return;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) ||
+      saved.version !== 1 || typeof saved.endpoint !== "string" ||
+      Object.keys(saved).sort().join(",") !== "endpoint,version") {
+    throw new Error("The encrypted relay preference is invalid.");
+  }
+  parseBrowserRelayEndpoint(saved.endpoint);
+  elements.relay.value = saved.endpoint;
+  state.relayVerifiedEndpoint = saved.endpoint;
+  state.relayVerifiedSummary = "Encrypted relay preference restored; verify before changing it.";
+  elements.relayInfo.textContent = state.relayVerifiedSummary;
 }
 
 async function createInvitation() {
@@ -376,8 +412,9 @@ async function createInvitation() {
     createdAt: createdAtValue,
     expiresAt: expiresAtValue
   });
-  const encoded = await encodeContactPairingInvitationV2({
+  const encoded = await encodeNoctweavePairingLinkV1({
     crypto: state.crypto,
+    relay: parseBrowserRelayEndpoint(elements.relay.value),
     invitation: prepared.invitation
   });
   await persistPersona(prepared.persona);
@@ -394,10 +431,10 @@ async function copyInvitation() {
 }
 
 async function inspectInvitation() {
-  const invitation = await decodeContactPairingInvitationV2({
-    crypto: state.crypto,
-    encoded: elements.peerInvitation.value.trim()
-  });
+  const { invitation, relay } = await decodePairingInput(
+    elements.peerInvitation.value.trim()
+  );
+  elements.relay.value = relayEndpointURL(relay, "/").replace(/\/$/u, "");
   elements.invitationResult.textContent = `Valid one-use rendezvous; expires ${invitation.offer.expiresAt}. No identity or route was disclosed.`;
 }
 
@@ -405,11 +442,14 @@ async function acceptInvitation() {
   requireUnlocked();
   const encoded = elements.peerInvitation.value.trim();
   if (!encoded) throw new Error("Paste a one-use invitation first.");
-  const invitation = await decodeContactPairingInvitationV2({ crypto: state.crypto, encoded });
+  const { invitation, relay } = await decodePairingInput(encoded);
+  const relayURL = relayEndpointURL(relay, "/").replace(/\/$/u, "");
+  elements.relay.value = relayURL;
+  await persistRelayPreference(relayURL);
   const prepared = await state.pairing.prepareResponderPairing({
     persona: state.persona,
     invitation,
-    relay: elements.relay.value,
+    relay,
     relationshipPseudonym: elements.relationshipPseudonym.value,
     at: swiftISODate()
   });
@@ -417,6 +457,20 @@ async function acceptInvitation() {
   elements.peerInvitation.value = "";
   elements.invitationResult.textContent = "Invitation accepted. Its secret was removed from the form; the encrypted rendezvous will resume until ready.";
   await pumpPairing(prepared.pairingID);
+}
+
+async function decodePairingInput(encoded) {
+  if (encoded.startsWith("noctweave-pair-v1:")) {
+    return decodeNoctweavePairingLinkV1({ crypto: state.crypto, encoded });
+  }
+  const invitation = await decodeContactPairingInvitationV2({
+    crypto: state.crypto,
+    encoded
+  });
+  return {
+    invitation,
+    relay: parseBrowserRelayEndpoint(elements.relay.value)
+  };
 }
 
 async function resumeAllPairings() {
@@ -580,7 +634,7 @@ async function backgroundResume() {
   try {
     await resumeAllPairings();
   } catch (error) {
-    elements.pairingStatus.textContent = `Rendezvous paused: ${error instanceof Error ? error.message : String(error)} Use Resume all to retry.`;
+    elements.pairingStatus.textContent = `Rendezvous paused: ${displayError(error)} Use Resume all to retry.`;
   }
 }
 
@@ -1066,7 +1120,8 @@ function renderSelectedMessages() {
     metadata.textContent = [
       message.direction === "outbound" ? "You" : "Peer",
       message.relationLabel,
-      message.deliveryLabel
+      message.deliveryLabel,
+      message.failureCode
     ].filter(Boolean).join(" · ");
     item.append(text, metadata);
     if (message.direction === "inbound" &&
@@ -1158,7 +1213,7 @@ async function run(operation) {
     elements.status.textContent = "Ready";
   } catch (error) {
     elements.status.textContent = "Error";
-    elements.error.textContent = error instanceof Error ? error.message : String(error);
+    elements.error.textContent = displayError(error);
     if (state.persona) elements.pairingStatus.textContent = elements.error.textContent;
   }
 }
@@ -1179,5 +1234,12 @@ async function runMessaging(operation) {
 }
 
 function displayError(error) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const described = error && typeof error === "object" && typeof error.code === "string"
+    ? `${message} (${error.code})`
+    : message;
+  const cause = error && typeof error === "object" ? error.cause : null;
+  return cause instanceof Error && cause.message !== message
+    ? `${described}: ${displayError(cause)}`
+    : described;
 }
