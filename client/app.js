@@ -27,6 +27,9 @@ import {
   browserRollbackAnchorRequirement,
   executeAnchoredBrowserLocalBurnV2
 } from "./messaging-service.js";
+import { initializeAppearanceControl } from "./theme.js";
+
+initializeAppearanceControl();
 
 const state = {
   pqc: null,
