@@ -1,0 +1,28 @@
+{
+  "profile": "nw.call-v1.ml-kem-768.aes-256-gcm",
+  "callID": "7D5A399D-D3B1-487A-9BDD-2D2F04B93476",
+  "candidateID": "2566A7F0-E735-4E4A-B0EB-2AF080EAA024",
+  "createdAt": "2031-02-27T13:46:40Z",
+  "expiresAt": "2031-02-27T13:51:40Z",
+  "answerAt": "2031-02-27T13:46:41Z",
+  "descriptor": "wss://relay.example/call/opaque-route",
+  "offerPublicKeyBytes": 1184,
+  "offerPublicKeyRepeatedByte": 49,
+  "kemCiphertextBytes": 1088,
+  "kemCiphertextRepeatedByte": 51,
+  "sharedSecretBytes": 32,
+  "sharedSecretRepeatedByte": 52,
+  "expectedOfferDigestBase64": "INI1iW9NfTwvF2z3CTVUQh+edeAy0qzYRR6ki80W6Jw=",
+  "expectedTranscriptDigestBase64": "f2hNHxRE9HQaxG3FVNJN3gefKd6/dC/YVbP9RxDjA4U=",
+  "expectedRootKeyBase64": "F4TTn+3sISYOjL/PFZ1zY2Q8HAnwDHC6M4lvVZeD4hM=",
+  "expectedInitiatorMediaKeyEpoch0Base64": "TX4AnctcAP0lzaisFB3OZ+FmMJRdfOj5n/nsclOXDPg=",
+  "mediaFrame": {
+    "trackID": 1,
+    "timestamp": 960,
+    "flags": 1,
+    "payloadBase64": "AQID",
+    "targetByteCount": 512,
+    "paddingRepeatedByte": 165,
+    "expectedCiphertextBase64": "PTJIgmTkUEmJAPqqv8xTRPalWc0AECllQl4cd7JwdziPtd7xrGvglXz+kvGgZU+hw4EEqPAxlouFgnTOVqiWoaTvwvF0jqz+MvsAyyy8QoHQEOqUS6ZWdhl448BYjoxooEHkSJs6IGZMsahnJL6NWx9BFS7+6fSX5BnljPFkDkbZUGxn/59E+f/g+UCQSS9nsJQVrYmQSajVEE+ERDsj63OixYXrQNPF/OVXXPzrHsriaXQ45fXBiEfdbXZXZksyrKxWhN7WjC4Bsn7ktew8JtOf09FDpHPY2y5IP0sfYsmFknKZ/MGxA6sYY7KAutAbOpTsPUbp9aAIOQDLW4r6fr/7JdNJkfY104uWWKHfOAyGsZ3iJIlq6T+DHlQfj1yx7jtP1c9Gwg81nKJ0LaKQ3VaL7jcfVecIWr4Yl+vqwSWfJXiTpqEdDhywuoQTEQMrxNKvY6p3oTm8jyQZXg1hiKZGOeQvH/z4fR3KJHy1vqZFpEYItU/LU/OU9NGNIl/9r+6ticaNRjrBF2P5+703Az76Tyr5NLJZEOmbYanzlKlm5t/oJCLTcZPJ01v5eJEBSDI310oArAH6mqo8INQeSjwVrmLuUPL6Kz4Qiyg0NbwytcS0GDil3Brx5gfl7qfW0U8m9eFdTXXmJzNMFHzg0EAobVhbGkWZmaZcCaLenws="
+  }
+}

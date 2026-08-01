@@ -5,7 +5,8 @@
 NoctweaveJS is the JavaScript implementation of the Noctweave 1.0 protocol
 base. It provides bounded HTTP/WebSocket relay access, post-quantum pairwise
 contact establishment, direct-message cryptography, opaque route packets, and
-encrypted local storage.
+encrypted local storage. It also exposes the experimental `nw.call@1`
+one-to-one signaling, ML-KEM handshake, and encrypted media-frame primitives.
 
 The protocol has no network-visible persona or reusable global identity. A
 persona is only a local UI/storage label. Every contact pairing creates fresh
@@ -58,6 +59,44 @@ npm run build:oqs-wasm
 ```
 
 Set `NOCTWEAVE_LIBOQS_DIR` when the pinned liboqs checkout lives elsewhere.
+
+## Experimental calls
+
+Call setup requires the full `NoctweaveCryptoSuite`: WebCrypto supplies
+AES-GCM/HKDF while the checked-in liboqs WASM adapter supplies ML-KEM-768.
+Plain `WebCryptoPrimitives` intentionally cannot create or answer a call.
+
+```js
+const local = enableCallV1(createProtocolCapabilityManifest());
+if (!supportsCallV1(local) || !supportsCallV1(peerManifest)) {
+  throw new Error("Calls were not negotiated");
+}
+
+const pending = await createPendingCallOfferV1({
+  crypto: suite,
+  tracks: [{
+    trackID: 1,
+    mediaKind: "audio",
+    direction: "sendReceive",
+    codecs: [callCodecV1.opus]
+  }],
+  candidates: [transportCandidate]
+});
+
+const content = createCallSignalEncodedContentV1(pending.offerSignal);
+// Send `content` as an ordinary direct-v4 encrypted application event.
+```
+
+The peer uses `answerCallOfferV1`; the initiator uses
+`acceptCallAnswerV1`. `CallMediaSenderV1` and `CallMediaReceiverV1` then seal
+already encoded codec frames into fixed buckets and enforce directional epoch
+keys plus replay windows. A product must supply capture/playback and WebRTC,
+datagram, or WebSocket transport adapters. The package does not claim that an
+ordinary Noctweave message relay is a media relay.
+
+The Swift and JavaScript implementations consume the same `call_v1.json`
+canonical KDF/media vector. Full semantics are in the public
+[Call Protocol v1](https://github.com/luizwidmer/Noctweave/blob/main/NoctweaveDocumentation/call_protocol_v1.md).
 
 ## Relay client
 

@@ -419,6 +419,7 @@ const knownModuleValues = [
   { module: "nw.opaque-route", versions: [2], status: "provisional" },
   { module: "nw.rendezvous-transport", versions: [2], status: "provisional" },
   { module: "nw.blobs", versions: [1], status: "provisional" },
+  { module: "nw.call", versions: [1], status: "experimental" },
   { module: "nw.groups", versions: [2], status: "experimental" },
   { module: "nw.wake", versions: [1], status: "experimental" },
   { module: "nw.federation", versions: [1], status: "provisional" },
@@ -519,6 +520,12 @@ export function contentTypeCanonicalName(value) {
 
 export const standardContentTypes = Object.freeze({
   text: createContentTypeId({ authority: "org.noctweave", name: "text", major: 1, minor: 0 }),
+  callSignal: createContentTypeId({
+    authority: "org.noctweave.call",
+    name: "signal",
+    major: 1,
+    minor: 0
+  }),
   attachment: createContentTypeId({ authority: "org.noctweave", name: "attachment", major: 1, minor: 0 }),
   reaction: createContentTypeId({ authority: "org.noctweave", name: "reaction", major: 1, minor: 0 }),
   retraction: createContentTypeId({ authority: "org.noctweave", name: "retraction", major: 1, minor: 0 }),
