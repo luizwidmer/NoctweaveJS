@@ -24,7 +24,8 @@ async function runProductionBrowserSmoke() {
   try {
     await import(`../client/index.js?dom-smoke=${Date.now()}`);
     await settle();
-    assert.match(dom.get("onboardingRelayInfo").textContent, /rollbackable|hardened/i);
+    assert.match(dom.get("onboardingRelayInfo").textContent, /browser|desktop/i);
+    assert.match(dom.get("securityProfileWarning").textContent, /rollbackable|hardened/i);
     dom.get("securityAcknowledgment").checked = true;
     dom.get("onboardingRelay").value = "http://127.0.0.1:9340";
     await dom.get("onboardingRelayCheck").click();

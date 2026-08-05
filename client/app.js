@@ -17,7 +17,6 @@ import {
   validateBrowserPersonaState
 } from "../src/index.js";
 import {
-  browserRollbackResistanceWarning,
   browserSecurityStorageCapabilityV2,
   browserSecurityStorageProfileV2,
   createIndexedDBBrowserAnchorStoreFactoryV2
@@ -71,6 +70,8 @@ const elements = {
   forget: $("#forgetVault"),
   error: $("#vaultError"),
   securityAcknowledgment: $("#securityAcknowledgment"),
+  securityAcknowledgmentText: $("#securityAcknowledgmentText"),
+  securityProfileWarning: $("#securityProfileWarning"),
   onboardingRelay: $("#onboardingRelay"),
   onboardingRelayCheck: $("#onboardingRelayCheck"),
   onboardingRelayInfo: $("#onboardingRelayInfo"),
@@ -235,8 +236,16 @@ function renderGate() {
   elements.onboardingRelayCheck.disabled = !available;
   elements.securityAcknowledgment.disabled = !available;
   elements.onboardingRelayInfo.textContent = available
-    ? `${profile.label ?? "Storage profile"}. ${profile.warning ?? browserRollbackResistanceWarning}`
+    ? profile.label ?? "Encrypted local storage"
     : profile.reason ?? browserRollbackAnchorRequirement;
+  const profileWarning = typeof profile.warning === "string"
+    ? profile.warning.trim()
+    : "";
+  elements.securityProfileWarning.textContent = profileWarning;
+  elements.securityProfileWarning.hidden = profileWarning.length === 0;
+  elements.securityAcknowledgmentText.textContent = profile.hardwareRollbackResistance === true
+    ? "I understand this encrypted persona is local to this installation and has no account recovery."
+    : "I understand this browser profile is best-effort and may be rolled back from an older device or browser backup.";
 }
 
 async function createVault() {
@@ -324,6 +333,7 @@ function showApp() {
   elements.gate.hidden = true;
   elements.app.hidden = false;
   elements.app.inert = false;
+  globalThis.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
   selectInitialRelationship();
   renderPersona();
   startPairingPump();
@@ -355,6 +365,7 @@ function lockProfile() {
   elements.app.hidden = true;
   elements.app.inert = true;
   elements.gate.hidden = false;
+  globalThis.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
   renderGate();
 }
 

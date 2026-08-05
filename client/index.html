@@ -25,8 +25,8 @@
       <div class="securityProfile" id="securityProfile">
         <p class="eyebrow">Storage and security profile</p>
         <p id="onboardingRelayInfo" class="fieldHint">Loading the explicit storage profile…</p>
-        <p class="warning">Browser IndexedDB is best-effort and rollbackable. It is not hardware-backed rollback resistance and is not equivalent to the hardened Electrobun host anchor.</p>
-        <label class="checkControl"><input id="securityAcknowledgment" type="checkbox">I understand this profile is best-effort/rollbackable and acknowledge its limitation.</label>
+        <p id="securityProfileWarning" class="warning"></p>
+        <label class="checkControl"><input id="securityAcknowledgment" type="checkbox"><span id="securityAcknowledgmentText">I understand the selected local-storage profile and its limits.</span></label>
       </div>
       <label for="displayName">Local display name</label>
       <input id="displayName" maxlength="128" value="Anonymous">
@@ -50,9 +50,9 @@
   <main class="shell" id="appShell" hidden inert>
     <section class="hero">
       <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
-        <p class="eyebrow">NoctweaveJS 1.0 base</p>
-        <h1>Pairwise Protocol Shell</h1>
-        <p>One-use rendezvous pairing without accounts, reusable identities, or public addresses.</p>
+        <p class="eyebrow">NoctweaveJS client</p>
+        <h1>Encrypted conversations</h1>
+        <p>Pair, send, and receive through relays without accounts or reusable public identities.</p>
       </div></div>
       <div class="heroActions"><div class="status" id="status">Ready</div><a class="buttonLink" href="./groups.html">Groups</a><button id="lockProfile" class="subtle">Lock</button><button id="burnProfile" class="danger">Burn local persona</button></div>
     </section>
@@ -71,13 +71,13 @@
           <h2>Relay</h2>
           <label for="relay">Relay URL</label>
           <input id="relay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url">
-          <button id="verifyRelay">Verify route and pairing transport</button>
+          <button id="verifyRelay">Check relay</button>
           <div id="relayInfo" class="info">Not checked yet.</div>
         </section>
       </aside>
 
       <section class="chatPanel">
-        <div class="chatHeader"><div><p class="eyebrow">Durable pairwise messaging</p><h2>Encrypted relationship workspace</h2></div></div>
+        <div class="chatHeader"><div><p class="eyebrow">Durable pairwise messaging</p><h2>Conversations</h2></div></div>
         <div class="panel messagingPanel">
           <div class="messageHeader">
             <div><p class="eyebrow">Selected relationship</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>

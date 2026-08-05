@@ -44,7 +44,7 @@
   --status-good: #8fd0b0;
   --status-warning: #f1bb78;
   --status-danger: #ff9da7;
-  --shadow: 0 22px 72px rgba(8, 3, 5, .48);
+  --shadow: 0 22px 72px rgba(0, 0, 0, .48);
   --canvas-glow: rgba(225, 123, 111, .22);
   --focus-ring: rgba(225, 123, 111, .32);
 }
@@ -158,15 +158,16 @@ small { color: var(--muted); }
 .vaultError { min-height: 1.4em; margin: 14px 0 0; color: var(--status-danger); }
 
 .shell { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: radial-gradient(circle at 20% 10%, var(--canvas-glow), transparent 34%), var(--canvas); }
-.hero { min-height: 92px; padding: 20px clamp(20px, 4vw, 48px); display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 88%, transparent); }
+.hero { min-height: 104px; padding: 20px clamp(228px, 20vw, 268px) 20px clamp(20px, 4vw, 48px); display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 88%, transparent); }
 .heroIdentity { display: flex; align-items: center; gap: 15px; }
 .heroIdentity img { width: 48px; height: 48px; padding: 9px; border: 1px solid var(--border-strong); border-radius: 15px; background: var(--accent-soft); }
 .heroIdentity p, .heroIdentity h1 { margin-bottom: 0; }
-.heroActions { display: flex; align-items: center; gap: 11px; }
+.heroActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; }
 .status { color: var(--status); font-size: .84rem; }
 .workspace { min-height: 0; display: grid; grid-template-columns: minmax(250px, 310px) minmax(0, 1fr); overflow: hidden; }
 .sideRail, .chatPanel { min-height: 0; overflow: auto; padding: 22px; }
 .sideRail { border-right: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.sideRail #verifyRelay { width: 100%; margin-top: 10px; white-space: nowrap; }
 .chatPanel { display: grid; align-content: start; gap: 16px; }
 .panel { padding: 19px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); }
 .panel + .panel { margin-top: 16px; }
@@ -221,6 +222,7 @@ small { color: var(--muted); }
   .vaultGate { padding-inline: 14px; }
   .shell { height: auto; min-height: 100vh; overflow: visible; }
   .hero { align-items: flex-start; padding-top: 78px; }
+  .hero { padding-right: 14px; }
   .hero, .messageHeader { flex-direction: column; }
   .heroActions, .messageHeader .buttonRow { justify-content: flex-start; width: 100%; }
   .workspace { grid-template-columns: 1fr; overflow: visible; }

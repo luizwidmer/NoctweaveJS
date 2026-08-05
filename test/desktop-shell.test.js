@@ -31,7 +31,7 @@ test("Electrobun desktop shell packages the existing client, PQ WASM, and secure
   assert.match(view, /installDesktopRelationshipStateAnchorFactory/);
   assert.match(view, /await import\("\.\.\/\.\.\/client\/app\.js"\)/);
   assert.match(html, /src="\.\/index\.js"/);
-  assert.match(html, /Pairwise Protocol Shell/);
+  assert.match(html, /Encrypted conversations/);
   assert.match(html, /One-use pairing/);
   assert.match(hostState, /MacOSKeychainVault/);
   assert.match(hostState, /afterSecureCommit/);
