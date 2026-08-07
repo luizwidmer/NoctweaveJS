@@ -11,7 +11,7 @@ test("production and browser example expose the shared appearance control", asyn
 
   for (const html of [productionHTML, exampleHTML]) {
     assert.match(html, /data-appearance-control/);
-    assert.match(html, /id="appearancePreference"/);
+    assert.match(html, /data-appearance-select/);
     assert.match(html, /value="system"[^>]*>System/);
     assert.match(html, /value="light"[^>]*>Light/);
     assert.match(html, /value="dark"[^>]*>Dark/);
@@ -25,12 +25,12 @@ test("production and browser example expose the shared appearance control", asyn
 });
 
 test("appearance preference persists and follows System before and after unlock", async () => {
-  const control = new TestControl();
+  const controls = [new TestControl(), new TestControl()];
   const document = {
     documentElement: { dataset: {} },
-    querySelector(selector) {
-      assert.equal(selector, "#appearancePreference");
-      return control;
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-appearance-select]");
+      return controls;
     }
   };
   const values = new Map([["noctweavejs-appearance", "dark"]]);
@@ -56,16 +56,18 @@ test("appearance preference persists and follows System before and after unlock"
   try {
     const { initializeAppearanceControl } = await import(`../client/theme.js?theme-dom=${Date.now()}`);
     initializeAppearanceControl();
-    assert.equal(control.value, "dark");
+    assert.equal(controls[0].value, "dark");
+    assert.equal(controls[1].value, "dark");
     assert.equal(document.documentElement.dataset.theme, "dark");
 
-    control.value = "light";
-    control.dispatch("change");
+    controls[0].value = "light";
+    controls[0].dispatch("change");
     assert.equal(values.get("noctweavejs-appearance"), "light");
     assert.equal(document.documentElement.dataset.theme, "light");
+    assert.equal(controls[1].value, "light");
 
-    control.value = "system";
-    control.dispatch("change");
+    controls[1].value = "system";
+    controls[1].dispatch("change");
     mediaQuery.matches = true;
     for (const listener of mediaQuery.listeners) listener();
     assert.equal(document.documentElement.dataset.appearance, "system");

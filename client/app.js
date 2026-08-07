@@ -66,6 +66,8 @@ const elements = {
   passphrase: $("#vaultPassphrase"),
   confirmation: $("#vaultConfirmation"),
   confirmationRow: $("#vaultConfirmationRow"),
+  vaultTitle: $("#vaultTitle"),
+  vaultIntro: $("#vaultIntro"),
   unlock: $("#unlockVault"),
   forget: $("#forgetVault"),
   error: $("#vaultError"),
@@ -224,6 +226,11 @@ function hasVault() {
 
 function renderGate() {
   const existing = hasVault();
+  elements.vaultTitle.textContent = existing ? "Unlock NoctweaveJS" : "Create your local persona";
+  elements.vaultIntro.textContent = existing
+    ? "Decrypt this installation's local persona to resume its independent pairwise relationships."
+    : "Choose a label for this installation. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.";
+  elements.passphrase.autocomplete = existing ? "current-password" : "new-password";
   elements.confirmationRow.hidden = existing;
   elements.unlock.textContent = state.vaultStatus === "burning"
     ? "Finish local burn"

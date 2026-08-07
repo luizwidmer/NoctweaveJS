@@ -8,20 +8,22 @@
   <link rel="stylesheet" href="../../client/styles.css">
 </head>
 <body>
-  <div class="appearanceControl" data-appearance-control>
-    <label for="appearancePreference">Appearance</label>
-    <select id="appearancePreference" aria-label="Appearance">
-      <option value="system">System</option>
-      <option value="light">Light</option>
-      <option value="dark">Dark</option>
-    </select>
-  </div>
   <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
     <div class="vaultCard">
-      <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
+      <div class="vaultTopRow">
+        <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
+        <div class="appearanceControl" data-appearance-control>
+          <label for="onboardingAppearancePreference">Appearance</label>
+          <select id="onboardingAppearancePreference" data-appearance-select aria-label="Appearance">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
       <p class="eyebrow">Encrypted local persona</p>
-      <h1 id="vaultTitle">Open Noctweave</h1>
-      <p>A persona is only a local label. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.</p>
+      <h1 id="vaultTitle">Create your local persona</h1>
+      <p id="vaultIntro">Choose a label for this installation. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.</p>
       <div class="securityProfile" id="securityProfile">
         <p class="eyebrow">Storage and security profile</p>
         <p id="onboardingRelayInfo" class="fieldHint">Loading the explicit storage profile…</p>
@@ -33,7 +35,7 @@
       <label for="onboardingRelay">Relay URL</label>
       <div class="onboardingRelayRow"><input id="onboardingRelay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Check relay</button></div>
       <label for="vaultPassphrase">Persona passphrase</label>
-      <input id="vaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+      <input id="vaultPassphrase" type="password" autocomplete="new-password" maxlength="1024">
       <div id="vaultConfirmationRow">
         <label for="vaultConfirmation">Repeat passphrase</label>
         <input id="vaultConfirmation" type="password" autocomplete="new-password" maxlength="1024">
@@ -54,7 +56,19 @@
         <h1>Encrypted conversations</h1>
         <p>Pair, send, and receive through relays without accounts or reusable public identities.</p>
       </div></div>
-      <div class="heroActions"><div class="status" id="status">Ready</div><button id="lockProfile" class="subtle">Lock</button><button id="burnProfile" class="danger">Burn local persona</button></div>
+      <div class="heroActions">
+        <div class="status" id="status">Ready</div>
+        <div class="appearanceControl compact" data-appearance-control>
+          <label for="appAppearancePreference">Appearance</label>
+          <select id="appAppearancePreference" data-appearance-select aria-label="Appearance">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <button id="lockProfile" class="subtle">Lock</button>
+        <button id="burnProfile" class="danger">Burn local persona</button>
+      </div>
     </section>
 
     <section class="workspace">

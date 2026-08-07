@@ -9,15 +9,6 @@
   <link rel="stylesheet" href="./groups.css">
 </head>
 <body>
-  <div class="appearanceControl" data-appearance-control>
-    <label for="appearancePreference">Appearance</label>
-    <select id="appearancePreference" aria-label="Appearance">
-      <option value="system">System</option>
-      <option value="light">Light</option>
-      <option value="dark">Dark</option>
-    </select>
-  </div>
-
   <main class="shell">
     <section class="hero">
       <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
@@ -25,7 +16,18 @@
         <h1>Group workspace</h1>
         <p>Group-scoped credentials and relay routes remain independent from your pairwise persona.</p>
       </div></div>
-      <div class="heroActions"><div class="status" id="companionStatus">Checking companion…</div><a class="buttonLink subtle" href="./">Pairwise workspace</a></div>
+      <div class="heroActions">
+        <div class="status" id="companionStatus">Checking companion…</div>
+        <div class="appearanceControl compact" data-appearance-control>
+          <label for="groupAppearancePreference">Appearance</label>
+          <select id="groupAppearancePreference" data-appearance-select aria-label="Appearance">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <a class="buttonLink subtle" href="./">Pairwise workspace</a>
+      </div>
     </section>
 
     <section class="workspace">

@@ -121,6 +121,16 @@ class TestDocument {
     return this.get(selector.slice(1));
   }
 
+  querySelectorAll(selector) {
+    if (selector === "[data-appearance-select]") {
+      return [
+        this.get("onboardingAppearancePreference"),
+        this.get("appAppearancePreference")
+      ];
+    }
+    return [];
+  }
+
   createElement() {
     return new TestElement();
   }

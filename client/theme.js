@@ -2,23 +2,29 @@ const APPEARANCE_STORAGE_KEY = "noctweavejs-appearance";
 const APPEARANCES = new Set(["system", "light", "dark"]);
 
 export function initializeAppearanceControl() {
-  const control = document.querySelector("#appearancePreference");
-  if (!control) return;
+  const controls = [...document.querySelectorAll("[data-appearance-select]")];
+  if (controls.length === 0) return;
 
   const preference = readAppearancePreference();
   applyAppearance(preference);
-  control.value = preference;
-  control.addEventListener("change", () => {
-    const nextPreference = APPEARANCES.has(control.value) ? control.value : "system";
-    persistAppearancePreference(nextPreference);
-    applyAppearance(nextPreference);
-    control.value = nextPreference;
-  });
+  synchronizeControls(preference);
+  for (const control of controls) {
+    control.addEventListener("change", () => {
+      const nextPreference = APPEARANCES.has(control.value) ? control.value : "system";
+      persistAppearancePreference(nextPreference);
+      applyAppearance(nextPreference);
+      synchronizeControls(nextPreference);
+    });
+  }
 
   const mediaQuery = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
   mediaQuery?.addEventListener?.("change", () => {
-    if (control.value === "system") applyAppearance("system");
+    if (controls[0]?.value === "system") applyAppearance("system");
   });
+
+  function synchronizeControls(nextPreference) {
+    for (const control of controls) control.value = nextPreference;
+  }
 }
 
 function readAppearancePreference() {
