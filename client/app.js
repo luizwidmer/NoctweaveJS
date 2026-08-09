@@ -74,6 +74,7 @@ const elements = {
   securityAcknowledgment: $("#securityAcknowledgment"),
   securityAcknowledgmentText: $("#securityAcknowledgmentText"),
   securityProfileWarning: $("#securityProfileWarning"),
+  securityProfileInfo: $("#securityProfileInfo"),
   onboardingRelay: $("#onboardingRelay"),
   onboardingRelayCheck: $("#onboardingRelayCheck"),
   onboardingRelayInfo: $("#onboardingRelayInfo"),
@@ -111,6 +112,12 @@ const elements = {
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
 elements.forget.addEventListener("click", () => run(forgetVault));
 elements.onboardingRelayCheck.addEventListener("click", () => run(verifyOnboardingRelay));
+elements.onboardingRelay.addEventListener("input", () => {
+  if (elements.onboardingRelay.value.trim() === state.relayVerifiedEndpoint) return;
+  state.relayVerifiedEndpoint = null;
+  state.relayVerifiedSummary = null;
+  elements.onboardingRelayInfo.textContent = "The relay will be verified before this persona is created.";
+});
 $("#verifyRelay").addEventListener("click", () => run(verifyRelay));
 $("#createInvitation").addEventListener("click", () => run(createInvitation));
 $("#copyInvitation").addEventListener("click", () => run(copyInvitation));
@@ -234,7 +241,7 @@ function renderGate() {
   elements.confirmationRow.hidden = existing;
   elements.unlock.textContent = state.vaultStatus === "burning"
     ? "Finish local burn"
-    : existing ? "Unlock encrypted persona" : "Create encrypted persona";
+    : existing ? "Unlock encrypted persona" : "Create secure persona";
   elements.forget.hidden = !existing;
   elements.error.textContent = "";
   const profile = state.securityProfile ?? browserSecurityStorageProfileV2;
@@ -242,7 +249,7 @@ function renderGate() {
   elements.unlock.disabled = !available;
   elements.onboardingRelayCheck.disabled = !available;
   elements.securityAcknowledgment.disabled = !available;
-  elements.onboardingRelayInfo.textContent = available
+  elements.securityProfileInfo.textContent = available
     ? profile.label ?? "Encrypted local storage"
     : profile.reason ?? browserRollbackAnchorRequirement;
   const profileWarning = typeof profile.warning === "string"
@@ -253,6 +260,9 @@ function renderGate() {
   elements.securityAcknowledgmentText.textContent = profile.hardwareRollbackResistance === true
     ? "I understand this encrypted persona is local to this installation and has no account recovery."
     : "I understand this browser profile is best-effort and may be rolled back from an older device or browser backup.";
+  if (state.relayVerifiedEndpoint === null) {
+    elements.onboardingRelayInfo.textContent = "The relay will be verified before this persona is created.";
+  }
 }
 
 async function createVault() {
@@ -260,8 +270,10 @@ async function createVault() {
   if (!elements.securityAcknowledgment.checked) {
     throw new Error("Acknowledge the selected storage/security profile before creating a persona.");
   }
-  if (state.relayVerifiedEndpoint === null) {
-    throw new Error("Verify the relay connection before creating a persona.");
+  const requestedRelay = elements.onboardingRelay.value.trim();
+  if (state.relayVerifiedEndpoint !== requestedRelay) {
+    elements.onboardingRelayInfo.textContent = "Verifying relay identity and capabilities…";
+    await verifyOnboardingRelay();
   }
   const passphrase = validatePassphrase();
   if (passphrase !== elements.confirmation.value) throw new Error("Passphrases do not match.");

@@ -24,18 +24,17 @@ async function runProductionBrowserSmoke() {
   try {
     await import(`../client/index.js?dom-smoke=${Date.now()}`);
     await settle();
-    assert.match(dom.get("onboardingRelayInfo").textContent, /browser|desktop/i);
+    assert.match(dom.get("securityProfileInfo").textContent, /browser|desktop/i);
+    assert.match(dom.get("onboardingRelayInfo").textContent, /verified before/i);
     assert.match(dom.get("securityProfileWarning").textContent, /rollbackable|hardened/i);
     dom.get("securityAcknowledgment").checked = true;
     dom.get("onboardingRelay").value = "http://127.0.0.1:9340";
-    await dom.get("onboardingRelayCheck").click();
-    await settle();
-    assert.match(dom.get("onboardingRelayInfo").textContent, /verified/i, dom.get("vaultError").textContent);
     dom.get("displayName").value = "Browser smoke persona";
     dom.get("vaultPassphrase").value = "correct horse battery staple";
     dom.get("vaultConfirmation").value = "correct horse battery staple";
     await dom.get("unlockVault").click();
     await settle();
+    assert.match(dom.get("onboardingRelayInfo").textContent, /verified/i, dom.get("vaultError").textContent);
     assert.equal(dom.get("appShell").hidden, false);
     assert.equal(dom.get("personaName").textContent, "Browser smoke persona", dom.get("vaultError").textContent);
     assert.match(dom.get("relayInfo").textContent, /transport verified/i);

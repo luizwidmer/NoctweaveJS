@@ -149,6 +149,10 @@ small { color: var(--muted); }
 .securityProfile { margin: 18px 0; padding: 14px; border: 1px solid color-mix(in srgb, var(--status-warning) 38%, var(--border)); border-radius: 13px; background: color-mix(in srgb, var(--status-warning) 9%, var(--surface)); }
 .securityProfile .eyebrow { margin-bottom: 6px; }
 .securityProfile .warning { color: var(--status-warning); line-height: 1.45; }
+.securityDetails { margin: 18px 0 10px; border: 1px solid var(--border); border-radius: 13px; background: var(--raised); }
+.securityDetails summary { padding: 12px 14px; color: var(--muted); font-size: .86rem; font-weight: 750; cursor: pointer; }
+.securityDetails .securityProfile { margin: 0 10px 10px; }
+.onboardingAcknowledgment { margin-bottom: 10px; }
 .onboardingRelayRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .vaultActions, .buttonRow, .pairingHeader { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .vaultActions { margin-top: 18px; }

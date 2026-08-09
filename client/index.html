@@ -24,16 +24,20 @@
       <p class="eyebrow">Encrypted local persona</p>
       <h1 id="vaultTitle">Create your local persona</h1>
       <p id="vaultIntro">Choose a label for this installation. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.</p>
-      <div class="securityProfile" id="securityProfile">
-        <p class="eyebrow">Storage and security profile</p>
-        <p id="onboardingRelayInfo" class="fieldHint">Loading the explicit storage profile…</p>
-        <p id="securityProfileWarning" class="warning"></p>
-        <label class="checkControl"><input id="securityAcknowledgment" type="checkbox"><span id="securityAcknowledgmentText">I understand the selected local-storage profile and its limits.</span></label>
-      </div>
+      <details class="securityDetails">
+        <summary>How this persona is protected</summary>
+        <div class="securityProfile" id="securityProfile">
+          <p class="eyebrow">Storage and security profile</p>
+          <p id="securityProfileInfo" class="fieldHint">Loading the local protection profile…</p>
+          <p id="securityProfileWarning" class="warning"></p>
+        </div>
+      </details>
+      <label class="checkControl onboardingAcknowledgment"><input id="securityAcknowledgment" type="checkbox"><span id="securityAcknowledgmentText">I understand this persona is local and has no account recovery.</span></label>
       <label for="displayName">Local display name</label>
       <input id="displayName" maxlength="128" value="Anonymous">
       <label for="onboardingRelay">Relay URL</label>
-      <div class="onboardingRelayRow"><input id="onboardingRelay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Check relay</button></div>
+      <div class="onboardingRelayRow"><input id="onboardingRelay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Test now</button></div>
+      <p id="onboardingRelayInfo" class="fieldHint" role="status">The relay will be verified before this persona is created.</p>
       <label for="vaultPassphrase">Persona passphrase</label>
       <input id="vaultPassphrase" type="password" autocomplete="new-password" maxlength="1024">
       <div id="vaultConfirmationRow">
@@ -42,7 +46,7 @@
       </div>
       <p class="fieldHint">Use at least 12 characters. There is no account recovery or identity linkage.</p>
       <div class="vaultActions">
-        <button id="unlockVault" class="primaryWide">Create encrypted persona</button>
+        <button id="unlockVault" class="primaryWide">Create secure persona</button>
         <button id="forgetVault" class="subtle danger" hidden>Delete local persona</button>
       </div>
       <p class="vaultError" id="vaultError" role="alert"></p>
