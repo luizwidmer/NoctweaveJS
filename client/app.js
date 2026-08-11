@@ -75,6 +75,7 @@ const elements = {
   securityAcknowledgmentText: $("#securityAcknowledgmentText"),
   securityProfileWarning: $("#securityProfileWarning"),
   securityProfileInfo: $("#securityProfileInfo"),
+  creationFields: $("#personaCreationFields"),
   onboardingRelay: $("#onboardingRelay"),
   onboardingRelayCheck: $("#onboardingRelayCheck"),
   onboardingRelayInfo: $("#onboardingRelayInfo"),
@@ -238,11 +239,14 @@ function renderGate() {
     ? "Decrypt this installation's local persona to resume its independent pairwise relationships."
     : "Choose a label for this installation. Every peer relationship receives fresh post-quantum keys, endpoint state, and an opaque route.";
   elements.passphrase.autocomplete = existing ? "current-password" : "new-password";
+  elements.creationFields.hidden = existing;
   elements.confirmationRow.hidden = existing;
   elements.unlock.textContent = state.vaultStatus === "burning"
     ? "Finish local burn"
     : existing ? "Unlock encrypted persona" : "Create secure persona";
-  elements.forget.hidden = !existing;
+  // Destructive persona removal requires an unlocked session so live routes
+  // can be torn down. The in-app burn action owns that flow.
+  elements.forget.hidden = true;
   elements.error.textContent = "";
   const profile = state.securityProfile ?? browserSecurityStorageProfileV2;
   const available = profile.available !== false && state.vault !== null;

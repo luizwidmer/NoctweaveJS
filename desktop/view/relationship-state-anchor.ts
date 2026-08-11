@@ -50,7 +50,9 @@ const unset = Symbol("unset desktop encrypted record");
 /**
  * Bridges the WebView encryption boundary to one host-side crash journal.
  * The Bun host sees only the relationship ID needed to bind the fixed-app
- * erasure scope plus EncryptedNoctweaveStore envelopes. URL profiles, browser
+ * erasure scope plus EncryptedNoctweaveStore envelopes. The fixed application
+ * slot additionally carries authenticated lifecycle metadata around one such
+ * envelope; its persona payload remains encrypted. URL profiles, browser
  * storage keys, message content, the passphrase, the derived AES key, and
  * decrypted protocol state never cross RPC. This is a local encryption
  * boundary, not anonymity from the desktop host.

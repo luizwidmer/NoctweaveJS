@@ -78,6 +78,43 @@ test("desktop host commits ciphertext with a Keychain CAS and detects filesystem
   }
 });
 
+test("desktop host accepts the encrypted application-vault wrapper used by persona creation", async () => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), "noctweave-persona-vault-"));
+  const secureVault = new MemorySecureVault();
+  const scope = {
+    profileName: "persona-profile",
+    relationshipID: "4E574156-4556-4002-8000-000000000001",
+    anchorKey: "browser-application-vault-slot-anchor-v2",
+    stateKey: "browser-application-vault-slot-state-v2"
+  };
+  const record = applicationVaultRecord(encryptedRecord(21));
+  try {
+    const store = hostStore({ rootDirectory, secureVault });
+    const anchor = await store.commit({
+      ...scope,
+      expectedAnchor: null,
+      nextGeneration: 1,
+      nextStateDigest: digest(21),
+      encryptedRecord: record
+    });
+    assert.equal(anchor.generation, 1);
+    assert.deepEqual(await store.load(scope), {
+      anchor,
+      encryptedRecord: record
+    });
+
+    await assert.rejects(() => store.commit({
+      ...scope,
+      expectedAnchor: anchor,
+      nextGeneration: 2,
+      nextStateDigest: digest(22),
+      encryptedRecord: applicationVaultRecord({ plaintext: "must never persist" })
+    }), /encrypted browser record fields are invalid/);
+  } finally {
+    await rm(rootDirectory, { recursive: true, force: true });
+  }
+});
+
 test("desktop host crash journal completes secure commit and destruction", async () => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "noctweave-anchor-recovery-"));
   const secureVault = new MemorySecureVault();
@@ -385,6 +422,19 @@ function encryptedRecord(marker) {
     algorithm: "AES-256-GCM",
     nonce: Buffer.alloc(12, marker).toString("base64"),
     ciphertext: Buffer.alloc(64, marker).toString("base64")
+  };
+}
+
+function applicationVaultRecord(encryptedPersona) {
+  return {
+    stateSchema: "org.noctweave.browser-application-vault-slot.v2",
+    version: 2,
+    status: "active",
+    vaultScopeID: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+    salt: Buffer.alloc(16, 23).toString("base64"),
+    encryptedRecord: encryptedPersona,
+    createdAt: "2026-08-11T10:00:00Z",
+    updatedAt: "2026-08-11T10:00:01Z"
   };
 }
 

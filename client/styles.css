@@ -217,6 +217,35 @@ small { color: var(--muted); }
 .disabledFile input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .secondaryHeader { margin-top: 9px; }
 
+@media (min-width: 761px) and (max-height: 860px) {
+  .vaultGate { place-items: start center; padding: 16px 24px; }
+  .vaultCard { width: min(760px, 100%); padding: 22px 32px; border-radius: 22px; }
+  .vaultTopRow { margin-bottom: 12px; }
+  .vaultMark { width: 48px; height: 48px; padding: 9px; border-radius: 14px; }
+  .vaultCard > p:not(.eyebrow, .fieldHint, .vaultError) { margin: 8px 0 14px; }
+  .vaultCard .securityDetails { margin: 12px 0 8px; }
+  .vaultCard .securityDetails summary { padding: 10px 12px; }
+  .vaultCard .onboardingAcknowledgment { min-height: 34px; margin-bottom: 4px; }
+  .vaultCard label { margin: 9px 0 5px; }
+  .vaultCard input { margin-top: 0; padding: 9px 12px; }
+  .vaultCard button { min-height: 38px; }
+  .vaultCard .fieldHint { margin-bottom: 6px; }
+  #personaCreationFields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 14px;
+    align-items: end;
+  }
+  #personaCreationFields .onboardingAcknowledgment { grid-column: 1 / -1; }
+  #personaCreationFields label[for="displayName"] { grid-column: 1; grid-row: 2; }
+  #displayName { grid-column: 1; grid-row: 3; }
+  #personaCreationFields label[for="onboardingRelay"] { grid-column: 2; grid-row: 2; }
+  .onboardingRelayRow { grid-column: 2; grid-row: 3; }
+  #onboardingRelayInfo { grid-column: 2; grid-row: 4; }
+  .vaultActions { margin-top: 12px; }
+  .vaultError { margin-top: 8px; }
+}
+
 @media (max-width: 760px) {
   body { overflow: auto; }
   .appearanceControl label { display: none; }

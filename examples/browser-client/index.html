@@ -32,12 +32,14 @@
           <p id="securityProfileWarning" class="warning"></p>
         </div>
       </details>
-      <label class="checkControl onboardingAcknowledgment"><input id="securityAcknowledgment" type="checkbox"><span id="securityAcknowledgmentText">I understand this persona is local and has no account recovery.</span></label>
-      <label for="displayName">Local display name</label>
-      <input id="displayName" maxlength="128" value="Anonymous">
-      <label for="onboardingRelay">Relay URL</label>
-      <div class="onboardingRelayRow"><input id="onboardingRelay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Test now</button></div>
-      <p id="onboardingRelayInfo" class="fieldHint" role="status">The relay will be verified before this persona is created.</p>
+      <div id="personaCreationFields">
+        <label class="checkControl onboardingAcknowledgment"><input id="securityAcknowledgment" type="checkbox"><span id="securityAcknowledgmentText">I understand this persona is local and has no account recovery.</span></label>
+        <label for="displayName">Local display name</label>
+        <input id="displayName" maxlength="128" value="Anonymous">
+        <label for="onboardingRelay">Relay URL</label>
+        <div class="onboardingRelayRow"><input id="onboardingRelay" value="http://127.0.0.1:9340" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Test now</button></div>
+        <p id="onboardingRelayInfo" class="fieldHint" role="status">The relay will be verified before this persona is created.</p>
+      </div>
       <label for="vaultPassphrase">Persona passphrase</label>
       <input id="vaultPassphrase" type="password" autocomplete="new-password" maxlength="1024">
       <div id="vaultConfirmationRow">

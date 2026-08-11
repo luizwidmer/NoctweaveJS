@@ -46,9 +46,9 @@ new BrowserWindow({
   transparent: false,
   titleBarStyle: "default",
   frame: {
-    width: 1280,
-    height: 820,
-    x: 120,
-    y: 100
+    width: 1120,
+    height: 760,
+    x: 80,
+    y: 60
   }
 });

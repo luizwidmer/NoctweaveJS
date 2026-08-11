@@ -19,6 +19,7 @@ const stateRecordVersion = 3;
 const maximumEncryptedRecordBytes = 12 * 1024 * 1024;
 const maximumHostRecordBytes = 20 * 1024 * 1024;
 const keychainServicePrefix = "org.noctweave.js-client.relationship-state.v3";
+const applicationVaultStateSchema = "org.noctweave.browser-application-vault-slot.v2";
 const erasedDigest = Buffer.alloc(32).toString("base64");
 
 const secureVaultConfiguration = detectSecureVaultConfiguration();
@@ -669,21 +670,29 @@ function validateStateRecord(record, scope) {
 }
 
 function digestEncryptedRecord(record) {
-  validateEncryptedRecord(record);
-  const canonical = {
-    __noctweaveEncrypted: record.__noctweaveEncrypted,
-    version: record.version,
-    algorithm: record.algorithm,
-    nonce: record.nonce,
-    ciphertext: record.ciphertext
-  };
+  const kind = validateEncryptedRecord(record);
+  const canonical = kind === "applicationVault"
+    ? canonicalApplicationVaultRecord(record)
+    : canonicalEncryptedEnvelope(record);
   return createHash("sha256")
-    .update("noctweave/desktop-encrypted-record/v1\0", "utf8")
+    .update(kind === "applicationVault"
+      ? "noctweave/desktop-application-vault-record/v2\0"
+      : "noctweave/desktop-encrypted-record/v1\0", "utf8")
     .update(JSON.stringify(canonical), "utf8")
     .digest("base64");
 }
 
 function validateEncryptedRecord(record) {
+  if (record && typeof record === "object" && !Array.isArray(record) &&
+      Object.hasOwn(record, "stateSchema")) {
+    validateApplicationVaultRecord(record);
+    return "applicationVault";
+  }
+  validateEncryptedEnvelope(record);
+  return "encryptedEnvelope";
+}
+
+function validateEncryptedEnvelope(record) {
   exact(record, [
     "__noctweaveEncrypted",
     "version",
@@ -700,6 +709,68 @@ function validateEncryptedRecord(record) {
   if (ciphertext.byteLength < 16 || ciphertext.byteLength > maximumEncryptedRecordBytes) {
     throw new Error("Encrypted desktop relationship record exceeds its bound.");
   }
+}
+
+function validateApplicationVaultRecord(record) {
+  exact(record, [
+    "stateSchema",
+    "version",
+    "status",
+    "vaultScopeID",
+    "salt",
+    "encryptedRecord",
+    "createdAt",
+    "updatedAt"
+  ], "application vault record");
+  if (record.stateSchema !== applicationVaultStateSchema || record.version !== 2 ||
+      !new Set(["active", "burning", "burned"]).has(record.status)) {
+    throw new Error("Desktop application vault record is invalid.");
+  }
+  canonicalUUID(record.vaultScopeID);
+  validateCanonicalTimestamp(record.createdAt, "application vault creation time");
+  validateCanonicalTimestamp(record.updatedAt, "application vault update time");
+  if (Date.parse(record.updatedAt) < Date.parse(record.createdAt)) {
+    throw new Error("Desktop application vault time moved backwards.");
+  }
+  if (record.status === "active" || record.status === "burning") {
+    decodeBase64(record.salt, 16, "application vault salt");
+    validateEncryptedEnvelope(record.encryptedRecord);
+  } else if (record.salt !== null || record.encryptedRecord !== null) {
+    throw new Error("Burned desktop application vault retained live encrypted authority.");
+  }
+}
+
+function canonicalEncryptedEnvelope(record) {
+  return {
+    __noctweaveEncrypted: record.__noctweaveEncrypted,
+    version: record.version,
+    algorithm: record.algorithm,
+    nonce: record.nonce,
+    ciphertext: record.ciphertext
+  };
+}
+
+function canonicalApplicationVaultRecord(record) {
+  return {
+    stateSchema: record.stateSchema,
+    version: record.version,
+    status: record.status,
+    vaultScopeID: record.vaultScopeID,
+    salt: record.salt,
+    encryptedRecord: record.encryptedRecord === null
+      ? null
+      : canonicalEncryptedEnvelope(record.encryptedRecord),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function validateCanonicalTimestamp(value, label) {
+  const milliseconds = Date.parse(value);
+  const canonical = Number.isFinite(milliseconds)
+    ? new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/u, "Z")
+    : null;
+  if (canonical !== value) throw new Error(`Invalid ${label}.`);
 }
 
 async function withScopeLock(scope, operation) {
