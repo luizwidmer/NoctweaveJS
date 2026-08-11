@@ -81,6 +81,10 @@ test("relay info responses require the exact bounded recursive current shape", (
   assert.throws(() => validate(missingRequired), /Relay info.*current protocol fields/);
   const { wakeSupport: _wakeSupport, ...missingNullable } = current;
   assert.throws(() => validate(missingNullable), /Relay info.*current protocol fields/);
+  const { iceService: _iceService, ...missingICE } = current;
+  assert.throws(() => validate(missingICE), /Relay info.*current protocol fields/);
+  const { relayIdentity: _relayIdentity, ...missingIdentity } = current;
+  assert.throws(() => validate(missingIdentity), /Relay info.*current protocol fields/);
 
   const { name: _name, ...missingFederationNullable } = current.federation;
   assert.throws(
@@ -204,6 +208,33 @@ test("relay info responses require the exact bounded recursive current shape", (
       }]
     }),
     /invalid encoding or length/
+  );
+
+  const iceService = {
+    version: 1,
+    urls: ["stun:relay.example:3478", "turn:relay.example:3478?transport=udp"],
+    credentialMode: "turn-rest",
+    credentialLifetimeSeconds: 600,
+    realm: "relay.example",
+    relayOnlySupported: true
+  };
+  assert.deepEqual(validate({ ...current, iceService }).relayInfo.iceService, iceService);
+  assert.throws(
+    () => validate({ ...current, iceService: { ...iceService, legacy: true } }),
+    /Relay ICE service.*current protocol fields/
+  );
+
+  const relayIdentity = relayIdentityFixture(endpoint);
+  assert.deepEqual(
+    validate({ ...current, relayIdentity }).relayInfo.relayIdentity,
+    relayIdentity
+  );
+  assert.throws(
+    () => validate({
+      ...current,
+      relayIdentity: { ...relayIdentity, signatureAlgorithm: "Ed25519" }
+    }),
+    /signature algorithm is invalid/
   );
 });
 
@@ -1112,6 +1143,7 @@ function relayInfoFixture() {
     onionTransport: null,
     mixnetTransport: null,
     wakeSupport: null,
+    iceService: null,
     relayName: "Test",
     operatorNote: null,
     softwareVersion: "noctweave-relay/1.0",
@@ -1134,7 +1166,30 @@ function relayInfoFixture() {
     federationDirectoryPublicKey: null,
     knownOpenPeers: null,
     openFederationDiscovery: null,
+    relayIdentity: null,
     advertisedAt: "2026-07-18T12:00:00Z"
+  };
+}
+
+function relayIdentityFixture(endpoint) {
+  return {
+    claim: {
+      version: 1,
+      relayID: `nwr1${"a".repeat(64)}`,
+      signingPublicKey: base64(new Uint8Array(1_952).fill(0x51)),
+      sequence: 1,
+      relayKind: "standard",
+      federationMode: "solo",
+      federationName: null,
+      advertisedEndpoints: [endpoint],
+      noctwebSuffix: ".audit",
+      hostSigningPublicKey: base64(new Uint8Array(32).fill(0x52)),
+      capabilityDigest: base64(new Uint8Array(32).fill(0x53)),
+      issuedAt: "2026-07-18T12:00:00Z",
+      expiresAt: "2026-07-19T12:00:00Z"
+    },
+    signatureAlgorithm: "ML-DSA-65",
+    signature: base64(new Uint8Array(3_309).fill(0x54))
   };
 }
 

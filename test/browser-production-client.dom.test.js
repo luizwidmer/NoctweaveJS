@@ -198,6 +198,7 @@ function relayInfo() {
     onionTransport: null,
     mixnetTransport: null,
     wakeSupport: null,
+    iceService: null,
     relayName: null,
     operatorNote: null,
     softwareVersion: null,
@@ -221,6 +222,7 @@ function relayInfo() {
     federationDirectoryPublicKey: null,
     knownOpenPeers: null,
     openFederationDiscovery: null,
+    relayIdentity: null,
     advertisedAt: "2026-07-18T12:00:00Z"
   };
 }

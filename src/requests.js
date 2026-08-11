@@ -315,6 +315,7 @@ function validateRelayInfoV2(value) {
       "onionTransport",
       "mixnetTransport",
       "wakeSupport",
+      "iceService",
       "relayName",
       "operatorNote",
       "softwareVersion",
@@ -331,6 +332,7 @@ function validateRelayInfoV2(value) {
       "federationDirectoryPublicKey",
       "knownOpenPeers",
       "openFederationDiscovery",
+      "relayIdentity",
       "advertisedAt"
     ],
     [],
@@ -386,6 +388,7 @@ function validateRelayInfoV2(value) {
   if (value.onionTransport !== null) validateOnionTransportSupport(value.onionTransport);
   if (value.mixnetTransport !== null) validateMixnetTransportSupport(value.mixnetTransport);
   if (value.wakeSupport !== null) validateWakeSupport(value.wakeSupport);
+  if (value.iceService !== null) validateRelayICEServiceV1(value.iceService);
   if (value.protocolCapabilities !== null) {
     validateRelayCapabilityManifestV2(value.protocolCapabilities);
   }
@@ -414,6 +417,7 @@ function validateRelayInfoV2(value) {
   if (value.openFederationDiscovery !== null) {
     validateOpenFederationDiscoverySupport(value.openFederationDiscovery);
   }
+  if (value.relayIdentity !== null) validateSignedRelayIdentityClaimV1(value.relayIdentity);
   return value;
 }
 
@@ -439,6 +443,139 @@ function validateRelayCapabilityManifestV2(value) {
   if (moduleNames.some((module, index) => index > 0 && module <= moduleNames[index - 1]) ||
       !modules.some(({ module, versions }) => module === "nw.core" && versions.includes(2))) {
     throw new TypeError("Relay capability modules must be unique, sorted, and include nw.core v2.");
+  }
+}
+
+function validateRelayICEServiceV1(value) {
+  requireExactRecord(
+    value,
+    [
+      "version",
+      "urls",
+      "credentialMode",
+      "credentialLifetimeSeconds",
+      "realm",
+      "relayOnlySupported"
+    ],
+    [],
+    "Relay ICE service"
+  );
+  if (value.version !== 1 || !Array.isArray(value.urls) ||
+      value.urls.length === 0 || value.urls.length > 8) {
+    throw new TypeError("Relay ICE service is outside its protocol bounds.");
+  }
+  const urls = value.urls.map(validateRelayICEURL);
+  if (new Set(urls).size !== urls.length ||
+      urls.some((url, index) => index > 0 && url <= urls[index - 1])) {
+    throw new TypeError("Relay ICE URLs must be unique and sorted.");
+  }
+  if (!["none", "turn-rest"].includes(value.credentialMode)) {
+    throw new TypeError("Relay ICE credential mode is invalid.");
+  }
+  validateBoolean(value.relayOnlySupported, "Relay ICE relay-only support");
+  if (value.realm !== null) validateBoundedText(value.realm, "Relay ICE realm", 255);
+  if (value.credentialMode === "none") {
+    if (value.credentialLifetimeSeconds !== null) {
+      throw new TypeError("Relay ICE credentials must be absent in none mode.");
+    }
+    return;
+  }
+  if (!urls.some((url) => url.startsWith("turn:") || url.startsWith("turns:")) ||
+      value.realm === null) {
+    throw new TypeError("TURN-REST requires a TURN URL and realm.");
+  }
+  requireInteger(value.credentialLifetimeSeconds, "TURN credential lifetime", 60, 3_600);
+}
+
+function validateRelayICEURL(value) {
+  if (typeof value !== "string" || value.length === 0 ||
+      new TextEncoder().encode(value).byteLength > 2_048 || value.trim() !== value ||
+      /[\s\u0000-\u001f\u007f-\u009f#@]/u.test(value)) {
+    throw new TypeError("Relay ICE URL is outside its protocol bounds.");
+  }
+  const match = /^(stun|stuns|turn|turns):([^/?]+)(?:\?transport=(udp|tcp))?$/u.exec(value);
+  if (!match || match[2].length === 0 || match[2].includes("\\") ||
+      (match[3] !== undefined && match[1] !== "turn" && match[1] !== "turns")) {
+    throw new TypeError("Relay ICE URL is invalid.");
+  }
+  return value;
+}
+
+function validateSignedRelayIdentityClaimV1(value) {
+  requireExactRecord(
+    value,
+    ["claim", "signatureAlgorithm", "signature"],
+    [],
+    "Signed relay identity"
+  );
+  validateRelayIdentityClaimV1(value.claim);
+  if (value.signatureAlgorithm !== "ML-DSA-65") {
+    throw new TypeError("Relay identity signature algorithm is invalid.");
+  }
+  requireBase64(value.signature, mlDsa65SignatureBytes, "Relay identity signature");
+}
+
+function validateRelayIdentityClaimV1(value) {
+  requireExactRecord(
+    value,
+    [
+      "version",
+      "relayID",
+      "signingPublicKey",
+      "sequence",
+      "relayKind",
+      "federationMode",
+      "federationName",
+      "advertisedEndpoints",
+      "noctwebSuffix",
+      "hostSigningPublicKey",
+      "capabilityDigest",
+      "issuedAt",
+      "expiresAt"
+    ],
+    [],
+    "Relay identity claim"
+  );
+  if (value.version !== 1) throw new TypeError("Relay identity version is invalid.");
+  if (typeof value.relayID !== "string" ||
+      !/^nwr1[0-9a-f]{64}$/u.test(value.relayID)) {
+    throw new TypeError("Relay identity ID is invalid.");
+  }
+  requireBase64(value.signingPublicKey, mlDsa65PublicKeyBytes, "Relay identity public key");
+  requireInteger(value.sequence, "Relay identity sequence", 0, Number.MAX_SAFE_INTEGER);
+  if (!["standard", "passthrough", "host", "coordinator"].includes(value.relayKind) ||
+      !["solo", "manual", "curated", "open"].includes(value.federationMode)) {
+    throw new TypeError("Relay identity role is invalid.");
+  }
+  if (value.federationName !== null) {
+    validateBoundedText(value.federationName, "Relay identity federation name", 1_024);
+  }
+  if (!Array.isArray(value.advertisedEndpoints) ||
+      value.advertisedEndpoints.length === 0 || value.advertisedEndpoints.length > 16) {
+    throw new TypeError("Relay identity endpoints exceed their protocol bounds.");
+  }
+  const endpoints = value.advertisedEndpoints.map(validateRelayEndpoint);
+  if (new Set(endpoints).size !== endpoints.length ||
+      endpoints.some((endpoint, index) => index > 0 && endpoint <= endpoints[index - 1])) {
+    throw new TypeError("Relay identity endpoints must be unique and sorted.");
+  }
+  if (value.noctwebSuffix !== null) validateNoctwebRelaySuffixV1(value.noctwebSuffix);
+  if (value.hostSigningPublicKey !== null) {
+    requireBase64(value.hostSigningPublicKey, 32, "Relay host signing public key");
+  }
+  requireBase64(value.capabilityDigest, 32, "Relay capability digest");
+  const issuedAt = boundedRelayTimestamp(value.issuedAt, "Relay identity issuedAt");
+  const expiresAt = boundedRelayTimestamp(value.expiresAt, "Relay identity expiresAt");
+  if (expiresAt <= issuedAt || expiresAt - issuedAt > 7 * 24 * 60 * 60 * 1_000) {
+    throw new TypeError("Relay identity lifetime is invalid.");
+  }
+}
+
+function validateNoctwebRelaySuffixV1(value) {
+  if (typeof value !== "string" || value.length < 3 ||
+      new TextEncoder().encode(value).byteLength > 64 ||
+      !/^\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/u.test(value)) {
+    throw new TypeError("Noctweb relay suffix is invalid.");
   }
 }
 
