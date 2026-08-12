@@ -366,7 +366,7 @@ export class NoctweaveRelayClient {
           const text = typeof event.data === "string"
             ? event.data
             : await blobLikeToText(event.data, this.policy.maxResponseBytes);
-          if (new TextEncoder().encode(text).byteLength > this.policy.maxResponseBytes) {
+          if (stringExceedsUTF8ByteBudget(text, this.policy.maxResponseBytes)) {
             throw new Error("Relay response exceeds client size limit.");
           }
           finish(resolve, decodeRelayResponse(text, request));
@@ -420,6 +420,34 @@ export class NoctweaveRelayClient {
       throw new TypeError("Noctweave Net hosting receipt is not bound to the expected relay key.");
     }
   }
+}
+
+function stringExceedsUTF8ByteBudget(value, maximumBytes) {
+  let byteCount = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit <= 0x7f) {
+      byteCount += 1;
+    } else if (unit <= 0x7ff) {
+      byteCount += 2;
+    } else if (unit >= 0xd800 && unit <= 0xdbff &&
+               index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        byteCount += 4;
+        index += 1;
+      } else {
+        byteCount += 3;
+      }
+    } else {
+      // TextEncoder emits three replacement bytes for unpaired surrogates.
+      byteCount += 3;
+    }
+    if (byteCount > maximumBytes) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function requireOpaqueRouteResponse(response, key) {

@@ -1077,6 +1077,28 @@ test("relay client enforces bounded response and request allocation", async () =
   });
   await assert.rejects(() => responseClient.info(), /response exceeds client size limit/);
 
+  class OversizedWebSocket {
+    constructor() {
+      queueMicrotask(() => this.onopen?.());
+    }
+
+    send() {
+      queueMicrotask(() => {
+        this.onmessage?.({ data: "a".repeat(1_025) });
+      });
+    }
+
+    close() {}
+  }
+  const webSocketClient = new NoctweaveRelayClient("wss://relay.example", {
+    WebSocket: OversizedWebSocket,
+    policy: { maxResponseBytes: 1_024 }
+  });
+  await assert.rejects(
+    () => webSocketClient.info(),
+    /response exceeds client size limit/
+  );
+
   let called = false;
   const requestClient = new NoctweaveRelayClient("https://relay.example", {
     policy: { maxRequestBytes: 1_024 },
