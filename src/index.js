@@ -33,6 +33,34 @@ export {
   verifyNoctweaveNetHostFetchV1,
   verifyNoctweaveNetHostingReceiptV1
 } from "./noctweave-net-host-v1.js";
+export {
+  NoctwebDataAccountAuthorityV1,
+  NoctwebDataPageCapabilityV1,
+  NoctwebDataPublisherAuthorityV1,
+  createNoctwebDataOriginV1,
+  decodeNoctwebDataJSON,
+  encodeNoctwebDataJSON,
+  noctwebDataAccountID,
+  noctwebDataDatabaseID,
+  noctwebDataPublisherID,
+  noctwebDataTranscriptsV1,
+  noctwebDataV1,
+  noctwebDataV1Limits,
+  validateNoctwebDataAccountReceiptV1,
+  validateNoctwebDataAccountRegisterRequestV1,
+  validateNoctwebDataAuthorizationV1,
+  validateNoctwebDataCollectionV1,
+  validateNoctwebDataDatabaseCreateRequestV1,
+  validateNoctwebDataDatabaseReceiptV1,
+  validateNoctwebDataDeleteReceiptV1,
+  validateNoctwebDataOriginV1,
+  validateNoctwebDataRecordDeleteRequestV1,
+  validateNoctwebDataRecordGetRequestV1,
+  validateNoctwebDataRecordListRequestV1,
+  validateNoctwebDataRecordListV1,
+  validateNoctwebDataRecordPutRequestV1,
+  validateNoctwebDataRecordV1
+} from "./noctweb-data-v1.js";
 export { NoctweaveWebClient } from "./client.js";
 export {
   NoctweaveBrowserPairingService,

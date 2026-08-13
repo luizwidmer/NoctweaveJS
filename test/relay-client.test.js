@@ -848,7 +848,13 @@ test("relay request surface rejects operations outside the current protocol befo
     "putNetHostObject",
     "getNetHostObject",
     "hasNetHostObject",
-    "releaseNetHostObject"
+    "releaseNetHostObject",
+    "createNoctwebDatabase",
+    "registerNoctwebAccount",
+    "putNoctwebRecord",
+    "getNoctwebRecord",
+    "listNoctwebRecords",
+    "deleteNoctwebRecord"
   ]);
 });
 

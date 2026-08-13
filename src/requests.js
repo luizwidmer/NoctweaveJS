@@ -29,6 +29,19 @@ import {
   validateNoctweaveNetHostingReceiptV1
 } from "./noctweave-net-host-v1.js";
 import {
+  validateNoctwebDataAccountReceiptV1,
+  validateNoctwebDataAccountRegisterRequestV1,
+  validateNoctwebDataDatabaseCreateRequestV1,
+  validateNoctwebDataDatabaseReceiptV1,
+  validateNoctwebDataDeleteReceiptV1,
+  validateNoctwebDataRecordDeleteRequestV1,
+  validateNoctwebDataRecordGetRequestV1,
+  validateNoctwebDataRecordListRequestV1,
+  validateNoctwebDataRecordListV1,
+  validateNoctwebDataRecordPutRequestV1,
+  validateNoctwebDataRecordV1
+} from "./noctweb-data-v1.js";
+import {
   requireBase64,
   requireCanonicalTimestamp,
   requireExactRecord,
@@ -100,6 +113,24 @@ const bindings = Object.freeze({
   }),
   releaseNetHostObject: Object.freeze({
     module: "nw.net-host", version: 1, method: "release", body: "release"
+  }),
+  createNoctwebDatabase: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "create", body: "database"
+  }),
+  registerNoctwebAccount: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "register", body: "account"
+  }),
+  putNoctwebRecord: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "put", body: "record"
+  }),
+  getNoctwebRecord: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "get", body: "record"
+  }),
+  listNoctwebRecords: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "list", body: "records"
+  }),
+  deleteNoctwebRecord: Object.freeze({
+    module: "nw.noctweb-data", version: 1, method: "delete", body: "deletion"
   })
 });
 
@@ -208,6 +239,42 @@ export const relayRequests = Object.freeze({
       validateNoctweaveNetHostReleaseBody(request),
       authToken
     );
+  },
+  createNoctwebDatabase(request) {
+    return makeRequest(
+      bindings.createNoctwebDatabase,
+      { request: validateNoctwebDataDatabaseCreateRequestV1(request) }
+    );
+  },
+  registerNoctwebAccount(request) {
+    return makeRequest(
+      bindings.registerNoctwebAccount,
+      { request: validateNoctwebDataAccountRegisterRequestV1(request) }
+    );
+  },
+  putNoctwebRecord(request) {
+    return makeRequest(
+      bindings.putNoctwebRecord,
+      { request: validateNoctwebDataRecordPutRequestV1(request) }
+    );
+  },
+  getNoctwebRecord(request) {
+    return makeRequest(
+      bindings.getNoctwebRecord,
+      { request: validateNoctwebDataRecordGetRequestV1(request) }
+    );
+  },
+  listNoctwebRecords(request) {
+    return makeRequest(
+      bindings.listNoctwebRecords,
+      { request: validateNoctwebDataRecordListRequestV1(request) }
+    );
+  },
+  deleteNoctwebRecord(request) {
+    return makeRequest(
+      bindings.deleteNoctwebRecord,
+      { request: validateNoctwebDataRecordDeleteRequestV1(request) }
+    );
   }
 });
 
@@ -294,6 +361,41 @@ function validateResponseBody(binding, body, request) {
     break;
   case "nw.net-host/release":
     validateNoctweaveNetHostReleaseReceiptV1(body.release, request.body.objectID);
+    break;
+  case "nw.noctweb-data/create":
+    validateNoctwebDataDatabaseReceiptV1(body.database);
+    break;
+  case "nw.noctweb-data/register":
+    validateNoctwebDataAccountReceiptV1(body.account);
+    if (body.account.databaseID !== request.body.request.databaseID ||
+        body.account.accountID !== request.body.request.accountID) {
+      throw new TypeError("Noctweb account receipt does not match its request.");
+    }
+    break;
+  case "nw.noctweb-data/put":
+  case "nw.noctweb-data/get":
+    validateNoctwebDataRecordV1(body.record);
+    if (body.record.databaseID !== request.body.request.databaseID ||
+        body.record.collection !== request.body.request.collection ||
+        body.record.recordID !== request.body.request.recordID) {
+      throw new TypeError("Noctweb record does not match its request.");
+    }
+    break;
+  case "nw.noctweb-data/list":
+    validateNoctwebDataRecordListV1(body.records);
+    if (body.records.records.some((record) =>
+      record.databaseID !== request.body.request.databaseID ||
+      record.collection !== request.body.request.collection)) {
+      throw new TypeError("Noctweb record list escaped its requested collection.");
+    }
+    break;
+  case "nw.noctweb-data/delete":
+    validateNoctwebDataDeleteReceiptV1(body.deletion);
+    if (body.deletion.databaseID !== request.body.request.databaseID ||
+        body.deletion.collection !== request.body.request.collection ||
+        body.deletion.recordID !== request.body.request.recordID) {
+      throw new TypeError("Noctweb deletion receipt does not match its request.");
+    }
     break;
   default: throw new TypeError("Relay response binding has no body validator.");
   }
@@ -998,6 +1100,30 @@ function validateRequestBody(binding, body) {
   case "nw.net-host/get":
   case "nw.net-host/has": validateNoctweaveNetHostObjectBody(body); break;
   case "nw.net-host/release": validateNoctweaveNetHostReleaseBody(body); break;
+  case "nw.noctweb-data/create":
+    requireExactRecord(body, ["request"], [], "Noctweb database request body");
+    validateNoctwebDataDatabaseCreateRequestV1(body.request);
+    break;
+  case "nw.noctweb-data/register":
+    requireExactRecord(body, ["request"], [], "Noctweb account request body");
+    validateNoctwebDataAccountRegisterRequestV1(body.request);
+    break;
+  case "nw.noctweb-data/put":
+    requireExactRecord(body, ["request"], [], "Noctweb record put body");
+    validateNoctwebDataRecordPutRequestV1(body.request);
+    break;
+  case "nw.noctweb-data/get":
+    requireExactRecord(body, ["request"], [], "Noctweb record get body");
+    validateNoctwebDataRecordGetRequestV1(body.request);
+    break;
+  case "nw.noctweb-data/list":
+    requireExactRecord(body, ["request"], [], "Noctweb record list body");
+    validateNoctwebDataRecordListRequestV1(body.request);
+    break;
+  case "nw.noctweb-data/delete":
+    requireExactRecord(body, ["request"], [], "Noctweb record deletion body");
+    validateNoctwebDataRecordDeleteRequestV1(body.request);
+    break;
   default: throw new TypeError("Relay request binding has no body validator.");
   }
 }

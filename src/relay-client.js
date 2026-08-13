@@ -288,6 +288,36 @@ export class NoctweaveRelayClient {
     return response.release;
   }
 
+  async createNoctwebDatabase(request, options = {}) {
+    const response = await this.send(relayRequests.createNoctwebDatabase(request), options);
+    return response.database;
+  }
+
+  async registerNoctwebAccount(request, options = {}) {
+    const response = await this.send(relayRequests.registerNoctwebAccount(request), options);
+    return response.account;
+  }
+
+  async putNoctwebRecord(request, options = {}) {
+    const response = await this.send(relayRequests.putNoctwebRecord(request), options);
+    return response.record;
+  }
+
+  async getNoctwebRecord(request, options = {}) {
+    const response = await this.send(relayRequests.getNoctwebRecord(request), options);
+    return response.record;
+  }
+
+  async listNoctwebRecords(request, options = {}) {
+    const response = await this.send(relayRequests.listNoctwebRecords(request), options);
+    return response.records;
+  }
+
+  async deleteNoctwebRecord(request, options = {}) {
+    const response = await this.send(relayRequests.deleteNoctwebRecord(request), options);
+    return response.deletion;
+  }
+
   async send(request, options = {}) {
     const authenticated = validateRelayRequestEnvelopeV2(this.withAuthToken(request));
     const timeoutMs = normalizedTimeout(options.timeoutMs ?? this.timeoutMs);

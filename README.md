@@ -174,6 +174,55 @@ release request. A hosting receipt means **stored by this relay until the
 stated bound**, not publisher identity, site safety, consensus finality, or
 continued availability.
 
+## Noctweb site data
+
+`nw.noctweb-data@1` gives verified sites a bounded document database without
+granting page code arbitrary SQL or relay credentials. Publisher tooling
+creates the fixed collection schema and seeds publisher-owned records:
+
+```js
+import {
+  NoctwebDataAccountAuthorityV1,
+  NoctwebDataPageCapabilityV1,
+  NoctwebDataPublisherAuthorityV1,
+  NoctweaveRelayClient
+} from "@noctweave/js-client";
+
+const relay = new NoctweaveRelayClient("https://relay.example");
+const crypto = applicationNoctweaveCryptoSuite; // WebCrypto + liboqs WASM
+const collections = [
+  { name: "catalog", readPolicy: "public", writePolicy: "publisher" },
+  { name: "carts", readPolicy: "owner", writePolicy: "owner" }
+];
+const publisher = await NoctwebDataPublisherAuthorityV1.generate({
+  crypto,
+  relaySuffix: ".atelier",
+  siteLabel: "shop"
+});
+const database = await relay.createNoctwebDatabase(
+  await publisher.createDatabaseRequest(collections)
+);
+
+const account = await NoctwebDataAccountAuthorityV1.generate({
+  crypto,
+  databaseID: database.databaseID
+});
+const data = await NoctwebDataPageCapabilityV1.create({
+  relay,
+  account,
+  collections
+});
+await data.put("carts", "active", { sku: "tea", quantity: 2 });
+```
+
+The Browser host must persist the account key pair in encrypted,
+rollback-aware state and inject only the resulting origin-bound capability as
+`window.noctweb.data`. Hosted JavaScript never receives the authority object.
+Use `npm run smoke:noctweb-data -- https://relay.example .atelier` for a live
+publisher/account CRUD check. Exact policies, limits, and metadata exposure
+are documented in the
+[service specification](https://github.com/luizwidmer/Noctweave/blob/main/NoctweaveDocumentation/noctweb_data_service_v1.md).
+
 Route creation returns relay-authoritative state. Enqueue accepts independently
 padded, end-to-end encrypted packets. Every synchronized packet carries a
 monotonic sequence plus previous/current record digests, and every batch binds
