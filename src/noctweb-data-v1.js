@@ -1,4 +1,4 @@
-import { base64, canonicalJsonBytes } from "./crypto/swift-canonical.js";
+import { base64, canonicalJsonBytes, swiftISODate } from "./crypto/swift-canonical.js";
 import { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 import {
   concatBytes,
@@ -38,16 +38,30 @@ export const noctwebDataV1Limits = Object.freeze({
   maximumRecordIDBytes: 96,
   maximumRecordBytes: 64 * 1_024,
   maximumRecordsPerDatabase: 10_000,
-  maximumAccountsPerDatabase: 10_000,
-  maximumPage: 100,
+  maximumAccountsPerDatabase: 1_024,
+  maximumDatabases: 256,
+  maximumDatabasesPerPublisher: 8,
+  maximumRecordsPerOwner: 256,
+  maximumBytesPerOwner: 2 * 1_024 * 1_024,
+  maximumMutationReplayEntries: 1_024,
+  maximumMutationReplayBytes: 8 * 1_024 * 1_024,
+  mutationReplayLifetimeSeconds: 5 * 60 + 31,
+  authorizationLifetimeSeconds: 2 * 60,
+  maximumAuthorizationLifetimeSeconds: 5 * 60,
+  authorizationClockSkewSeconds: 30,
+  maximumPage: 8,
   maximumDatabaseBytes: 64 * 1_024 * 1_024,
+  maximumTotalDataBytes: 512 * 1_024 * 1_024,
   idempotencyKeyBytes: 32,
   nonceBytes: 32,
   publisherPublicKeyBytes: 32,
   publisherSignatureBytes: 64,
   accountPublicKeyBytes: 1_952,
   accountSecretKeyBytes: 4_032,
-  accountSignatureBytes: 3_309
+  accountSignatureBytes: 3_309,
+  payloadKeyBytes: 32,
+  payloadKeyIDBytes: 32,
+  payloadNonceBytes: 12
 });
 
 export async function noctwebDataPublisherID(crypto, publicKey) {
@@ -146,6 +160,7 @@ export class NoctwebDataPublisherAuthorityV1 {
       "database idempotency key"
     );
     const draft = {
+      databaseID: await this.databaseID(),
       origin: this.origin,
       collections: normalizedCollections,
       idempotencyKey: base64(idempotency),
@@ -308,17 +323,38 @@ export class NoctwebDataAccountAuthorityV1 {
 /// the database and collection schema at construction time, never exposes key
 /// material, and does not permit publisher-authorized writes from page code.
 export class NoctwebDataPageCapabilityV1 {
-  static async create({ relay, account, collections, maxOperationsPerMinute = 60 }) {
+  static async create({ relay, account, origin, collections, encryptionKey, maxOperationsPerMinute = 60 }) {
     if (!(account instanceof NoctwebDataAccountAuthorityV1)) {
       throw new TypeError("Noctweb page data requires a per-origin account authority.");
     }
     requirePageRelay(relay);
+    validateNoctwebDataOriginV1(origin);
+    requirePayloadCrypto(account.crypto);
+    const publisherKey = requireBase64(
+      origin.publisherSigningPublicKey,
+      noctwebDataV1Limits.publisherPublicKeyBytes,
+      "publisher public key"
+    );
+    if (origin.publisherID !== await noctwebDataPublisherID(account.crypto, publisherKey)) {
+      throw new TypeError("Noctweb page origin publisher ID does not match its signing key.");
+    }
+    const normalizedOrigin = Object.freeze({ ...origin });
+    const expectedDatabaseID = await noctwebDataDatabaseID(account.crypto, normalizedOrigin);
+    if (expectedDatabaseID !== account.databaseID) {
+      throw new TypeError("Noctweb page origin does not match its account database.");
+    }
     const normalizedCollections = normalizeCollections(collections);
     requireInteger(maxOperationsPerMinute, "Noctweb page operation limit", 1, 600);
-    await relay.registerNoctwebAccount(await account.registrationRequest());
+    const payloadKey = new Uint8Array(exactBytes(
+      encryptionKey,
+      noctwebDataV1Limits.payloadKeyBytes,
+      "Noctweb page data encryption key"
+    ));
     return new NoctwebDataPageCapabilityV1({
       relay,
       account,
+      origin: normalizedOrigin,
+      encryptionKey: payloadKey,
       collections: normalizedCollections,
       maxOperationsPerMinute
     });
@@ -326,32 +362,55 @@ export class NoctwebDataPageCapabilityV1 {
 
   #relay;
   #account;
+  #origin;
+  #encryptionKey;
   #collections;
   #maxOperationsPerMinute;
   #operationTimes = [];
+  #destroyed = false;
 
-  constructor({ relay, account, collections, maxOperationsPerMinute }) {
+  constructor({ relay, account, origin, encryptionKey, collections, maxOperationsPerMinute }) {
     this.#relay = relay;
     this.#account = account;
+    this.#origin = origin;
+    this.#encryptionKey = encryptionKey;
     this.#collections = new Map(collections.map((collection) => [collection.name, collection]));
     this.#maxOperationsPerMinute = maxOperationsPerMinute;
     Object.freeze(this);
   }
 
   get accountID() {
+    this.#assertLive();
     return this.#account.accountID;
   }
 
-  async get(collection, recordID) {
-    this.#consumeOperation();
-    const policy = this.#collection(collection);
-    const request = policy.readPolicy === "public"
-      ? { databaseID: this.#account.databaseID, collection, recordID }
-      : await this.#account.getRequest({ collection, recordID });
-    return pageRecord(await this.#relay.getNoctwebRecord(request));
+  destroy() {
+    if (this.#destroyed) return;
+    this.#encryptionKey.fill(0);
+    this.#operationTimes = [];
+    this.#destroyed = true;
   }
 
-  async list(collection, { afterRecordID, limit = 50 } = {}) {
+  async get(collection, recordID, { ownerScope } = {}) {
+    this.#consumeOperation();
+    const policy = this.#collection(collection);
+    const ownerAccountID = this.#readOwner(policy, ownerScope);
+    const request = policy.readPolicy === "public"
+      ? {
+          databaseID: this.#account.databaseID,
+          collection,
+          recordID,
+          ...(ownerAccountID === undefined ? {} : { ownerAccountID })
+        }
+      : await this.#account.getRequest({ collection, recordID, ownerAccountID: this.#account.accountID });
+    return this.#pageRecord(await this.#relay.getNoctwebRecord(request), policy);
+  }
+
+  async list(collection, {
+    afterRecordID,
+    limit = noctwebDataV1Limits.maximumPage,
+    ownerScope
+  } = {}) {
     this.#consumeOperation();
     const policy = this.#collection(collection);
     const input = {
@@ -359,12 +418,19 @@ export class NoctwebDataPageCapabilityV1 {
       ...(afterRecordID === undefined ? {} : { afterRecordID }),
       limit
     };
+    const ownerAccountID = this.#readOwner(policy, ownerScope);
     const request = policy.readPolicy === "public"
-      ? { databaseID: this.#account.databaseID, ...input }
-      : await this.#account.listRequest(input);
+      ? {
+          databaseID: this.#account.databaseID,
+          ...input,
+          ...(ownerAccountID === undefined ? {} : { ownerAccountID })
+        }
+      : await this.#account.listRequest({ ...input, ownerAccountID: this.#account.accountID });
     const response = await this.#relay.listNoctwebRecords(request);
     return Object.freeze({
-      records: Object.freeze(response.records.map(pageRecord)),
+      records: Object.freeze(await Promise.all(
+        response.records.map((record) => this.#pageRecord(record, policy))
+      )),
       nextCursor: response.nextCursor ?? null
     });
   }
@@ -375,15 +441,22 @@ export class NoctwebDataPageCapabilityV1 {
     if (policy.writePolicy === "publisher") {
       throw new Error("This collection is read-only for site visitors.");
     }
-    const request = await this.#account.putRequest({
+    const payload = await encryptNoctwebDataJSONV1({
+      crypto: this.#account.crypto,
+      key: this.#encryptionKey,
+      databaseID: this.#account.databaseID,
       collection,
       recordID,
       ownerAccountID: this.#account.accountID,
-      payload: encodeNoctwebDataJSON(value),
-      expectedRevision,
+      revision: expectedRevision + 1,
+      value
+    });
+    const request = await this.#account.putRequest({
+      collection, recordID, ownerAccountID: this.#account.accountID,
+      payload, expectedRevision,
       ...(idempotencyKey === undefined ? {} : { idempotencyKey })
     });
-    return pageRecord(await this.#relay.putNoctwebRecord(request));
+    return this.#pageRecord(await this.#relay.putNoctwebRecord(request), policy);
   }
 
   async delete(collection, recordID, { expectedRevision, idempotencyKey } = {}) {
@@ -395,6 +468,7 @@ export class NoctwebDataPageCapabilityV1 {
     return Object.freeze(await this.#relay.deleteNoctwebRecord(await this.#account.deleteRequest({
       collection,
       recordID,
+      ownerAccountID: this.#account.accountID,
       expectedRevision,
       ...(idempotencyKey === undefined ? {} : { idempotencyKey })
     })));
@@ -407,13 +481,60 @@ export class NoctwebDataPageCapabilityV1 {
     return policy;
   }
 
+  #readOwner(policy, ownerScope) {
+    if (ownerScope !== undefined && ownerScope !== "account" && ownerScope !== "global") {
+      throw new TypeError("Noctweb page data owner scope must be account or global.");
+    }
+    if (policy.readPolicy !== "public") {
+      if (ownerScope === "global") {
+        throw new Error("Private collections require the page account namespace.");
+      }
+      return this.#account.accountID;
+    }
+    if (ownerScope === "account") return this.#account.accountID;
+    if (ownerScope === "global") return undefined;
+    return policy.writePolicy === "publisher" ? undefined : this.#account.accountID;
+  }
+
   #consumeOperation() {
+    this.#assertLive();
     const cutoff = Date.now() - 60_000;
     this.#operationTimes = this.#operationTimes.filter((timestamp) => timestamp > cutoff);
     if (this.#operationTimes.length >= this.#maxOperationsPerMinute) {
       throw new Error("Noctweb page data rate limit reached.");
     }
     this.#operationTimes.push(Date.now());
+  }
+
+  #assertLive() {
+    if (this.#destroyed) {
+      throw new Error("Noctweb page data capability was destroyed.");
+    }
+  }
+
+  async #pageRecord(record, policy) {
+    validateNoctwebDataRecordV1(record);
+    const validProof = await verifyNoctwebDataRecordProvenanceV1({
+      crypto: this.#account.crypto,
+      subtle: globalThis.crypto?.subtle,
+      origin: this.#origin,
+      record
+    });
+    if (!validProof || !recordAuthorMatchesPolicy(record, policy)) {
+      throw new Error("Noctweb record provenance was rejected.");
+    }
+    return Object.freeze({
+      id: record.recordID,
+      ownerAccountID: record.ownerAccountID ?? null,
+      revision: record.revision,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      value: await decryptNoctwebDataJSONV1({
+        crypto: this.#account.crypto,
+        key: this.#encryptionKey,
+        record
+      })
+    });
   }
 }
 
@@ -431,6 +552,184 @@ export function decodeNoctwebDataJSON(value) {
     throw new TypeError("Noctweb data JSON exceeds the record size limit.");
   }
   return parseExactJSON(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+}
+
+export async function encryptNoctwebDataJSONV1({
+  crypto,
+  key,
+  databaseID,
+  collection,
+  recordID,
+  ownerAccountID,
+  revision,
+  value
+}) {
+  requirePayloadCrypto(crypto);
+  const keyBytes = exactBytes(key, noctwebDataV1Limits.payloadKeyBytes, "Noctweb data encryption key");
+  const keyID = await cryptoSha256(
+    crypto,
+    concatBytes(domain("org.noctweave.noctweb/payload-key-id/v1"), keyBytes)
+  );
+  const nonce = await cryptoRandomBytes(crypto, noctwebDataV1Limits.payloadNonceBytes);
+  const aad = noctwebDataEncryptedPayloadAADV1({
+    databaseID,
+    collection,
+    recordID,
+    ownerAccountID,
+    revision,
+    keyID
+  });
+  const ciphertext = bytes(await crypto.aesGcmEncrypt({
+    key: keyBytes,
+    nonce,
+    plaintext: encodeNoctwebDataJSON(value),
+    additionalData: aad
+  }), "Noctweb encrypted payload");
+  const encoded = canonicalJsonBytes({
+    algorithm: "AES-256-GCM",
+    ciphertext: base64(ciphertext),
+    keyID: base64(keyID),
+    nonce: base64(nonce),
+    version: 1
+  });
+  validateNoctwebDataEncryptedPayloadBytesV1(encoded);
+  return encoded;
+}
+
+export async function decryptNoctwebDataJSONV1({
+  crypto,
+  key,
+  record
+}) {
+  requirePayloadCrypto(crypto);
+  validateNoctwebDataRecordV1(record);
+  const keyBytes = exactBytes(key, noctwebDataV1Limits.payloadKeyBytes, "Noctweb data encryption key");
+  const envelope = validateNoctwebDataEncryptedPayloadBytesV1(
+    requireBase64(record.payload, undefined, "Noctweb record payload")
+  );
+  const expectedKeyID = await cryptoSha256(
+    crypto,
+    concatBytes(domain("org.noctweave.noctweb/payload-key-id/v1"), keyBytes)
+  );
+  if (!equalBytes(expectedKeyID, requireBase64(envelope.keyID, 32, "Noctweb payload key ID"))) {
+    throw new Error("Noctweb payload was not encrypted for this origin key.");
+  }
+  const plaintext = await crypto.aesGcmDecrypt({
+    key: keyBytes,
+    nonce: requireBase64(envelope.nonce, 12, "Noctweb payload nonce"),
+    ciphertext: requireBase64(envelope.ciphertext, undefined, "Noctweb payload ciphertext"),
+    additionalData: noctwebDataEncryptedPayloadAADV1({
+      databaseID: record.databaseID,
+      collection: record.collection,
+      recordID: record.recordID,
+      ownerAccountID: record.ownerAccountID,
+      revision: record.revision,
+      keyID: expectedKeyID
+    })
+  });
+  return decodeNoctwebDataJSON(plaintext);
+}
+
+export function validateNoctwebDataEncryptedPayloadBytesV1(value) {
+  const payload = bytes(value, "Noctweb encrypted payload");
+  if (payload.byteLength === 0 || payload.byteLength > noctwebDataV1Limits.maximumRecordBytes) {
+    throw new TypeError("Noctweb encrypted payload exceeds its size bound.");
+  }
+  const envelope = parseExactJSON(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+  requireExactRecord(envelope, ["version", "algorithm", "keyID", "nonce", "ciphertext"], [], "Noctweb encrypted payload");
+  if (envelope.version !== 1 || envelope.algorithm !== "AES-256-GCM") {
+    throw new TypeError("Noctweb encrypted payload algorithm is invalid.");
+  }
+  requireBase64(envelope.keyID, noctwebDataV1Limits.payloadKeyIDBytes, "Noctweb payload key ID");
+  requireBase64(envelope.nonce, noctwebDataV1Limits.payloadNonceBytes, "Noctweb payload nonce");
+  const ciphertext = requireBase64(envelope.ciphertext, undefined, "Noctweb payload ciphertext");
+  if (ciphertext.byteLength <= 16 || ciphertext.byteLength > noctwebDataV1Limits.maximumRecordBytes) {
+    throw new TypeError("Noctweb payload ciphertext is invalid.");
+  }
+  if (!equalBytes(payload, canonicalJsonBytes(envelope))) {
+    throw new TypeError("Noctweb encrypted payload must use canonical JSON.");
+  }
+  return envelope;
+}
+
+export function validateNoctwebDataRecordProvenanceV1(value) {
+  requireExactRecord(value, [
+    "actorKind", "actorID", "actorSigningPublicKey", "authorizationNonce",
+    "authorizationExpiresAt", "idempotencyKey", "expectedRevision", "signature"
+  ], [], "Noctweb record provenance");
+  if (!actorKinds.has(value.actorKind)) throw new TypeError("Noctweb provenance actor kind is invalid.");
+  validateActorID(value.actorID, value.actorKind);
+  requireBase64(value.actorSigningPublicKey, value.actorKind === "publisher" ? 32 : 1_952, "Noctweb provenance public key");
+  requireBase64(value.authorizationNonce, 32, "Noctweb provenance nonce");
+  requireCanonicalTimestamp(value.authorizationExpiresAt, "Noctweb provenance expiry");
+  requireBase64(value.idempotencyKey, 32, "Noctweb provenance idempotency key");
+  requireInteger(value.expectedRevision, "Noctweb provenance expected revision", 0, Number.MAX_SAFE_INTEGER);
+  requireBase64(value.signature, value.actorKind === "publisher" ? 64 : 3_309, "Noctweb provenance signature");
+  return value;
+}
+
+export async function verifyNoctwebDataRecordProvenanceV1({
+  crypto,
+  subtle = globalThis.crypto?.subtle,
+  origin,
+  record
+}) {
+  requireDataCrypto(crypto, false);
+  validateNoctwebDataOriginV1(origin);
+  validateNoctwebDataRecordV1(record);
+  const originPublicKey = requireBase64(
+    origin.publisherSigningPublicKey,
+    noctwebDataV1Limits.publisherPublicKeyBytes,
+    "publisher public key"
+  );
+  if (origin.publisherID !== await noctwebDataPublisherID(crypto, originPublicKey)) return false;
+  if (record.databaseID !== await noctwebDataDatabaseID(crypto, origin)) return false;
+  const proof = record.provenance;
+  const publicKey = requireBase64(
+    proof.actorSigningPublicKey,
+    proof.actorKind === "publisher" ? 32 : 1_952,
+    "Noctweb provenance public key"
+  );
+  if (proof.actorKind === "publisher") {
+    if (proof.actorID !== origin.publisherID ||
+        !equalBytes(publicKey, originPublicKey)) {
+      return false;
+    }
+  } else if (proof.actorID !== await noctwebDataAccountID(crypto, record.databaseID, publicKey)) {
+    return false;
+  }
+  const authorization = {
+    actorKind: proof.actorKind,
+    actorID: proof.actorID,
+    nonce: proof.authorizationNonce,
+    expiresAt: proof.authorizationExpiresAt,
+    signature: proof.signature
+  };
+  const request = {
+    databaseID: record.databaseID,
+    collection: record.collection,
+    recordID: record.recordID,
+    ...(record.ownerAccountID === undefined ? {} : { ownerAccountID: record.ownerAccountID }),
+    payload: record.payload,
+    expectedRevision: proof.expectedRevision,
+    idempotencyKey: proof.idempotencyKey,
+    authorization
+  };
+  const transcript = noctwebDataTranscriptsV1.putRecord(request);
+  const signature = requireBase64(
+    proof.signature,
+    proof.actorKind === "publisher" ? 64 : 3_309,
+    "Noctweb provenance signature"
+  );
+  if (proof.actorKind === "publisher") {
+    requireSubtle(subtle);
+    const key = await subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]);
+    return subtle.verify({ name: "Ed25519" }, key, signature, transcript);
+  }
+  if (typeof crypto?.verify !== "function") {
+    throw new TypeError("Noctweb account provenance requires ML-DSA-65 verification.");
+  }
+  return Boolean(await crypto.verify(transcript, signature, publicKey));
 }
 
 export function validateNoctwebDataOriginV1(value) {
@@ -462,10 +761,11 @@ export function validateNoctwebDataCollectionV1(value) {
 }
 
 export function validateNoctwebDataAuthorizationV1(value) {
-  requireExactRecord(value, ["actorKind", "actorID", "nonce", "signature"], [], "Noctweb data authorization");
+  requireExactRecord(value, ["actorKind", "actorID", "nonce", "expiresAt", "signature"], [], "Noctweb data authorization");
   if (!actorKinds.has(value.actorKind)) throw new TypeError("Noctweb data actor kind is invalid.");
   validateActorID(value.actorID, value.actorKind);
   requireBase64(value.nonce, noctwebDataV1Limits.nonceBytes, "Noctweb data nonce");
+  requireCanonicalTimestamp(value.expiresAt, "Noctweb data authorization expiry");
   requireBase64(
     value.signature,
     value.actorKind === "publisher"
@@ -477,7 +777,8 @@ export function validateNoctwebDataAuthorizationV1(value) {
 }
 
 export function validateNoctwebDataDatabaseCreateRequestV1(value) {
-  requireExactRecord(value, ["origin", "collections", "idempotencyKey", "signature"], [], "Noctweb database request");
+  requireExactRecord(value, ["databaseID", "origin", "collections", "idempotencyKey", "signature"], [], "Noctweb database request");
+  validateDatabaseID(value.databaseID);
   validateNoctwebDataOriginV1(value.origin);
   const normalized = normalizeCollections(value.collections);
   if (normalized.some((entry, index) => entry.name !== value.collections[index]?.name)) {
@@ -518,18 +819,28 @@ export function validateNoctwebDataRecordPutRequestV1(value) {
   if (payload.byteLength === 0 || payload.byteLength > noctwebDataV1Limits.maximumRecordBytes) {
     throw new TypeError("Noctweb record payload exceeds its size bound.");
   }
+  validateNoctwebDataEncryptedPayloadBytesV1(payload);
   requireInteger(value.expectedRevision, "Noctweb expected revision", 0, Number.MAX_SAFE_INTEGER);
   requireBase64(value.idempotencyKey, noctwebDataV1Limits.idempotencyKeyBytes, "Noctweb record idempotency key");
   validateNoctwebDataAuthorizationV1(value.authorization);
+  if (value.authorization.actorKind === "account" &&
+      value.ownerAccountID !== value.authorization.actorID) {
+    throw new TypeError("Noctweb account writes must name their exact owner namespace.");
+  }
   return value;
 }
 
 export function validateNoctwebDataRecordGetRequestV1(value) {
-  requireExactRecord(value, ["databaseID", "collection", "recordID"], ["authorization"], "Noctweb record get");
+  requireExactRecord(value, ["databaseID", "collection", "recordID"], ["ownerAccountID", "authorization"], "Noctweb record get");
   validateDatabaseID(value.databaseID);
   validateCollectionName(value.collection);
   validateRecordID(value.recordID);
+  if (value.ownerAccountID !== undefined) validateAccountID(value.ownerAccountID);
   if (value.authorization !== undefined) validateNoctwebDataAuthorizationV1(value.authorization);
+  if (value.authorization?.actorKind === "account" &&
+      value.ownerAccountID !== value.authorization.actorID) {
+    throw new TypeError("Noctweb account reads must name their exact owner namespace.");
+  }
   return value;
 }
 
@@ -537,14 +848,19 @@ export function validateNoctwebDataRecordListRequestV1(value) {
   requireExactRecord(
     value,
     ["databaseID", "collection", "limit"],
-    ["afterRecordID", "authorization"],
+    ["afterRecordID", "ownerAccountID", "authorization"],
     "Noctweb record list"
   );
   validateDatabaseID(value.databaseID);
   validateCollectionName(value.collection);
   if (value.afterRecordID !== undefined) validateRecordID(value.afterRecordID);
+  if (value.ownerAccountID !== undefined) validateAccountID(value.ownerAccountID);
   requireInteger(value.limit, "Noctweb record list limit", 1, noctwebDataV1Limits.maximumPage);
   if (value.authorization !== undefined) validateNoctwebDataAuthorizationV1(value.authorization);
+  if (value.authorization?.actorKind === "account" &&
+      value.ownerAccountID !== value.authorization.actorID) {
+    throw new TypeError("Noctweb account reads must name their exact owner namespace.");
+  }
   return value;
 }
 
@@ -552,15 +868,20 @@ export function validateNoctwebDataRecordDeleteRequestV1(value) {
   requireExactRecord(
     value,
     ["databaseID", "collection", "recordID", "expectedRevision", "idempotencyKey", "authorization"],
-    [],
+    ["ownerAccountID"],
     "Noctweb record deletion"
   );
   validateDatabaseID(value.databaseID);
   validateCollectionName(value.collection);
   validateRecordID(value.recordID);
+  if (value.ownerAccountID !== undefined) validateAccountID(value.ownerAccountID);
   requireInteger(value.expectedRevision, "Noctweb deleted revision", 1, Number.MAX_SAFE_INTEGER);
   requireBase64(value.idempotencyKey, noctwebDataV1Limits.idempotencyKeyBytes, "Noctweb deletion idempotency key");
   validateNoctwebDataAuthorizationV1(value.authorization);
+  if (value.authorization.actorKind === "account" &&
+      value.ownerAccountID !== value.authorization.actorID) {
+    throw new TypeError("Noctweb account deletions must name their exact owner namespace.");
+  }
   return value;
 }
 
@@ -582,7 +903,7 @@ export function validateNoctwebDataAccountReceiptV1(value) {
 export function validateNoctwebDataRecordV1(value) {
   requireExactRecord(
     value,
-    ["databaseID", "collection", "recordID", "payload", "revision", "createdAt", "updatedAt"],
+    ["databaseID", "collection", "recordID", "payload", "revision", "createdAt", "updatedAt", "provenance"],
     ["ownerAccountID"],
     "Noctweb record"
   );
@@ -594,10 +915,19 @@ export function validateNoctwebDataRecordV1(value) {
   if (payload.byteLength === 0 || payload.byteLength > noctwebDataV1Limits.maximumRecordBytes) {
     throw new TypeError("Noctweb record payload exceeds its size bound.");
   }
+  validateNoctwebDataEncryptedPayloadBytesV1(payload);
   requireInteger(value.revision, "Noctweb record revision", 1, Number.MAX_SAFE_INTEGER);
   const created = new Date(requireCanonicalTimestamp(value.createdAt, "Noctweb record creation time")).getTime();
   const updated = new Date(requireCanonicalTimestamp(value.updatedAt, "Noctweb record update time")).getTime();
   if (updated < created) throw new TypeError("Noctweb record update predates creation.");
+  validateNoctwebDataRecordProvenanceV1(value.provenance);
+  if (value.provenance.expectedRevision + 1 !== value.revision) {
+    throw new TypeError("Noctweb record provenance revision is invalid.");
+  }
+  if (value.provenance.actorKind === "account" &&
+      value.ownerAccountID !== value.provenance.actorID) {
+    throw new TypeError("Noctweb account provenance does not match the record owner.");
+  }
   return value;
 }
 
@@ -608,6 +938,15 @@ export function validateNoctwebDataRecordListV1(value) {
   }
   value.records.forEach(validateNoctwebDataRecordV1);
   if (value.nextCursor !== undefined) validateRecordID(value.nextCursor);
+  for (let index = 1; index < value.records.length; index += 1) {
+    if (value.records[index - 1].recordID >= value.records[index].recordID) {
+      throw new TypeError("Noctweb record lists must be strictly ordered.");
+    }
+  }
+  if (value.nextCursor !== undefined &&
+      value.nextCursor !== value.records.at(-1)?.recordID) {
+    throw new TypeError("Noctweb record list cursor must bind the last record.");
+  }
   return value;
 }
 
@@ -615,12 +954,13 @@ export function validateNoctwebDataDeleteReceiptV1(value) {
   requireExactRecord(
     value,
     ["databaseID", "collection", "recordID", "deletedRevision"],
-    [],
+    ["ownerAccountID"],
     "Noctweb deletion receipt"
   );
   validateDatabaseID(value.databaseID);
   validateCollectionName(value.collection);
   validateRecordID(value.recordID);
+  if (value.ownerAccountID !== undefined) validateAccountID(value.ownerAccountID);
   requireInteger(value.deletedRevision, "Noctweb deleted revision", 1, Number.MAX_SAFE_INTEGER);
   return value;
 }
@@ -643,6 +983,7 @@ export const noctwebDataTranscriptsV1 = Object.freeze({
     ]);
     return concatBytes(
       domain("org.noctweave.noctweb/data-create/v1"),
+      appendString(request.databaseID),
       appendData(this.origin(request.origin)),
       uint64Bytes(request.collections.length),
       ...collections,
@@ -682,7 +1023,8 @@ export const noctwebDataTranscriptsV1 = Object.freeze({
     validateNoctwebDataRecordGetRequestV1(request);
     return concatBytes(
       optionalAuthorizedDomain("org.noctweave.noctweb/data-get/v1", request.authorization),
-      appendString(request.databaseID), appendString(request.collection), appendString(request.recordID)
+      appendString(request.databaseID), appendString(request.collection), appendString(request.recordID),
+      appendOptionalString(request.ownerAccountID)
     );
   },
   listRecords(request) {
@@ -690,7 +1032,8 @@ export const noctwebDataTranscriptsV1 = Object.freeze({
     return concatBytes(
       optionalAuthorizedDomain("org.noctweave.noctweb/data-list/v1", request.authorization),
       appendString(request.databaseID), appendString(request.collection),
-      appendOptionalString(request.afterRecordID), uint64Bytes(request.limit)
+      appendOptionalString(request.afterRecordID), appendOptionalString(request.ownerAccountID),
+      uint64Bytes(request.limit)
     );
   },
   deleteRecord(request) {
@@ -698,7 +1041,7 @@ export const noctwebDataTranscriptsV1 = Object.freeze({
     return concatBytes(
       authorizedDomain("org.noctweave.noctweb/data-delete/v1", request.authorization),
       appendString(request.databaseID), appendString(request.collection), appendString(request.recordID),
-      uint64Bytes(request.expectedRevision),
+      appendOptionalString(request.ownerAccountID), uint64Bytes(request.expectedRevision),
       appendData(requireBase64(request.idempotencyKey, 32, "idempotency key"))
     );
   }
@@ -710,6 +1053,7 @@ async function signMutationRequest({ authority, operation, input, databaseID }) 
   }
   const actor = authority.actor();
   const nonce = await cryptoRandomBytes(authority.crypto, noctwebDataV1Limits.nonceBytes);
+  const expiresAt = authorizationExpiry(input.expiresAt);
   const idempotency = await randomOrExact(
     authority.crypto,
     input.idempotencyKey,
@@ -720,6 +1064,7 @@ async function signMutationRequest({ authority, operation, input, databaseID }) 
     actorKind: actor.kind,
     actorID: actor.id,
     nonce: base64(nonce),
+    expiresAt,
     signature: base64(new Uint8Array(actor.kind === "publisher"
       ? noctwebDataV1Limits.publisherSignatureBytes
       : noctwebDataV1Limits.accountSignatureBytes))
@@ -727,9 +1072,11 @@ async function signMutationRequest({ authority, operation, input, databaseID }) 
   let draft;
   let transcript;
   if (operation === "put") {
-    const payload = input.payload instanceof Uint8Array || input.payload instanceof ArrayBuffer || ArrayBuffer.isView(input.payload)
-      ? bytes(input.payload, "Noctweb record payload")
-      : encodeNoctwebDataJSON(input.payload);
+    if (!(input.payload instanceof Uint8Array || input.payload instanceof ArrayBuffer || ArrayBuffer.isView(input.payload))) {
+      throw new TypeError("Noctweb records require an encrypted payload envelope.");
+    }
+    const payload = bytes(input.payload, "Noctweb encrypted record payload");
+    validateNoctwebDataEncryptedPayloadBytesV1(payload);
     draft = {
       databaseID: validateDatabaseID(databaseID),
       collection: validateCollectionName(input.collection),
@@ -747,6 +1094,7 @@ async function signMutationRequest({ authority, operation, input, databaseID }) 
       databaseID: validateDatabaseID(databaseID),
       collection: validateCollectionName(input.collection),
       recordID: validateRecordID(input.recordID),
+      ...(input.ownerAccountID === undefined ? {} : { ownerAccountID: validateAccountID(input.ownerAccountID) }),
       expectedRevision: requireInteger(input.expectedRevision, "Noctweb expected revision", 1, Number.MAX_SAFE_INTEGER),
       idempotencyKey: base64(idempotency),
       authorization: emptyAuthorization
@@ -769,10 +1117,12 @@ async function signReadRequest({ authority, operation, input, databaseID }) {
   }
   const actor = authority.actor();
   const nonce = await cryptoRandomBytes(authority.crypto, noctwebDataV1Limits.nonceBytes);
+  const expiresAt = authorizationExpiry(input.expiresAt);
   const emptyAuthorization = {
     actorKind: actor.kind,
     actorID: actor.id,
     nonce: base64(nonce),
+    expiresAt,
     signature: base64(new Uint8Array(actor.kind === "publisher"
       ? noctwebDataV1Limits.publisherSignatureBytes
       : noctwebDataV1Limits.accountSignatureBytes))
@@ -781,11 +1131,13 @@ async function signReadRequest({ authority, operation, input, databaseID }) {
     databaseID: validateDatabaseID(databaseID),
     collection: validateCollectionName(input.collection),
     recordID: validateRecordID(input.recordID),
+    ...(input.ownerAccountID === undefined ? {} : { ownerAccountID: validateAccountID(input.ownerAccountID) }),
     authorization: emptyAuthorization
   } : {
     databaseID: validateDatabaseID(databaseID),
     collection: validateCollectionName(input.collection),
     ...(input.afterRecordID === undefined ? {} : { afterRecordID: validateRecordID(input.afterRecordID) }),
+    ...(input.ownerAccountID === undefined ? {} : { ownerAccountID: validateAccountID(input.ownerAccountID) }),
     limit: requireInteger(input.limit ?? noctwebDataV1Limits.maximumPage, "Noctweb record list limit", 1, noctwebDataV1Limits.maximumPage),
     authorization: emptyAuthorization
   };
@@ -824,7 +1176,8 @@ function authorizedDomain(name, authorization) {
     domain(name),
     appendString(authorization.actorKind),
     appendString(authorization.actorID),
-    appendData(requireBase64(authorization.nonce, 32, "authorization nonce"))
+    appendData(requireBase64(authorization.nonce, 32, "authorization nonce")),
+    uint64Bytes(timestampSeconds(authorization.expiresAt, "authorization expiry"))
   );
 }
 
@@ -832,7 +1185,27 @@ function optionalAuthorizedDomain(name, authorization) {
   return authorization === undefined
     ? concatBytes(domain(name), Uint8Array.of(0))
     : concatBytes(domain(name), Uint8Array.of(1), appendString(authorization.actorKind),
-      appendString(authorization.actorID), appendData(requireBase64(authorization.nonce, 32, "authorization nonce")));
+      appendString(authorization.actorID), appendData(requireBase64(authorization.nonce, 32, "authorization nonce")),
+      uint64Bytes(timestampSeconds(authorization.expiresAt, "authorization expiry")));
+}
+
+export function noctwebDataEncryptedPayloadAADV1({
+  databaseID,
+  collection,
+  recordID,
+  ownerAccountID,
+  revision,
+  keyID
+}) {
+  return concatBytes(
+    domain("org.noctweave.noctweb/encrypted-payload/v1"),
+    appendString(validateDatabaseID(databaseID)),
+    appendString(validateCollectionName(collection)),
+    appendString(validateRecordID(recordID)),
+    appendOptionalString(ownerAccountID === undefined ? undefined : validateAccountID(ownerAccountID)),
+    uint64Bytes(requireInteger(revision, "Noctweb encrypted payload revision", 1, Number.MAX_SAFE_INTEGER)),
+    appendData(exactBytes(keyID, 32, "Noctweb payload key ID"))
+  );
 }
 
 function domain(value) {
@@ -923,6 +1296,35 @@ async function randomOrExact(crypto, value, length, label) {
     : new Uint8Array(exactBytes(value, length, label));
 }
 
+function authorizationExpiry(value) {
+  if (value !== undefined) return requireCanonicalTimestamp(value, "Noctweb authorization expiry");
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  return swiftISODate(new Date(
+    (nowSeconds + noctwebDataV1Limits.authorizationLifetimeSeconds) * 1_000
+  ));
+}
+
+function timestampSeconds(value, label) {
+  return Math.floor(new Date(requireCanonicalTimestamp(value, label)).getTime() / 1_000);
+}
+
+function requirePayloadCrypto(crypto) {
+  requireDataCrypto(crypto, true);
+  if (typeof crypto?.aesGcmEncrypt !== "function" || typeof crypto?.aesGcmDecrypt !== "function") {
+    throw new TypeError("Noctweb encrypted payloads require AES-256-GCM.");
+  }
+  return crypto;
+}
+
+function equalBytes(left, right) {
+  const a = bytes(left, "left bytes");
+  const b = bytes(right, "right bytes");
+  if (a.byteLength !== b.byteLength) return false;
+  let difference = 0;
+  for (let index = 0; index < a.byteLength; index += 1) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
 function requireDataCrypto(crypto, randomnessRequired, signaturesRequired = false) {
   if (typeof crypto?.sha256 !== "function" ||
       (randomnessRequired && typeof crypto?.randomBytes !== "function") ||
@@ -934,7 +1336,6 @@ function requireDataCrypto(crypto, randomnessRequired, signaturesRequired = fals
 
 function requirePageRelay(relay) {
   for (const method of [
-    "registerNoctwebAccount",
     "putNoctwebRecord",
     "getNoctwebRecord",
     "listNoctwebRecords",
@@ -947,16 +1348,19 @@ function requirePageRelay(relay) {
   return relay;
 }
 
-function pageRecord(record) {
-  validateNoctwebDataRecordV1(record);
-  return Object.freeze({
-    id: record.recordID,
-    ownerAccountID: record.ownerAccountID ?? null,
-    revision: record.revision,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    value: decodeNoctwebDataJSON(requireBase64(record.payload, undefined, "Noctweb record payload"))
-  });
+function recordAuthorMatchesPolicy(record, policy) {
+  const proof = record.provenance;
+  switch (policy.writePolicy) {
+  case "publisher":
+    return proof.actorKind === "publisher";
+  case "owner":
+    return proof.actorKind === "account" && proof.actorID === record.ownerAccountID;
+  case "owner-or-publisher":
+    return proof.actorKind === "publisher" ||
+      (proof.actorKind === "account" && proof.actorID === record.ownerAccountID);
+  default:
+    return false;
+  }
 }
 
 function requireSubtle(subtle) {

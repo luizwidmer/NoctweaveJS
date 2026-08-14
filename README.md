@@ -188,8 +188,11 @@ import {
   NoctweaveRelayClient
 } from "@noctweave/js-client";
 
-const relay = new NoctweaveRelayClient("https://relay.example");
 const crypto = applicationNoctweaveCryptoSuite; // WebCrypto + liboqs WASM
+const provisioningRelay = new NoctweaveRelayClient("https://relay.example", {
+  crypto,
+  authToken: operatorSuppliedPublisherPassword
+});
 const collections = [
   { name: "catalog", readPolicy: "public", writePolicy: "publisher" },
   { name: "carts", readPolicy: "owner", writePolicy: "owner" }
@@ -199,7 +202,7 @@ const publisher = await NoctwebDataPublisherAuthorityV1.generate({
   relaySuffix: ".atelier",
   siteLabel: "shop"
 });
-const database = await relay.createNoctwebDatabase(
+const database = await provisioningRelay.createNoctwebDatabase(
   await publisher.createDatabaseRequest(collections)
 );
 
@@ -207,9 +210,16 @@ const account = await NoctwebDataAccountAuthorityV1.generate({
   crypto,
   databaseID: database.databaseID
 });
+await provisioningRelay.registerNoctwebAccount(
+  await account.registrationRequest()
+);
+const relay = new NoctweaveRelayClient("https://relay.example", { crypto });
+const encryptionKey = crypto.randomBytes(32); // persist separately from relay state
 const data = await NoctwebDataPageCapabilityV1.create({
   relay,
   account,
+  origin: publisher.origin,
+  encryptionKey,
   collections
 });
 await data.put("carts", "active", { sku: "tea", quantity: 2 });
@@ -217,10 +227,25 @@ await data.put("carts", "active", { sku: "tea", quantity: 2 });
 
 The Browser host must persist the account key pair in encrypted,
 rollback-aware state and inject only the resulting origin-bound capability as
-`window.noctweb.data`. Hosted JavaScript never receives the authority object.
+`window.noctweb.data`. Hosted JavaScript never receives the authority object,
+payload key, or operator password. Database creation is a separately
+configured, default-off relay capability. Creation and account registration
+require the publisher/access password; record operations do not. Every record
+payload is canonical AES-256-GCM ciphertext and every returned revision is
+verified against its retained publisher or ML-DSA account provenance before
+decryption.
+For public collections, `get` and `list` accept `ownerScope: "account"` for
+publisher-written records targeted to the current page account or
+`ownerScope: "global"` for the unowned namespace. The default remains global
+for publisher-only collections and account-scoped for visitor-writable ones;
+the page capability never permits an arbitrary account identifier.
+Call `destroy()` on each injected page data capability when its document is
+revoked or navigated away; this overwrites the capability's copied payload key
+and permanently disables that object. Relay timestamps are observations only,
+not author-signed freshness evidence.
 Use `npm run smoke:noctweb-data -- https://relay.example .atelier` for a live
-publisher/account CRUD check. Exact policies, limits, and metadata exposure
-are documented in the
+publisher/account CRUD check after setting `NOCTWEAVE_RELAY_AUTH_TOKEN`.
+Exact policies, limits, and metadata exposure are documented in the
 [service specification](https://github.com/luizwidmer/Noctweave/blob/main/NoctweaveDocumentation/noctweb_data_service_v1.md).
 
 Route creation returns relay-authoritative state. Enqueue accepts independently

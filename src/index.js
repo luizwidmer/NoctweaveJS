@@ -38,11 +38,14 @@ export {
   NoctwebDataPageCapabilityV1,
   NoctwebDataPublisherAuthorityV1,
   createNoctwebDataOriginV1,
+  decryptNoctwebDataJSONV1,
   decodeNoctwebDataJSON,
   encodeNoctwebDataJSON,
+  encryptNoctwebDataJSONV1,
   noctwebDataAccountID,
   noctwebDataDatabaseID,
   noctwebDataPublisherID,
+  noctwebDataEncryptedPayloadAADV1,
   noctwebDataTranscriptsV1,
   noctwebDataV1,
   noctwebDataV1Limits,
@@ -52,6 +55,7 @@ export {
   validateNoctwebDataCollectionV1,
   validateNoctwebDataDatabaseCreateRequestV1,
   validateNoctwebDataDatabaseReceiptV1,
+  validateNoctwebDataEncryptedPayloadBytesV1,
   validateNoctwebDataDeleteReceiptV1,
   validateNoctwebDataOriginV1,
   validateNoctwebDataRecordDeleteRequestV1,
@@ -59,7 +63,9 @@ export {
   validateNoctwebDataRecordListRequestV1,
   validateNoctwebDataRecordListV1,
   validateNoctwebDataRecordPutRequestV1,
-  validateNoctwebDataRecordV1
+  validateNoctwebDataRecordProvenanceV1,
+  validateNoctwebDataRecordV1,
+  verifyNoctwebDataRecordProvenanceV1
 } from "./noctweb-data-v1.js";
 export { NoctweaveWebClient } from "./client.js";
 export {

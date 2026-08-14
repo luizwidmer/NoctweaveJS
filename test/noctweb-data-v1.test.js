@@ -11,13 +11,16 @@ import {
   WebCryptoPrimitives,
   base64,
   decodeNoctwebDataJSON,
-  encodeNoctwebDataJSON,
+  decryptNoctwebDataJSONV1,
+  encryptNoctwebDataJSONV1,
   noctwebDataAccountID,
   noctwebDataDatabaseID,
   noctwebDataPublisherID,
   noctwebDataTranscriptsV1,
   relayRequests,
-  validateNoctwebDataRecordPutRequestV1
+  validateNoctwebDataRecordListV1,
+  validateNoctwebDataRecordPutRequestV1,
+  verifyNoctwebDataRecordProvenanceV1
 } from "../src/index.js";
 
 const wasmModulePath = new URL("../wasm/dist/noctweave_oqs.js", import.meta.url);
@@ -58,6 +61,8 @@ test("publisher authority creates an isolated database and drives bounded relay 
     siteLabel: "tea"
   });
   const databaseID = await publisher.databaseID();
+  const primitives = new WebCryptoPrimitives();
+  const payloadKey = primitives.randomBytes(32);
   const create = await publisher.createDatabaseRequest([
     { name: "carts", readPolicy: "owner", writePolicy: "owner" },
     { name: "products", readPolicy: "public", writePolicy: "publisher" }
@@ -80,9 +85,10 @@ test("publisher authority creates an isolated database and drives bounded relay 
           collection: put.collection,
           recordID: put.recordID,
           payload: put.payload,
-          revision: 1,
+          revision: put.expectedRevision + 1,
           createdAt: "2026-08-13T10:00:00Z",
-          updatedAt: "2026-08-13T10:00:00Z"
+          updatedAt: "2026-08-13T10:00:00Z",
+          provenance: provenanceFor(put, publisher.origin.publisherSigningPublicKey)
         };
         return response(relaySuccess(request, { record }));
       }
@@ -96,24 +102,39 @@ test("publisher authority creates an isolated database and drives bounded relay 
             databaseID,
             collection: record.collection,
             recordID: record.recordID,
+            ...(record.ownerAccountID === undefined ? {} : {
+              ownerAccountID: record.ownerAccountID
+            }),
             deletedRevision: record.revision
           }
         }));
       default:
         throw new Error("Unexpected Noctweb data method.");
       }
-    }
+    },
+    authToken: "0123456789ab"
   });
 
   assert.deepEqual(await client.createNoctwebDatabase(create), { databaseID, created: true });
-  const put = await publisher.putRequest({
+  const payload = await encryptNoctwebDataJSONV1({
+    crypto: primitives,
+    key: payloadKey,
+    databaseID,
     collection: "products",
     recordID: "green-tea",
-    payload: { name: "Green Tea", price: 12 },
-    expectedRevision: 0
+    revision: 1,
+    value: { name: "Green Tea", price: 12 }
+  });
+  const put = await publisher.putRequest({
+    collection: "products", recordID: "green-tea", payload, expectedRevision: 0
   });
   const stored = await client.putNoctwebRecord(put);
-  assert.deepEqual(decodeNoctwebDataJSON(Buffer.from(stored.payload, "base64")), {
+  assert.equal(await verifyNoctwebDataRecordProvenanceV1({
+    crypto: primitives,
+    origin: publisher.origin,
+    record: stored
+  }), true);
+  assert.deepEqual(await decryptNoctwebDataJSONV1({ crypto: primitives, key: payloadKey, record: stored }), {
     name: "Green Tea",
     price: 12
   });
@@ -123,15 +144,42 @@ test("publisher authority creates an isolated database and drives bounded relay 
   }))).recordID, "green-tea");
   assert.equal((await client.listNoctwebRecords(await publisher.listRequest({
     collection: "products",
-    limit: 10
+    limit: 8
   }))).records.length, 1);
+  assert.throws(
+    () => validateNoctwebDataRecordListV1({ records: [stored, stored] }),
+    /strictly ordered/u
+  );
   assert.equal((await client.deleteNoctwebRecord(await publisher.deleteRequest({
     collection: "products",
     recordID: "green-tea",
     expectedRevision: 1
   }))).deletedRevision, 1);
   assert.deepEqual(calls.map(({ method }) => method), ["create", "put", "get", "list", "delete"]);
-  assert.ok(calls.every(({ authToken }) => authToken === null));
+  assert.ok(calls.every(({ authToken }) => authToken === "0123456789ab"));
+});
+
+test("relay client rejects a structurally valid but request-substituted database receipt", async () => {
+  const publisher = await NoctwebDataPublisherAuthorityV1.generate({
+    relaySuffix: ".binding",
+    siteLabel: "site"
+  });
+  const requestBody = await publisher.createDatabaseRequest([
+    { name: "records", readPolicy: "public", writePolicy: "publisher" }
+  ]);
+  const client = new NoctweaveRelayClient("https://relay.example", {
+    authToken: "0123456789ab",
+    fetch: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(relaySuccess(request, {
+        database: { databaseID: `nwdb1_${"00".repeat(32)}`, created: true }
+      }));
+    }
+  });
+  await assert.rejects(
+    client.createNoctwebDatabase(requestBody),
+    /does not match its request/u
+  );
 });
 
 test("account authority uses a fresh per-database ML-DSA-65 key and signs owner records", {
@@ -158,11 +206,22 @@ test("account authority uses a fresh per-database ML-DSA-65 key and signs owner 
       { request: registration }
     );
 
+    const payloadKey = crypto.randomBytes(32);
+    const encryptedPayload = await encryptNoctwebDataJSONV1({
+      crypto,
+      key: payloadKey,
+      databaseID,
+      collection: "carts",
+      recordID: "current",
+      ownerAccountID: account.accountID,
+      revision: 1,
+      value: { sku: "green-tea", quantity: 2 }
+    });
     const put = await account.putRequest({
       collection: "carts",
       recordID: "current",
       ownerAccountID: account.accountID,
-      payload: { sku: "green-tea", quantity: 2 }
+      payload: encryptedPayload
     });
     assert.equal(
       adapter.verify(
@@ -173,6 +232,10 @@ test("account authority uses a fresh per-database ML-DSA-65 key and signs owner 
       true
     );
     assert.equal(put.ownerAccountID, account.accountID);
+    await assert.rejects(
+      account.getRequest({ collection: "carts", recordID: "current" }),
+      /exact owner namespace/u
+    );
   } finally {
     account.destroy();
     assert.ok(account.secretKey.every((octet) => octet === 0));
@@ -184,15 +247,33 @@ test("site data validation rejects oversized, malformed, and unknown record fiel
     relaySuffix: ".bounds",
     siteLabel: "site"
   });
+  const primitives = new WebCryptoPrimitives();
+  const databaseID = await publisher.databaseID();
+  const payload = await encryptNoctwebDataJSONV1({
+    crypto: primitives,
+    key: primitives.randomBytes(32),
+    databaseID,
+    collection: "items",
+    recordID: "one",
+    revision: 1,
+    value: { value: 1 }
+  });
   const valid = await publisher.putRequest({
     collection: "items",
     recordID: "one",
-    payload: encodeNoctwebDataJSON({ value: 1 })
+    payload
   });
   assert.equal(validateNoctwebDataRecordPutRequestV1(valid), valid);
   assert.throws(
     () => validateNoctwebDataRecordPutRequestV1({ ...valid, unexpected: true }),
     /current protocol fields/u
+  );
+  assert.throws(
+    () => validateNoctwebDataRecordPutRequestV1({
+      ...valid,
+      payload: base64(new TextEncoder().encode('{"plaintext":true}'))
+    }),
+    /encrypted payload/u
   );
   assert.throws(
     () => validateNoctwebDataRecordPutRequestV1({
@@ -213,14 +294,18 @@ test("page capability exposes only origin-bound JSON operations", {
   const oqsFactory = (await import(wasmModulePath)).default;
   const adapter = await NoctweaveOQSWasmAdapter.fromFactory(oqsFactory);
   const crypto = new NoctweaveCryptoSuite({ pqc: adapter, webcrypto: new WebCryptoPrimitives() });
-  const databaseID = `nwdb1_${"cd".repeat(32)}`;
+  const publisher = await NoctwebDataPublisherAuthorityV1.generate({
+    crypto,
+    relaySuffix: ".pages",
+    siteLabel: "store"
+  });
+  const databaseID = await publisher.databaseID();
   const account = await NoctwebDataAccountAuthorityV1.generate({ crypto, databaseID });
+  const payloadKey = crypto.randomBytes(32);
   let current;
+  let lastGetRequest;
+  let lastListRequest;
   const relay = {
-    async registerNoctwebAccount(request) {
-      assert.equal(request.accountID, account.accountID);
-      return { databaseID, accountID: account.accountID, created: true };
-    },
     async putNoctwebRecord(request) {
       assert.equal(request.ownerAccountID, account.accountID);
       current = {
@@ -231,17 +316,25 @@ test("page capability exposes only origin-bound JSON operations", {
         payload: request.payload,
         revision: 1,
         createdAt: "2026-08-13T10:00:00Z",
-        updatedAt: "2026-08-13T10:00:00Z"
+        updatedAt: "2026-08-13T10:00:00Z",
+        provenance: provenanceFor(request, base64(account.publicKey))
       };
       return current;
     },
-    async getNoctwebRecord() { return current; },
-    async listNoctwebRecords() { return { records: [current] }; },
+    async getNoctwebRecord(request) {
+      lastGetRequest = request;
+      return current;
+    },
+    async listNoctwebRecords(request) {
+      lastListRequest = request;
+      return { records: [current] };
+    },
     async deleteNoctwebRecord(request) {
       return {
         databaseID,
         collection: request.collection,
         recordID: request.recordID,
+        ownerAccountID: request.ownerAccountID,
         deletedRevision: request.expectedRevision
       };
     }
@@ -250,9 +343,12 @@ test("page capability exposes only origin-bound JSON operations", {
     const capability = await NoctwebDataPageCapabilityV1.create({
       relay,
       account,
+      origin: publisher.origin,
+      encryptionKey: payloadKey,
       collections: [
         { name: "catalog", readPolicy: "public", writePolicy: "publisher" },
-        { name: "carts", readPolicy: "owner", writePolicy: "owner" }
+        { name: "carts", readPolicy: "public", writePolicy: "owner" },
+        { name: "private", readPolicy: "owner", writePolicy: "owner" }
       ]
     });
     assert.equal(capability.accountID, account.accountID);
@@ -260,8 +356,54 @@ test("page capability exposes only origin-bound JSON operations", {
     const stored = await capability.put("carts", "active", { sku: "tea" });
     assert.deepEqual(stored.value, { sku: "tea" });
     assert.deepEqual((await capability.get("carts", "active")).value, { sku: "tea" });
+    assert.equal(lastGetRequest.ownerAccountID, account.accountID);
     assert.equal((await capability.list("carts")).records.length, 1);
+    assert.equal(lastListRequest.ownerAccountID, account.accountID);
     assert.equal((await capability.delete("carts", "active", { expectedRevision: 1 })).deletedRevision, 1);
+
+    const targetedPayload = await encryptNoctwebDataJSONV1({
+      crypto,
+      key: payloadKey,
+      databaseID,
+      collection: "catalog",
+      recordID: "targeted",
+      ownerAccountID: account.accountID,
+      revision: 1,
+      value: { message: "for this page account" }
+    });
+    const targetedPut = await publisher.putRequest({
+      databaseID,
+      collection: "catalog",
+      recordID: "targeted",
+      ownerAccountID: account.accountID,
+      payload: targetedPayload
+    });
+    current = {
+      databaseID,
+      collection: "catalog",
+      recordID: "targeted",
+      ownerAccountID: account.accountID,
+      payload: targetedPut.payload,
+      revision: 1,
+      createdAt: "2026-08-13T10:00:00Z",
+      updatedAt: "2026-08-13T10:00:00Z",
+      provenance: provenanceFor(targetedPut, publisher.origin.publisherSigningPublicKey)
+    };
+    assert.deepEqual(
+      (await capability.get("catalog", "targeted", { ownerScope: "account" })).value,
+      { message: "for this page account" }
+    );
+    assert.equal(lastGetRequest.ownerAccountID, account.accountID);
+    assert.equal((await capability.list("catalog", { ownerScope: "account" })).records.length, 1);
+    assert.equal(lastListRequest.ownerAccountID, account.accountID);
+    await assert.rejects(
+      capability.get("private", "active", { ownerScope: "global" }),
+      /require the page account/u
+    );
+    await assert.rejects(
+      capability.get("catalog", "targeted", { ownerScope: "other" }),
+      /owner scope/u
+    );
     await assert.rejects(
       capability.put("catalog", "tea", { price: 12 }),
       /read-only/u
@@ -270,9 +412,55 @@ test("page capability exposes only origin-bound JSON operations", {
       capability.get("unknown", "record"),
       /not available/u
     );
+    capability.destroy();
+    capability.destroy();
+    assert.throws(() => capability.accountID, /destroyed/u);
+    await assert.rejects(capability.get("carts", "active"), /destroyed/u);
   } finally {
     account.destroy();
   }
+});
+
+test("record provenance rejects an origin publisher ID not derived from its key", async () => {
+  const primitives = new WebCryptoPrimitives();
+  const publisher = await NoctwebDataPublisherAuthorityV1.generate({
+    crypto: primitives,
+    relaySuffix: ".origin-binding",
+    siteLabel: "site"
+  });
+  const databaseID = await publisher.databaseID();
+  const request = await publisher.putRequest({
+    databaseID,
+    collection: "items",
+    recordID: "one",
+    payload: await encryptNoctwebDataJSONV1({
+      crypto: primitives,
+      key: new Uint8Array(32).fill(7),
+      databaseID,
+      collection: "items",
+      recordID: "one",
+      revision: 1,
+      value: { value: 1 }
+    })
+  });
+  const record = {
+    databaseID,
+    collection: request.collection,
+    recordID: request.recordID,
+    payload: request.payload,
+    revision: 1,
+    createdAt: "2026-08-13T10:00:00Z",
+    updatedAt: "2026-08-13T10:00:00Z",
+    provenance: provenanceFor(request, publisher.origin.publisherSigningPublicKey)
+  };
+  assert.equal(await verifyNoctwebDataRecordProvenanceV1({
+    crypto: primitives,
+    origin: {
+      ...publisher.origin,
+      publisherID: `nwpub1_${"00".repeat(32)}`
+    },
+    record
+  }), false);
 });
 
 function relaySuccess(request, body) {
@@ -284,6 +472,19 @@ function relaySuccess(request, body) {
     status: "success",
     body,
     error: null
+  };
+}
+
+function provenanceFor(request, actorSigningPublicKey) {
+  return {
+    actorKind: request.authorization.actorKind,
+    actorID: request.authorization.actorID,
+    actorSigningPublicKey,
+    authorizationNonce: request.authorization.nonce,
+    authorizationExpiresAt: request.authorization.expiresAt,
+    idempotencyKey: request.idempotencyKey,
+    expectedRevision: request.expectedRevision,
+    signature: request.authorization.signature
   };
 }
 

@@ -240,16 +240,18 @@ export const relayRequests = Object.freeze({
       authToken
     );
   },
-  createNoctwebDatabase(request) {
+  createNoctwebDatabase(request, authToken) {
     return makeRequest(
       bindings.createNoctwebDatabase,
-      { request: validateNoctwebDataDatabaseCreateRequestV1(request) }
+      { request: validateNoctwebDataDatabaseCreateRequestV1(request) },
+      authToken
     );
   },
-  registerNoctwebAccount(request) {
+  registerNoctwebAccount(request, authToken) {
     return makeRequest(
       bindings.registerNoctwebAccount,
-      { request: validateNoctwebDataAccountRegisterRequestV1(request) }
+      { request: validateNoctwebDataAccountRegisterRequestV1(request) },
+      authToken
     );
   },
   putNoctwebRecord(request) {
@@ -364,6 +366,9 @@ function validateResponseBody(binding, body, request) {
     break;
   case "nw.noctweb-data/create":
     validateNoctwebDataDatabaseReceiptV1(body.database);
+    if (body.database.databaseID !== request.body.request.databaseID) {
+      throw new TypeError("Noctweb database receipt does not match its request.");
+    }
     break;
   case "nw.noctweb-data/register":
     validateNoctwebDataAccountReceiptV1(body.account);
@@ -373,27 +378,54 @@ function validateResponseBody(binding, body, request) {
     }
     break;
   case "nw.noctweb-data/put":
-  case "nw.noctweb-data/get":
     validateNoctwebDataRecordV1(body.record);
     if (body.record.databaseID !== request.body.request.databaseID ||
         body.record.collection !== request.body.request.collection ||
-        body.record.recordID !== request.body.request.recordID) {
+        body.record.recordID !== request.body.request.recordID ||
+        body.record.ownerAccountID !== request.body.request.ownerAccountID ||
+        body.record.payload !== request.body.request.payload ||
+        body.record.revision !== request.body.request.expectedRevision + 1 ||
+        body.record.provenance.actorKind !== request.body.request.authorization.actorKind ||
+        body.record.provenance.actorID !== request.body.request.authorization.actorID ||
+        body.record.provenance.authorizationNonce !== request.body.request.authorization.nonce ||
+        body.record.provenance.authorizationExpiresAt !== request.body.request.authorization.expiresAt ||
+        body.record.provenance.idempotencyKey !== request.body.request.idempotencyKey ||
+        body.record.provenance.expectedRevision !== request.body.request.expectedRevision ||
+        body.record.provenance.signature !== request.body.request.authorization.signature) {
       throw new TypeError("Noctweb record does not match its request.");
     }
     break;
+  case "nw.noctweb-data/get": {
+    validateNoctwebDataRecordV1(body.record);
+    if (body.record.databaseID !== request.body.request.databaseID ||
+        body.record.collection !== request.body.request.collection ||
+        body.record.recordID !== request.body.request.recordID ||
+        body.record.ownerAccountID !== request.body.request.ownerAccountID) {
+      throw new TypeError("Noctweb record does not match its request.");
+    }
+    break;
+  }
   case "nw.noctweb-data/list":
     validateNoctwebDataRecordListV1(body.records);
-    if (body.records.records.some((record) =>
+    {
+    if (body.records.records.length > request.body.request.limit ||
+        body.records.records.some((record) =>
       record.databaseID !== request.body.request.databaseID ||
-      record.collection !== request.body.request.collection)) {
+      record.collection !== request.body.request.collection ||
+      record.ownerAccountID !== request.body.request.ownerAccountID ||
+      (request.body.request.afterRecordID !== undefined &&
+        record.recordID <= request.body.request.afterRecordID))) {
       throw new TypeError("Noctweb record list escaped its requested collection.");
+    }
     }
     break;
   case "nw.noctweb-data/delete":
     validateNoctwebDataDeleteReceiptV1(body.deletion);
     if (body.deletion.databaseID !== request.body.request.databaseID ||
         body.deletion.collection !== request.body.request.collection ||
-        body.deletion.recordID !== request.body.request.recordID) {
+        body.deletion.recordID !== request.body.request.recordID ||
+        body.deletion.ownerAccountID !== request.body.request.ownerAccountID ||
+        body.deletion.deletedRevision !== request.body.request.expectedRevision) {
       throw new TypeError("Noctweb deletion receipt does not match its request.");
     }
     break;
