@@ -118,18 +118,64 @@
           <p id="attachmentStatus" class="fieldHint">Encrypted attachment upload is not yet exposed by the durable browser runtime.</p>
           <p id="outboxStatus" class="info" role="status">Select a relationship to begin.</p>
         </div>
-        <div class="chatHeader secondaryHeader"><div><p class="eyebrow">One-use pairing</p><h2>Fresh relationship rendezvous</h2></div></div>
-        <div class="panel compact">
-          <p>Each invitation is ephemeral, expires after ten minutes, and can be redeemed once. Relationship keys and route capabilities are created fresh behind the encrypted rendezvous.</p>
-          <label for="relationshipPseudonym">Relationship-scoped name</label>
-          <input id="relationshipPseudonym" maxlength="128" value="Noctweave peer">
-          <p class="fieldHint">This name is encrypted inside this relationship only. Your local persona label is never reused.</p>
-          <div class="buttonRow"><button id="createInvitation">Create fresh invitation</button><button id="copyInvitation" class="subtle">Copy</button></div>
-          <textarea id="pairingInvitation" rows="8" readonly placeholder="Create a fresh invitation when you are ready to share it."></textarea>
-          <label for="peerInvitation">Accept a received invitation</label>
-          <textarea id="peerInvitation" rows="8" placeholder="Paste a one-use invitation"></textarea>
-          <div class="buttonRow"><button id="inspectInvitation" class="subtle">Validate invitation</button><button id="acceptInvitation">Accept and start pairing</button></div>
-          <p id="invitationResult" class="info">No reusable public relationship material is generated.</p>
+        <div class="chatHeader secondaryHeader"><div><p class="eyebrow">One-use pairing · fast path</p><h2>Pair in two steps</h2></div></div>
+        <div class="panel compact pairingQuickStart">
+          <p>Share one expiring invitation, then leave both clients open. The relay carries the encrypted handshake and both sides finish automatically.</p>
+          <div class="pairingIdentityPrompt">
+            <span class="pairingStepNumber" aria-hidden="true">1</span>
+            <div>
+              <label for="relationshipPseudonym">Your name on this relationship</label>
+              <input id="relationshipPseudonym" maxlength="128" placeholder="The name the other person will see" autocomplete="off">
+              <p class="fieldHint">Enter your name, not theirs. It is encrypted for this relationship only; your local persona label is not sent.</p>
+            </div>
+          </div>
+          <section class="relayPairingCard" aria-labelledby="relayPairingTitle">
+            <div>
+              <p class="eyebrow">Same relay · quickest</p>
+              <h3 id="relayPairingTitle">Pair without sending a file</h3>
+              <p class="fieldHint">Become visible for two minutes or find someone already waiting. Compare the full two-word and six-digit badge, tap once, then approve on the other device.</p>
+            </div>
+            <div class="buttonRow">
+              <button id="startRelayVisibility">Be visible</button>
+              <button id="findRelayPeers" class="subtle">Find people</button>
+              <button id="stopRelayPairing" class="subtle" hidden>Stop</button>
+            </div>
+            <p id="relayPairingStatus" class="info" role="status">The relay must explicitly enable its default-off pairing lobby.</p>
+            <div id="relayPairingResults" class="relayPairingResults"></div>
+          </section>
+          <div class="pairingChoices">
+            <section class="pairingChoice" aria-labelledby="invitePairingTitle">
+              <span class="pairingStepNumber" aria-hidden="true">2A</span>
+              <div>
+                <h3 id="invitePairingTitle">Invite the other client</h3>
+                <p class="fieldHint">Fallback: create one fresh invitation and send it through a private channel.</p>
+                <div class="buttonRow">
+                  <button id="createInvitation">Create invitation</button>
+                  <button id="shareInvitation" class="subtle" hidden>Share</button>
+                  <button id="copyInvitation" class="subtle" hidden>Copy</button>
+                </div>
+                <details class="pairingRawData">
+                  <summary>Show raw invitation</summary>
+                  <textarea id="pairingInvitation" rows="5" readonly aria-label="Raw one-use invitation" placeholder="Create a fresh invitation when you are ready to share it."></textarea>
+                </details>
+              </div>
+            </section>
+            <section class="pairingChoice" aria-labelledby="joinPairingTitle">
+              <span class="pairingStepNumber" aria-hidden="true">2B</span>
+              <div>
+                <h3 id="joinPairingTitle">I received an invitation</h3>
+                <p class="fieldHint">Fallback: paste from the clipboard and start the verified rendezvous in one action.</p>
+                <button id="pasteAndPair">Paste and pair</button>
+                <details class="pairingRawData">
+                  <summary>Enter invitation manually</summary>
+                  <label for="peerInvitation">Received invitation</label>
+                  <textarea id="peerInvitation" rows="5" maxlength="32768" spellcheck="false" autocomplete="off" placeholder="Paste a one-use invitation"></textarea>
+                  <div class="buttonRow"><button id="inspectInvitation" class="subtle">Check</button><button id="acceptInvitation">Pair</button></div>
+                </details>
+              </div>
+            </section>
+          </div>
+          <p id="invitationResult" class="info" role="status">No reusable public relationship material is generated.</p>
         </div>
         <div class="panel compact">
           <div class="pairingHeader"><div><p class="eyebrow">Crash-resumable rendezvous</p><h3>Pending pairings</h3></div><button id="resumePairings" class="subtle">Resume all</button></div>

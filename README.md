@@ -125,6 +125,20 @@ One-use contact rendezvous uses the separate identity-blind
 - `syncRendezvousTransportV2`
 - `deleteRendezvousTransportV2`
 
+An operator may also expose the default-off `nw.pairing-lobby@1` shortcut:
+
+- `acquirePairingLobbyV1`
+- `listPairingLobbyV1`
+- `releasePairingLobbyV1`
+
+`PairingLobbyHostSessionV1` and `PairingLobbyRequesterSessionV1` generate fresh
+ML-DSA/ML-KEM authorities, signed two-minute announcements, disposable
+realtime routes, and encrypted approval responses. The browser shell exposes
+**Be visible** and **Find people**, then feeds an accepted one-use link into
+the unchanged rendezvous flow. Compare the displayed badge in person; it is a
+short human check, not a relay identity. Listings contain no persona label and
+the relay never receives the plaintext invitation.
+
 Encrypted attachment storage uses the exact `nw.blobs@1` request builders:
 
 - `relayRequests.uploadAttachment`
@@ -390,6 +404,14 @@ Run a complete create/enqueue/sync/commit/teardown probe against a local relay:
 npm run smoke:relay -- --relay http://127.0.0.1:9340
 ```
 
+Against a relay started with realtime routes, rendezvous, and the explicit
+pairing-lobby switch, exercise a real two-client ML-KEM/ML-DSA approval and
+encrypted one-use-link transfer:
+
+```sh
+npm run smoke:pairing-lobby -- --relay http://127.0.0.1:9340
+```
+
 ## Pairwise contact establishment
 
 `createContactPairingInvitationV2` creates a short-lived, one-use PQ
@@ -425,8 +447,24 @@ The browser service exposes independent crash-resumable participant flows:
 The checked-in browser shell performs this pump for either role, persists every
 returned participant state before continuing, resumes pending work after
 unlock/restart, and removes terminal pending state only after lane deletion is
-prepared. Its UI exposes retry, finalize, and cancel without rendering pairing
-IDs, bearer capabilities, private keys, or the peer's local persona label.
+prepared. It checks the invitation's encoded relay before acceptance, polls an
+active rendezvous once per second, and automatically finalizes a mutually
+verified relationship. Its UI exposes share, copy, paste-and-pair, retry, and
+cancel actions without rendering pairing IDs, bearer capabilities, private
+keys, or the peer's local persona label. Raw invitation text is an advanced
+fallback rather than the primary workflow.
+
+When the relay advertises `nw.pairing-lobby@1`, the same screen can discover a
+currently visible peer by badge and request explicit approval. The shortcut is
+hidden behind capability discovery and falls back to the existing QR, share,
+file, and paste paths when the operator leaves the module disabled.
+
+Group access requests and welcome packages use bounded `.noctgroup` files by
+default. The browser validates the exact artifact prefix and UTF-8 payload
+before importing it. Web Share is used only after an explicit user action;
+otherwise the package is downloaded locally. Raw clipboard exchange remains a
+visible fallback because clipboard retention is controlled by the operating
+system.
 
 There is deliberately no `establishPairing` production helper: one process
 must never receive both participants' private relationship state.

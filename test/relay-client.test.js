@@ -28,8 +28,33 @@ import {
   sealOpaqueRouteBundleV2,
   swiftISODate,
   teardownOpaqueReceiveRouteV2,
+  validateRealtimeRouteCreatedV1,
   validateRelayResponseEnvelopeV2
 } from "../src/index.js";
+
+test("realtime route creation comparison is wire-order independent and substitution safe", () => {
+  const request = {
+    routeCapability: base64(new Uint8Array(32).fill(1)),
+    appendCapability: base64(new Uint8Array(32).fill(2)),
+    readCapability: base64(new Uint8Array(32).fill(3)),
+    expiresAt: "2026-08-19T18:00:00Z"
+  };
+  const reorderedResponse = {
+    appendCapability: request.appendCapability,
+    expiresAt: request.expiresAt,
+    readCapability: request.readCapability,
+    routeCapability: request.routeCapability
+  };
+
+  assert.deepEqual(validateRealtimeRouteCreatedV1(reorderedResponse, request), reorderedResponse);
+  assert.throws(
+    () => validateRealtimeRouteCreatedV1(
+      { ...reorderedResponse, routeCapability: base64(new Uint8Array(32).fill(4)) },
+      request
+    ),
+    /does not match/
+  );
+});
 
 test("relay client posts bounded authenticated requests", async () => {
   const calls = [];
@@ -841,6 +866,14 @@ test("relay request surface rejects operations outside the current protocol befo
     "appendRendezvousTransportV2",
     "syncRendezvousTransportV2",
     "deleteRendezvousTransportV2",
+    "createRealtimeRouteV1",
+    "appendRealtimeRouteV1",
+    "subscribeRealtimeRouteV1",
+    "syncRealtimeRouteV1",
+    "unsubscribeRealtimeRouteV1",
+    "acquirePairingLobbyV1",
+    "releasePairingLobbyV1",
+    "listPairingLobbyV1",
     "uploadAttachment",
     "fetchAttachment",
     "registerFederationNode",

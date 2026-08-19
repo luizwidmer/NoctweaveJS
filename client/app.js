@@ -5,6 +5,8 @@ import {
   NoctweaveCryptoSuite,
   NoctweaveOQSWasmAdapter,
   NoctweaveRelayClient,
+  PairingLobbyHostSessionV1,
+  PairingLobbyRequesterSessionV1,
   WebCryptoPrimitives,
   createRendezvousRelayAdapterV2,
   decodeContactPairingInvitationV2,
@@ -14,7 +16,8 @@ import {
   parseBrowserRelayEndpoint,
   relayEndpointURL,
   swiftISODate,
-  validateBrowserPersonaState
+  validateBrowserPersonaState,
+  verifyPairingLobbyListingV1
 } from "../src/index.js";
 import {
   browserSecurityStorageCapabilityV2,
@@ -43,6 +46,7 @@ const state = {
   repository: null,
   persona: null,
   invitation: null,
+  invitationPairingID: null,
   selectedRelationshipID: null,
   messageSnapshot: null,
   messageSyncStatus: "Select a relationship to begin.",
@@ -52,12 +56,16 @@ const state = {
   relayVerifiedSummary: null,
   safetyNumber: null,
   pairingBusy: new Set(),
+  relayPairing: null,
+  relayPairingBusy: false,
   messageBusy: false,
   lastMaintenanceAt: 0,
   pumpTimer: null,
   messagePumpTimer: null
 };
 const RELAY_PREFERENCE_KEY = "application:relay-preference:v1";
+const ACTIVE_PAIRING_POLL_MS = 1_000;
+const PAIRING_INVITATION_MAX_CHARACTERS = 32_768;
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -107,7 +115,12 @@ const elements = {
   relationshipPseudonym: $("#relationshipPseudonym"),
   invitationResult: $("#invitationResult"),
   pairingStatus: $("#pairingStatus"),
-  pendingPairingList: $("#pendingPairingList")
+  pendingPairingList: $("#pendingPairingList"),
+  relayPairingStatus: $("#relayPairingStatus"),
+  relayPairingResults: $("#relayPairingResults"),
+  startRelayVisibility: $("#startRelayVisibility"),
+  findRelayPeers: $("#findRelayPeers"),
+  stopRelayPairing: $("#stopRelayPairing")
 };
 
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
@@ -121,10 +134,15 @@ elements.onboardingRelay.addEventListener("input", () => {
 });
 $("#verifyRelay").addEventListener("click", () => run(verifyRelay));
 $("#createInvitation").addEventListener("click", () => run(createInvitation));
+$("#shareInvitation").addEventListener("click", () => run(shareInvitation));
 $("#copyInvitation").addEventListener("click", () => run(copyInvitation));
+$("#pasteAndPair").addEventListener("click", () => run(pasteAndPair));
 $("#inspectInvitation").addEventListener("click", () => run(inspectInvitation));
 $("#acceptInvitation").addEventListener("click", () => run(acceptInvitation));
 $("#resumePairings").addEventListener("click", () => run(resumeAllPairings));
+elements.startRelayVisibility.addEventListener("click", () => run(startRelayVisibility));
+elements.findRelayPeers.addEventListener("click", () => run(findRelayPeers));
+elements.stopRelayPairing.addEventListener("click", () => run(stopRelayPairing));
 elements.sendMessage.addEventListener("click", () => runMessaging(sendMessage));
 elements.resumeOutbox.addEventListener("click", () => runMessaging(resumeSelectedOutbox));
 elements.syncMessages.addEventListener("click", () => runMessaging(syncSelectedMessages));
@@ -364,6 +382,7 @@ function showApp() {
 }
 
 function lockProfile() {
+  void closeRelayPairing({ bestEffort: true });
   stopPairingPump();
   stopMessagePump();
   state.repository = null;
@@ -382,6 +401,8 @@ function lockProfile() {
   state.messageBusy = false;
   state.lastMaintenanceAt = 0;
   state.pairingBusy.clear();
+  state.relayPairing = null;
+  state.relayPairingBusy = false;
   elements.invitation.value = "";
   elements.peerInvitation.value = "";
   elements.messageText.value = "";
@@ -435,6 +456,19 @@ async function restoreRelayPreference() {
 
 async function createInvitation() {
   requireUnlocked();
+  const prepared = await prepareOffererInvitation();
+  state.invitation = prepared.encoded;
+  state.invitationPairingID = prepared.pairingID;
+  elements.invitation.value = prepared.encoded;
+  $("#shareInvitation").hidden = false;
+  $("#copyInvitation").hidden = false;
+  elements.invitationResult.textContent = "Invitation ready for ten minutes. Share it privately; this client is already waiting.";
+  await pumpPairing(prepared.pairingID);
+}
+
+async function prepareOffererInvitation() {
+  const relationshipPseudonym = requireRelationshipPseudonym();
+  await verifyRelay();
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1_000);
   const createdAtValue = swiftISODate(createdAt);
@@ -442,7 +476,7 @@ async function createInvitation() {
   const prepared = await state.pairing.prepareOffererPairing({
     persona: state.persona,
     relay: elements.relay.value,
-    relationshipPseudonym: elements.relationshipPseudonym.value,
+    relationshipPseudonym,
     createdAt: createdAtValue,
     expiresAt: expiresAtValue
   });
@@ -452,10 +486,159 @@ async function createInvitation() {
     invitation: prepared.invitation
   });
   await persistPersona(prepared.persona);
-  state.invitation = encoded;
-  elements.invitation.value = encoded;
-  elements.invitationResult.textContent = "Fresh invitation ready. Share it privately; it expires in ten minutes and can be redeemed once.";
-  await pumpPairing(prepared.pairingID);
+  return { encoded, pairingID: prepared.pairingID };
+}
+
+async function startRelayVisibility() {
+  requireUnlocked();
+  requireRelationshipPseudonym();
+  await closeRelayPairing({ bestEffort: true });
+  const client = await pairingLobbyClient();
+  const host = await PairingLobbyHostSessionV1.create({ crypto: state.crypto });
+  try {
+    await client.createRealtimeRouteV1(host.requestRouteCreateRequest);
+    const lease = await client.acquirePairingLobbyV1(host.leaseAcquireRequest);
+    const subscription = await client.subscribeRealtimeRouteV1(
+      host.requestRouteSubscribeRequest()
+    );
+    state.relayPairing = {
+      role: "host",
+      client,
+      host,
+      lease,
+      subscription,
+      cursor: 0,
+      pending: []
+    };
+    elements.relayPairingStatus.textContent =
+      `Visible as ${host.badge.displayText} for two minutes. Compare the entire badge before approving.`;
+    renderRelayPairing();
+    await pollRelayPairing();
+  } catch (error) {
+    host.dispose();
+    throw error;
+  }
+}
+
+async function findRelayPeers() {
+  requireUnlocked();
+  requireRelationshipPseudonym();
+  await closeRelayPairing({ bestEffort: true });
+  const client = await pairingLobbyClient();
+  const leases = await client.listPairingLobbyV1();
+  const listings = [];
+  for (const lease of leases) {
+    try {
+      const listing = await verifyPairingLobbyListingV1(state.crypto, lease);
+      listings.push({ lease, listing });
+    } catch {
+      // Omit malformed or expired public entries; they never become pairing authorities.
+    }
+  }
+  state.relayPairing = { role: "finder", client, listings };
+  elements.relayPairingStatus.textContent = listings.length === 0
+    ? "No one is visible on this relay right now."
+    : "Choose the badge shown on the other device, then compare it in full.";
+  renderRelayPairing();
+}
+
+async function requestRelayPairing(lease) {
+  const current = state.relayPairing;
+  if (current?.role !== "finder") throw new Error("Refresh the same-relay list first.");
+  const requester = await PairingLobbyRequesterSessionV1.create({
+    crypto: state.crypto,
+    listing: lease
+  });
+  try {
+    await current.client.createRealtimeRouteV1(requester.responseRouteCreateRequest);
+    const subscription = await current.client.subscribeRealtimeRouteV1(
+      requester.responseRouteSubscribeRequest()
+    );
+    await current.client.appendRealtimeRouteV1(requester.requestAppendRequest);
+    state.relayPairing = {
+      role: "requester",
+      client: current.client,
+      requester,
+      subscription,
+      cursor: 0
+    };
+    elements.relayPairingStatus.textContent =
+      `Request sent to ${requester.hostBadge.displayText}. Waiting for approval on that device.`;
+    renderRelayPairing();
+  } catch (error) {
+    requester.dispose();
+    throw error;
+  }
+}
+
+async function acceptRelayPairingRequest(requestID) {
+  const current = state.relayPairing;
+  if (current?.role !== "host") throw new Error("The visibility window is no longer active.");
+  const pending = current.pending.find(({ id }) => id === requestID);
+  if (!pending) throw new Error("The pairing request expired or was already handled.");
+  const prepared = await prepareOffererInvitation();
+  state.invitation = prepared.encoded;
+  state.invitationPairingID = prepared.pairingID;
+  elements.invitation.value = prepared.encoded;
+  try {
+    const append = await current.host.decisionAppendRequest({
+      pending,
+      decision: "accepted",
+      pairingLink: prepared.encoded
+    });
+    await current.client.appendRealtimeRouteV1(append);
+    await closeRelayPairing({ bestEffort: true });
+    clearSharedInvitation();
+    elements.relayPairingStatus.textContent = "Approved. The encrypted invitation was delivered through the relay; pairing is finishing automatically.";
+    await pumpPairing(prepared.pairingID);
+  } catch (error) {
+    $("#shareInvitation").hidden = false;
+    $("#copyInvitation").hidden = false;
+    elements.invitationResult.textContent = "Relay delivery failed. The same one-use invitation is available below as a private fallback.";
+    throw error;
+  }
+}
+
+async function rejectRelayPairingRequest(requestID) {
+  const current = state.relayPairing;
+  if (current?.role !== "host") throw new Error("The visibility window is no longer active.");
+  const pending = current.pending.find(({ id }) => id === requestID);
+  if (!pending) throw new Error("The pairing request expired or was already handled.");
+  await current.client.appendRealtimeRouteV1(
+    await current.host.decisionAppendRequest({ pending, decision: "rejected" })
+  );
+  current.pending = current.pending.filter(({ id }) => id !== requestID);
+  elements.relayPairingStatus.textContent = "Request declined. You remain visible until the two-minute window ends.";
+  renderRelayPairing();
+}
+
+async function pairingLobbyClient() {
+  await verifyRelay();
+  const client = makeRelayClient(elements.relay.value);
+  const { relayInfo } = await client.info();
+  const modules = relayInfo.protocolCapabilities?.modules ?? [];
+  const pairing = modules.some(({ module, versions }) =>
+    module === "nw.pairing-lobby" && versions.includes(1));
+  const realtime = modules.some(({ module, versions }) =>
+    module === "nw.realtime-route" && versions.includes(1));
+  if (!pairing || !realtime) {
+    throw new Error("This relay has not enabled its default-off same-relay pairing lobby.");
+  }
+  return client;
+}
+
+async function shareInvitation() {
+  if (!state.invitation) throw new Error("Create a fresh invitation first.");
+  if (typeof navigator.share !== "function") {
+    await copyInvitation();
+    elements.invitationResult.textContent = "System sharing is unavailable, so the one-use invitation was copied.";
+    return;
+  }
+  await navigator.share({
+    title: "Noctweave one-use invitation",
+    text: `Open Noctweave, choose I received an invitation, and paste this one-use link:\n\n${state.invitation}`
+  });
+  elements.invitationResult.textContent = "Invitation shared. Keep this client open while the other client accepts it.";
 }
 
 async function copyInvitation() {
@@ -466,30 +649,44 @@ async function copyInvitation() {
 
 async function inspectInvitation() {
   const { invitation, relay } = await decodePairingInput(
-    elements.peerInvitation.value.trim()
+    normalizedPairingInput(elements.peerInvitation.value)
   );
   elements.relay.value = relayEndpointURL(relay, "/").replace(/\/$/u, "");
   elements.invitationResult.textContent = `Valid one-use rendezvous; expires ${invitation.offer.expiresAt}. No identity or route was disclosed.`;
 }
 
+async function pasteAndPair() {
+  requireUnlocked();
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+    throw new Error("Clipboard reading is unavailable here. Open Enter invitation manually instead.");
+  }
+  const encoded = normalizedPairingInput(await navigator.clipboard.readText());
+  elements.peerInvitation.value = encoded;
+  await acceptInvitation();
+}
+
 async function acceptInvitation() {
   requireUnlocked();
-  const encoded = elements.peerInvitation.value.trim();
-  if (!encoded) throw new Error("Paste a one-use invitation first.");
+  const relationshipPseudonym = requireRelationshipPseudonym();
+  const encoded = normalizedPairingInput(elements.peerInvitation.value);
   const { invitation, relay } = await decodePairingInput(encoded);
   const relayURL = relayEndpointURL(relay, "/").replace(/\/$/u, "");
   elements.relay.value = relayURL;
+  const readiness = await state.pairing.verifyRelay(relayURL);
+  state.relayVerifiedEndpoint = relayURL;
+  state.relayVerifiedSummary = `${readiness.endpoint.transport.toUpperCase()} rendezvous verified`;
+  elements.relayInfo.textContent = state.relayVerifiedSummary;
   await persistRelayPreference(relayURL);
   const prepared = await state.pairing.prepareResponderPairing({
     persona: state.persona,
     invitation,
     relay,
-    relationshipPseudonym: elements.relationshipPseudonym.value,
+    relationshipPseudonym,
     at: swiftISODate()
   });
   await persistPersona(prepared.persona);
   elements.peerInvitation.value = "";
-  elements.invitationResult.textContent = "Invitation accepted. Its secret was removed from the form; the encrypted rendezvous will resume until ready.";
+  elements.invitationResult.textContent = "Invitation accepted. Its secret was removed from the form; pairing will finish automatically.";
   await pumpPairing(prepared.pairingID);
 }
 
@@ -567,19 +764,26 @@ async function pumpPairing(pairingID) {
       if (!progressed || (!batch.hasMore && batch.frames.length === 0)) break;
     }
     const pairing = pendingPairing(pairingID);
-    elements.pairingStatus.textContent = pairing?.phase === "ready"
-      ? "Pairing is verified and ready for your explicit final approval."
-      : "Rendezvous synchronized. Waiting for the peer; retry is safe after a restart.";
+    if (pairing?.phase === "ready" && pairing.outboundTransportFrames.length === 0) {
+      elements.pairingStatus.textContent = "Relationship verified. Finishing securely…";
+      await finalizePairing(pairingID, { alreadyBusy: true });
+      return;
+    }
+    elements.pairingStatus.textContent = "Pairing is active. Waiting for the other client; retry is safe after a restart.";
   } finally {
     state.pairingBusy.delete(pairingID);
     renderPendingPairings();
   }
 }
 
-async function finalizePairing(pairingID) {
-  if (state.pairingBusy.has(pairingID)) throw new Error("Pairing synchronization is still running.");
-  state.pairingBusy.add(pairingID);
-  renderPendingPairings();
+async function finalizePairing(pairingID, { alreadyBusy = false } = {}) {
+  if (!alreadyBusy && state.pairingBusy.has(pairingID)) {
+    throw new Error("Pairing synchronization is still running.");
+  }
+  if (!alreadyBusy) {
+    state.pairingBusy.add(pairingID);
+    renderPendingPairings();
+  }
   try {
     const pending = requirePendingPairing(pairingID);
     const finalized = await state.pairing.finalizePairing({
@@ -589,12 +793,15 @@ async function finalizePairing(pairingID) {
     });
     await deleteRendezvousLanes(pending, finalized.rendezvousDeletionRequests);
     await persistPersona(finalized.persona);
+    if (state.invitationPairingID === pairingID) clearSharedInvitation();
     state.selectedRelationshipID = finalized.relationship.relationshipID;
     await refreshSelectedMessages({ resumeOutbound: true, synchronize: true });
     elements.pairingStatus.textContent = "Fresh pairwise relationship stored; the one-use rendezvous lanes were deleted.";
   } finally {
-    state.pairingBusy.delete(pairingID);
-    renderPendingPairings();
+    if (!alreadyBusy) {
+      state.pairingBusy.delete(pairingID);
+      renderPendingPairings();
+    }
   }
 }
 
@@ -613,9 +820,8 @@ async function cancelPairing(pairingID) {
       allowAlreadyExpired: true
     });
     await persistPersona(cancelled.persona);
-    if (state.persona.pendingPairings.length === 0) {
-      state.invitation = null;
-      elements.invitation.value = "";
+    if (state.invitationPairingID === pairingID || state.persona.pendingPairings.length === 0) {
+      clearSharedInvitation();
     }
     elements.pairingStatus.textContent = "Pairing cancelled; private pending state and one-use rendezvous lanes were deleted.";
   } finally {
@@ -633,6 +839,168 @@ async function deleteRendezvousLanes(pairing, requests, { allowAlreadyExpired = 
     // The relay lease has ended, so no live lane remains to delete. Local
     // cancellation still erases the encrypted pending participant state.
   }
+}
+
+async function pollRelayPairing() {
+  if (state.relayPairingBusy || !state.relayPairing) return;
+  state.relayPairingBusy = true;
+  renderRelayPairing();
+  try {
+    const current = state.relayPairing;
+    if (current.role === "host") {
+      const batch = await current.client.syncRealtimeRouteV1({
+        routeCapability: current.host.announcement.requestRouteCapability,
+        subscriptionCapability: current.subscription.subscriptionCapability,
+        afterSequence: current.cursor,
+        maxRecords: 32
+      });
+      current.cursor = batch.nextSequence;
+      for (const record of batch.records) {
+        try {
+          const pending = await current.host.openRequest(record.payload);
+          if (!current.pending.some(({ id }) => id === pending.id)) current.pending.push(pending);
+        } catch {
+          // Advance past invalid public input so one bad request cannot pin the approval screen.
+        }
+      }
+      if (current.pending.length > 0) {
+        elements.relayPairingStatus.textContent =
+          "Pairing request received. Compare the entire badge shown on both devices before approving.";
+      }
+    } else if (current.role === "requester") {
+      const batch = await current.client.syncRealtimeRouteV1({
+        routeCapability: current.requester.request.responseRouteCapability,
+        subscriptionCapability: current.subscription.subscriptionCapability,
+        afterSequence: current.cursor,
+        maxRecords: 8
+      });
+      current.cursor = batch.nextSequence;
+      for (const record of batch.records) {
+        const response = await current.requester.openResponse(record.payload);
+        if (response.decision === "rejected") {
+          await closeRelayPairing({ bestEffort: true });
+          elements.relayPairingStatus.textContent = "The other device declined this request.";
+          return;
+        }
+        const invitation = response.pairingLink;
+        await closeRelayPairing({ bestEffort: true });
+        elements.peerInvitation.value = invitation;
+        elements.relayPairingStatus.textContent = "Approved. Starting the encrypted one-use rendezvous…";
+        await acceptInvitation();
+        return;
+      }
+    }
+  } catch (error) {
+    if (Date.now() >= relayPairingExpiry(state.relayPairing)) {
+      await closeRelayPairing({ bestEffort: true });
+      elements.relayPairingStatus.textContent = "The two-minute pairing window expired. Start a fresh one to continue.";
+      return;
+    }
+    throw error;
+  } finally {
+    state.relayPairingBusy = false;
+    renderRelayPairing();
+  }
+}
+
+async function stopRelayPairing() {
+  await closeRelayPairing({ bestEffort: false });
+  elements.relayPairingStatus.textContent = "Same-relay pairing stopped. Disposable routes will expire automatically.";
+}
+
+async function closeRelayPairing({ bestEffort }) {
+  const current = state.relayPairing;
+  if (!current) return;
+  state.relayPairing = null;
+  renderRelayPairing();
+  const operations = [];
+  if (current.role === "host") {
+    operations.push(() => current.client.releasePairingLobbyV1(current.host.leaseReleaseRequest));
+    operations.push(() => current.client.unsubscribeRealtimeRouteV1({
+      routeCapability: current.host.announcement.requestRouteCapability,
+      subscriptionCapability: current.subscription.subscriptionCapability
+    }));
+  } else if (current.role === "requester") {
+    operations.push(() => current.client.unsubscribeRealtimeRouteV1({
+      routeCapability: current.requester.request.responseRouteCapability,
+      subscriptionCapability: current.subscription.subscriptionCapability
+    }));
+  }
+  let failure = null;
+  for (const operation of operations) {
+    try { await operation(); } catch (error) { failure ??= error; }
+  }
+  current.host?.dispose();
+  current.requester?.dispose();
+  if (failure && !bestEffort) throw failure;
+}
+
+function relayPairingExpiry(current) {
+  if (current?.role === "host") return Date.parse(current.host.announcement.expiresAt);
+  if (current?.role === "requester") return Date.parse(current.requester.request.expiresAt);
+  return Number.POSITIVE_INFINITY;
+}
+
+function renderRelayPairing() {
+  const current = state.relayPairing;
+  const busy = state.relayPairingBusy;
+  elements.startRelayVisibility.disabled = busy || current !== null;
+  elements.findRelayPeers.disabled = busy || current !== null;
+  elements.stopRelayPairing.hidden = current === null;
+  elements.stopRelayPairing.disabled = busy;
+  if (!current) {
+    elements.relayPairingResults.replaceChildren();
+    return;
+  }
+  if (current.role === "finder") {
+    elements.relayPairingResults.replaceChildren(...current.listings.map(({ lease, listing }) =>
+      relayPairingResult(
+        listing.badge.displayText,
+        `Visible until ${listing.expiresAt}`,
+        pairingButton("Request pairing", () => run(() => requestRelayPairing(lease)))
+      )
+    ));
+    return;
+  }
+  if (current.role === "requester") {
+    elements.relayPairingResults.replaceChildren(relayPairingResult(
+      current.requester.hostBadge.displayText,
+      `Your badge: ${current.requester.requesterBadge.displayText}`
+    ));
+    return;
+  }
+  const own = relayPairingResult(
+    current.host.badge.displayText,
+    "Your temporary badge · visible for this window only"
+  );
+  const requests = current.pending.map((pending) => {
+    const actions = document.createElement("div");
+    actions.className = "buttonRow";
+    const accept = pairingButton("Approve", () => run(() => acceptRelayPairingRequest(pending.id)));
+    const reject = pairingButton("Decline", () => run(() => rejectRelayPairingRequest(pending.id)), "subtle");
+    accept.disabled = busy;
+    reject.disabled = busy;
+    actions.append(accept, reject);
+    return relayPairingResult(
+      pending.requesterBadge.displayText,
+      "Pairing request · compare the full badge",
+      actions
+    );
+  });
+  elements.relayPairingResults.replaceChildren(own, ...requests);
+}
+
+function relayPairingResult(titleText, detailText, action = null) {
+  const item = document.createElement("article");
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  const detail = document.createElement("span");
+  detail.textContent = detailText;
+  copy.append(title, detail);
+  item.append(copy);
+  if (action) item.append(action);
+  return item;
 }
 
 async function persistPersona(persona) {
@@ -655,7 +1023,7 @@ function requirePendingPairing(pairingID) {
 function startPairingPump() {
   stopPairingPump();
   void backgroundResume();
-  state.pumpTimer = setInterval(backgroundResume, 3_000);
+  state.pumpTimer = setInterval(backgroundResume, ACTIVE_PAIRING_POLL_MS);
 }
 
 function stopPairingPump() {
@@ -664,11 +1032,16 @@ function stopPairingPump() {
 }
 
 async function backgroundResume() {
-  if (!state.persona || !state.repository || state.persona.pendingPairings.length === 0) return;
+  if (!state.persona || !state.repository) return;
   try {
-    await resumeAllPairings();
+    if (state.relayPairing) await pollRelayPairing();
+    if (state.persona.pendingPairings.length > 0) await resumeAllPairings();
   } catch (error) {
-    elements.pairingStatus.textContent = `Rendezvous paused: ${displayError(error)} Use Resume all to retry.`;
+    if (state.relayPairing) {
+      elements.relayPairingStatus.textContent = `Same-relay pairing paused: ${displayError(error)}`;
+    } else {
+      elements.pairingStatus.textContent = `Rendezvous paused: ${displayError(error)} Use Resume all to retry.`;
+    }
   }
 }
 
@@ -1225,8 +1598,32 @@ function pairingPhaseLabel(phase) {
     awaitingIntroduction: "Waiting for peer introduction",
     awaitingConfirmation: "Verifying relationship",
     awaitingAcknowledgement: "Waiting for final acknowledgement",
-    ready: "Ready to finalize"
+    ready: "Finishing verified relationship"
   })[phase] ?? "Pairing in progress";
+}
+
+function requireRelationshipPseudonym() {
+  const value = elements.relationshipPseudonym.value.trim();
+  if (!value) throw new Error("Enter the name the other person should see for you.");
+  return value;
+}
+
+function normalizedPairingInput(value) {
+  if (typeof value !== "string") throw new Error("Paste a one-use invitation first.");
+  const normalized = value.trim();
+  if (!normalized) throw new Error("Paste a one-use invitation first.");
+  if (normalized.length > PAIRING_INVITATION_MAX_CHARACTERS) {
+    throw new Error("The invitation exceeds the 32 KiB safety limit.");
+  }
+  return normalized;
+}
+
+function clearSharedInvitation() {
+  state.invitation = null;
+  state.invitationPairingID = null;
+  elements.invitation.value = "";
+  $("#shareInvitation").hidden = true;
+  $("#copyInvitation").hidden = true;
 }
 
 function requireUnlocked() {

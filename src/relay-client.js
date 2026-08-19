@@ -203,6 +203,44 @@ export class NoctweaveRelayClient {
     await this.send(relayRequests.deleteRendezvousTransportV2(deletion), options);
   }
 
+  async createRealtimeRouteV1(request, options = {}) {
+    const response = await this.send(relayRequests.createRealtimeRouteV1(request), options);
+    return response.route;
+  }
+
+  async appendRealtimeRouteV1(request, options = {}) {
+    const response = await this.send(relayRequests.appendRealtimeRouteV1(request), options);
+    return response.receipt;
+  }
+
+  async subscribeRealtimeRouteV1(request, options = {}) {
+    const response = await this.send(relayRequests.subscribeRealtimeRouteV1(request), options);
+    return response.subscription;
+  }
+
+  async syncRealtimeRouteV1(request, options = {}) {
+    const response = await this.send(relayRequests.syncRealtimeRouteV1(request), options);
+    return response.batch;
+  }
+
+  async unsubscribeRealtimeRouteV1(request, options = {}) {
+    await this.send(relayRequests.unsubscribeRealtimeRouteV1(request), options);
+  }
+
+  async acquirePairingLobbyV1(request, options = {}) {
+    const response = await this.send(relayRequests.acquirePairingLobbyV1(request), options);
+    return response.listing;
+  }
+
+  async releasePairingLobbyV1(request, options = {}) {
+    await this.send(relayRequests.releasePairingLobbyV1(request), options);
+  }
+
+  async listPairingLobbyV1(options = {}) {
+    const response = await this.send(relayRequests.listPairingLobbyV1(), options);
+    return response.listings;
+  }
+
   async registerFederationNode(request, options = {}) {
     const relayRequest = relayRequests.registerFederationNode(request);
     const response = await this.send(relayRequest, options);

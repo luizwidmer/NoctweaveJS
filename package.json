@@ -35,6 +35,7 @@
     "desktop:build": "electrobun build --env=stable",
     "desktop:icons": "bun desktop/scripts/generate-icons.ts",
     "smoke:relay": "node scripts/relay-smoke.js",
+    "smoke:pairing-lobby": "node scripts/pairing-lobby-smoke.js",
     "smoke:noctweb-data": "node scripts/noctweb-data-smoke.js",
     "typecheck:desktop": "tsc --noEmit",
     "test": "node --test"

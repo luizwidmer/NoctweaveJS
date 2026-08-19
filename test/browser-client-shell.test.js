@@ -18,6 +18,8 @@ test("production browser client binds only present one-use pairing controls", as
     "pendingPairingList",
     "pairingStatus",
     "acceptInvitation",
+    "pasteAndPair",
+    "shareInvitation",
     "resumePairings",
     "verifyRelay",
     "selectedRelationshipName",
@@ -38,6 +40,8 @@ test("production browser client binds only present one-use pairing controls", as
     assert.equal(ids.has(id), true, id);
   }
   assert.match(html, /One-use pairing/);
+  assert.match(html, /Pair in two steps/);
+  assert.match(html, /Enter your name, not theirs/);
   assert.match(html, /no protocol key or routable identifier/i);
   assert.match(html, /Durable pairwise messaging/);
 });
@@ -60,7 +64,12 @@ test("browser shell drives both persisted rendezvous roles through relay transpo
   }
   assert.match(script, /startPairingPump\(\)/);
   assert.match(script, /setInterval\(backgroundResume/);
+  assert.match(script, /ACTIVE_PAIRING_POLL_MS = 1_000/);
+  assert.match(script, /PAIRING_INVITATION_MAX_CHARACTERS = 32_768/);
+  assert.match(script, /normalizedPairingInput/);
+  assert.match(script, /finalizePairing\(pairingID, \{ alreadyBusy: true \}\)/);
   assert.match(script, /elements\.peerInvitation\.value = ""/);
+  assert.match(script, /state\.invitationPairingID === pairingID/);
 });
 
 test("pairing relay effects are persisted in crash-safe order and terminal lanes are cleaned", async () => {

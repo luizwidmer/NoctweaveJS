@@ -88,6 +88,8 @@ export { bytes, WebCryptoPrimitives } from "./crypto/webcrypto.js";
 export * from "./rendezvous-v2.js";
 export * from "./call-v1.js";
 export * from "./rendezvous-relay-v2.js";
+export * from "./realtime-relay-v1.js";
+export * from "./pairing-lobby-v1.js";
 export * from "./opaque-route-v2.js";
 export * from "./opaque-route-packet-v2.js";
 export * from "./opaque-route-relay-v2.js";

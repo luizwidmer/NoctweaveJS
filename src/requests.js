@@ -49,6 +49,22 @@ import {
   requireRecord
 } from "./private-v2.js";
 import { canonicalJson, swiftUUID } from "./crypto/swift-canonical.js";
+import {
+  validateOpaqueRelaySyncBatchV1,
+  validatePairingLobbyAcquireRequestV1,
+  validatePairingLobbyLeaseV1,
+  validatePairingLobbyListingsV1,
+  validatePairingLobbyListRequestV1,
+  validatePairingLobbyReleaseRequestV1,
+  validateRealtimeRouteAppendReceiptV1,
+  validateRealtimeRouteAppendRequestV1,
+  validateRealtimeRouteCreatedV1,
+  validateRealtimeRouteCreateRequestV1,
+  validateRealtimeRouteSubscribeRequestV1,
+  validateRealtimeRouteSubscriptionV1,
+  validateRealtimeRouteSyncRequestV1,
+  validateRealtimeRouteUnsubscribeRequestV1
+} from "./realtime-relay-v1.js";
 
 const encryptedAttachmentPayloadLimits = Object.freeze({
   nonceBytes: 12,
@@ -91,6 +107,30 @@ const bindings = Object.freeze({
   }),
   deleteRendezvousTransportV2: Object.freeze({
     module: "nw.rendezvous-transport", version: 2, method: "delete", body: null
+  }),
+  createRealtimeRouteV1: Object.freeze({
+    module: "nw.realtime-route", version: 1, method: "create", body: "route"
+  }),
+  appendRealtimeRouteV1: Object.freeze({
+    module: "nw.realtime-route", version: 1, method: "append", body: "receipt"
+  }),
+  subscribeRealtimeRouteV1: Object.freeze({
+    module: "nw.realtime-route", version: 1, method: "subscribe", body: "subscription"
+  }),
+  syncRealtimeRouteV1: Object.freeze({
+    module: "nw.realtime-route", version: 1, method: "sync", body: "batch"
+  }),
+  unsubscribeRealtimeRouteV1: Object.freeze({
+    module: "nw.realtime-route", version: 1, method: "unsubscribe", body: null
+  }),
+  acquirePairingLobbyV1: Object.freeze({
+    module: "nw.pairing-lobby", version: 1, method: "acquire", body: "listing"
+  }),
+  releasePairingLobbyV1: Object.freeze({
+    module: "nw.pairing-lobby", version: 1, method: "release", body: null
+  }),
+  listPairingLobbyV1: Object.freeze({
+    module: "nw.pairing-lobby", version: 1, method: "list", body: "listings"
   }),
   uploadAttachment: Object.freeze({ module: "nw.blobs", version: 1, method: "upload", body: "chunk" }),
   fetchAttachment: Object.freeze({ module: "nw.blobs", version: 1, method: "fetch", body: "chunk" }),
@@ -182,6 +222,46 @@ export const relayRequests = Object.freeze({
       validateDeleteRendezvousTransportV2Request(request),
       authToken
     );
+  },
+  createRealtimeRouteV1(request, authToken) {
+    return makeRequest(bindings.createRealtimeRouteV1, {
+      request: validateRealtimeRouteCreateRequestV1(request)
+    }, authToken);
+  },
+  appendRealtimeRouteV1(request, authToken) {
+    return makeRequest(bindings.appendRealtimeRouteV1, {
+      request: validateRealtimeRouteAppendRequestV1(request)
+    }, authToken);
+  },
+  subscribeRealtimeRouteV1(request, authToken) {
+    return makeRequest(bindings.subscribeRealtimeRouteV1, {
+      request: validateRealtimeRouteSubscribeRequestV1(request)
+    }, authToken);
+  },
+  syncRealtimeRouteV1(request, authToken) {
+    return makeRequest(bindings.syncRealtimeRouteV1, {
+      request: validateRealtimeRouteSyncRequestV1(request)
+    }, authToken);
+  },
+  unsubscribeRealtimeRouteV1(request, authToken) {
+    return makeRequest(bindings.unsubscribeRealtimeRouteV1, {
+      request: validateRealtimeRouteUnsubscribeRequestV1(request)
+    }, authToken);
+  },
+  acquirePairingLobbyV1(request, authToken) {
+    return makeRequest(bindings.acquirePairingLobbyV1, {
+      request: validatePairingLobbyAcquireRequestV1(request)
+    }, authToken);
+  },
+  releasePairingLobbyV1(request, authToken) {
+    return makeRequest(bindings.releasePairingLobbyV1, {
+      request: validatePairingLobbyReleaseRequestV1(request)
+    }, authToken);
+  },
+  listPairingLobbyV1(request = {}, authToken) {
+    return makeRequest(bindings.listPairingLobbyV1, {
+      request: validatePairingLobbyListRequestV1(request)
+    }, authToken);
   },
   uploadAttachment(request, authToken) {
     requireExactRecord(
@@ -350,6 +430,24 @@ function validateResponseBody(binding, body, request) {
   case "nw.rendezvous-transport/append":
   case "nw.rendezvous-transport/delete": break;
   case "nw.rendezvous-transport/sync": validateRendezvousRelaySyncBatchV2(body.batch); break;
+  case "nw.realtime-route/create":
+    validateRealtimeRouteCreatedV1(body.route, request.body.request);
+    break;
+  case "nw.realtime-route/append":
+    validateRealtimeRouteAppendReceiptV1(body.receipt, request.body.request);
+    break;
+  case "nw.realtime-route/subscribe":
+    validateRealtimeRouteSubscriptionV1(body.subscription, request.body.request);
+    break;
+  case "nw.realtime-route/sync":
+    validateOpaqueRelaySyncBatchV1(body.batch, request.body.request);
+    break;
+  case "nw.realtime-route/unsubscribe": break;
+  case "nw.pairing-lobby/acquire":
+    validatePairingLobbyLeaseV1(body.listing, request.body.request);
+    break;
+  case "nw.pairing-lobby/release": break;
+  case "nw.pairing-lobby/list": validatePairingLobbyListingsV1(body.listings); break;
   case "nw.federation/register":
   case "nw.federation/list": validateFederationNodesResponse(body); break;
   case "nw.net-host/put":
@@ -1112,6 +1210,38 @@ function validateRequestBody(binding, body) {
   case "nw.rendezvous-transport/append": validateAppendRendezvousTransportV2Request(body); break;
   case "nw.rendezvous-transport/sync": validateSyncRendezvousTransportV2Request(body); break;
   case "nw.rendezvous-transport/delete": validateDeleteRendezvousTransportV2Request(body); break;
+  case "nw.realtime-route/create":
+    requireExactRecord(body, ["request"], [], "Realtime route create body");
+    validateRealtimeRouteCreateRequestV1(body.request);
+    break;
+  case "nw.realtime-route/append":
+    requireExactRecord(body, ["request"], [], "Realtime route append body");
+    validateRealtimeRouteAppendRequestV1(body.request);
+    break;
+  case "nw.realtime-route/subscribe":
+    requireExactRecord(body, ["request"], [], "Realtime route subscribe body");
+    validateRealtimeRouteSubscribeRequestV1(body.request);
+    break;
+  case "nw.realtime-route/sync":
+    requireExactRecord(body, ["request"], [], "Realtime route sync body");
+    validateRealtimeRouteSyncRequestV1(body.request);
+    break;
+  case "nw.realtime-route/unsubscribe":
+    requireExactRecord(body, ["request"], [], "Realtime route unsubscribe body");
+    validateRealtimeRouteUnsubscribeRequestV1(body.request);
+    break;
+  case "nw.pairing-lobby/acquire":
+    requireExactRecord(body, ["request"], [], "Pairing lobby acquire body");
+    validatePairingLobbyAcquireRequestV1(body.request);
+    break;
+  case "nw.pairing-lobby/release":
+    requireExactRecord(body, ["request"], [], "Pairing lobby release body");
+    validatePairingLobbyReleaseRequestV1(body.request);
+    break;
+  case "nw.pairing-lobby/list":
+    requireExactRecord(body, ["request"], [], "Pairing lobby list body");
+    validatePairingLobbyListRequestV1(body.request);
+    break;
   case "nw.blobs/upload":
     requireExactRecord(body, ["attachmentId", "chunkIndex", "payload", "ttlSeconds", "idempotencyKey"], [],
       "Attachment upload body");
