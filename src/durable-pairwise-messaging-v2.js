@@ -5,6 +5,8 @@ import {
   createDeliveryStateRecord,
   createReadReceiptEncodedContent,
   createTextEncodedContent,
+  contentTypeCanonicalName,
+  standardContentTypes,
   validateConversationEvent,
   validateDeliveryStateRecord,
   validateEncodedContent
@@ -14,10 +16,19 @@ import {
   NoctweaveRemoteEnvelopeError,
   createNativeInboundSession,
   createNativeOutboundSession,
-  decryptNativeProtocolEnvelope,
+  decryptNativeProtocolEnvelopeWithMessageKey,
   encryptNativeApplicationEnvelope,
+  encryptNativeApplicationEnvelopeWithMessageKey,
   encryptNativeRelationshipControlEnvelope
 } from "./crypto/noctweave-native-message.js";
+import {
+  createDirectAttachmentDescriptorV1,
+  createDirectAttachmentEncodedContentV1,
+  decryptDirectAttachmentChunkV1,
+  encryptDirectAttachmentChunkV1,
+  validateDirectAttachmentDescriptorV1,
+  validateDirectAttachmentRelayChunkV1
+} from "./attachment-v1.js";
 import {
   derivePairwiseDirectV4Binding,
   isPeerPairwiseIdentityV2,
@@ -62,6 +73,7 @@ import {
   relationshipControlKindsV2
 } from "./relationship-control-v2.js";
 import { NoctweaveRelayClient } from "./relay-client.js";
+import { normalizeRelayEndpoint } from "./endpoint.js";
 import { validateRelationshipLocalPolicyV2 } from "./relationship-local-policy-v2.js";
 import { EncryptedNoctweaveStore, NoctweaveStateRepository } from "./storage.js";
 import { parseExactJSON } from "./strict-json.js";
@@ -83,6 +95,7 @@ const MAXIMUM_RETIRED_LOCAL_ROUTES = 8;
 const MAXIMUM_SESSIONS = 4;
 const MAXIMUM_ATTEMPTS = 8;
 const MAXIMUM_STATE_BYTES = 7 * 1_024 * 1_024;
+const MAXIMUM_DURABLE_ATTACHMENT_BYTES = 3 * 1_024 * 1_024;
 const MAXIMUM_INBOUND_DELIVERY_DELAY_MS = 7 * 86_400_000;
 const MAXIMUM_INBOUND_FUTURE_SKEW_MS = 5 * 60_000;
 const intentStates = new Set([
@@ -121,6 +134,7 @@ export const durablePairwiseMessagingV2 = Object.freeze({
   maximumSessions: MAXIMUM_SESSIONS,
   maximumAttempts: MAXIMUM_ATTEMPTS,
   maximumStateBytes: MAXIMUM_STATE_BYTES,
+  maximumDurableAttachmentBytes: MAXIMUM_DURABLE_ATTACHMENT_BYTES,
   maximumInboundDeliveryDelayMilliseconds: MAXIMUM_INBOUND_DELIVERY_DELAY_MS,
   maximumInboundFutureSkewMilliseconds: MAXIMUM_INBOUND_FUTURE_SKEW_MS
 });
@@ -394,6 +408,45 @@ export class DurablePairwiseMessagingRuntimeV2 {
     });
   }
 
+  async prepareAttachment({
+    bytes,
+    mimeType,
+    relayTTLSeconds = null,
+    relation,
+    clientTransactionId,
+    eventId = swiftUUID(),
+    attachmentId = swiftUUID(),
+    sentAt
+  } = {}) {
+    const plaintext = copySensitiveBytes(bytes, "Attachment bytes");
+    try {
+      if (plaintext.byteLength > MAXIMUM_DURABLE_ATTACHMENT_BYTES) {
+        throw new DurablePairwiseMessagingV2Error(
+          "attachmentCapacityExceeded",
+          `Durable browser attachments cannot exceed ${MAXIMUM_DURABLE_ATTACHMENT_BYTES} bytes.`
+        );
+      }
+      const descriptor = await createDirectAttachmentDescriptorV1({
+        crypto: this.crypto,
+        bytes: plaintext,
+        mimeType,
+        attachmentId,
+        relayTTLSeconds
+      });
+      return await this.prepareApplication({
+        content: createDirectAttachmentEncodedContentV1(descriptor),
+        relation,
+        clientTransactionId,
+        eventId,
+        sentAt,
+        eventKind: "application",
+        attachment: { descriptor, plaintext }
+      });
+    } finally {
+      plaintext.fill(0);
+    }
+  }
+
   async prepareDeliveryReceipt({ targetEventId, clientTransactionId, eventId, sentAt } = {}) {
     return this.prepareApplication({
       content: createDeliveryReceiptEncodedContent(targetEventId),
@@ -420,7 +473,8 @@ export class DurablePairwiseMessagingRuntimeV2 {
     clientTransactionId = swiftUUID(),
     eventId = swiftUUID(),
     sentAt = swiftISODate(),
-    eventKind = "application"
+    eventKind = "application",
+    attachment = null
   }) {
     return this.serialized(async () => {
       const state = await this.ensureState();
@@ -469,20 +523,48 @@ export class DurablePairwiseMessagingRuntimeV2 {
         content: validatedContent,
         relation
       });
-      const envelope = await encryptNativeApplicationEnvelope({
-        crypto: this.crypto,
-        pqc: this.pqc,
-        localIdentity: relationship.localIdentity,
-        peerIdentity: relationship.peerIdentity,
-        conversation,
-        content: validatedContent,
-        relation,
-        eventKind,
-        bootstrap,
-        eventId: event.id,
-        clientTransactionId: transactionID,
-        sentAt: canonicalSentAt
-      });
+      let envelope;
+      let attachmentMessageKey = null;
+      if (attachment === null) {
+        envelope = await encryptNativeApplicationEnvelope({
+          crypto: this.crypto,
+          pqc: this.pqc,
+          localIdentity: relationship.localIdentity,
+          peerIdentity: relationship.peerIdentity,
+          conversation,
+          content: validatedContent,
+          relation,
+          eventKind,
+          bootstrap,
+          eventId: event.id,
+          clientTransactionId: transactionID,
+          sentAt: canonicalSentAt
+        });
+      } else {
+        const validatedAttachment = await validatePreparedAttachmentInput(
+          this.crypto,
+          attachment,
+          validatedContent
+        );
+        const encrypted = await encryptNativeApplicationEnvelopeWithMessageKey({
+          crypto: this.crypto,
+          pqc: this.pqc,
+          localIdentity: relationship.localIdentity,
+          peerIdentity: relationship.peerIdentity,
+          conversation,
+          content: validatedContent,
+          relation,
+          eventKind,
+          bootstrap,
+          eventId: event.id,
+          clientTransactionId: transactionID,
+          sentAt: canonicalSentAt
+        });
+        envelope = encrypted.envelope;
+        attachmentMessageKey = encrypted.messageKey;
+        attachment = validatedAttachment;
+      }
+      try {
       const routes = usablePairwiseRoutesV2(
         relationship.peerIdentity.sendRoutes,
         Date.parse(canonicalSentAt)
@@ -537,14 +619,44 @@ export class DurablePairwiseMessagingRuntimeV2 {
         createdAt: now,
         updatedAt: now
       };
+      if (attachment !== null) intent._attachmentChunks = [];
       candidate.nextIntentSequence += 1;
       candidate.intents.push(intent);
       candidate.updatedAt = monotonicStateTimestamp(candidate, now);
 
       // This is the durability boundary: no relay client exists until the
       // complete event, ratchet mutation, envelope, packets, and intent save.
-      await this.saveCandidate(candidate);
-      return publicIntent(intent);
+      try {
+        if (attachment !== null) {
+          for (let chunkIndex = 0; chunkIndex < attachment.descriptor.chunkCount; chunkIndex += 1) {
+            const start = chunkIndex * attachment.descriptor.chunkSize;
+            const end = Math.min(
+              start + attachment.descriptor.chunkSize,
+              attachment.descriptor.byteCount
+            );
+            const request = await encryptDirectAttachmentChunkV1({
+              crypto: this.crypto,
+              descriptor: attachment.descriptor,
+              messageKey: attachmentMessageKey,
+              conversationId: envelope.conversationId,
+              sessionId: envelope.sessionId,
+              messageCounter: envelope.messageCounter,
+              chunkIndex,
+              plaintext: attachment.plaintext.subarray(start, end),
+              eventId: event.id
+            });
+            intent._attachmentChunks.push(attachmentUploadRecord(event.id, request));
+          }
+        }
+        await this.saveCandidate(candidate);
+        return publicIntent(intent);
+      } finally {
+        wipeSensitiveBytes(attachmentMessageKey);
+      }
+      } finally {
+        wipeSensitiveBytes(attachmentMessageKey);
+        wipeSensitiveBytes(attachment?.plaintext);
+      }
     });
   }
 
@@ -830,6 +942,13 @@ export class DurablePairwiseMessagingRuntimeV2 {
           deliveryIndex < state.intents[index].routeDeliveries.length;
           deliveryIndex += 1) {
           try {
+            const initialDelivery = state.intents[index].routeDeliveries[deliveryIndex];
+            if (isAttachmentEvent(state.intents[index].event)) {
+              await this.uploadAttachmentChunks(
+                state.intents[index],
+                initialDelivery.route.relay
+              );
+            }
             while (state.intents[index].routeDeliveries[deliveryIndex].status !== "relayAccepted") {
               let delivery = state.intents[index].routeDeliveries[deliveryIndex];
               let packet = delivery.sealedBundle.packets[delivery.nextPacketIndex];
@@ -904,6 +1023,7 @@ export class DurablePairwiseMessagingRuntimeV2 {
           // Relay acceptance no longer needs the large exact retry material.
           accepted.directEnvelope = null;
           accepted.routeDeliveries = [];
+          delete accepted._attachmentChunks;
           candidate.updatedAt = accepted.updatedAt;
           await this.saveCandidate(candidate);
           state = candidate;
@@ -923,6 +1043,7 @@ export class DurablePairwiseMessagingRuntimeV2 {
           if (failed.status === "permanentFailure") {
             failed.directEnvelope = null;
             failed.routeDeliveries = [];
+            delete failed._attachmentChunks;
           }
           candidate.updatedAt = failed.updatedAt;
           await this.saveCandidate(candidate);
@@ -980,6 +1101,7 @@ export class DurablePairwiseMessagingRuntimeV2 {
         intent.status = "discarded";
         intent.directEnvelope = null;
         intent.routeDeliveries = [];
+        delete intent._attachmentChunks;
         intent.lastFailureCode = null;
         intent.updatedAt = discardedAt;
       }
@@ -1112,8 +1234,117 @@ export class DurablePairwiseMessagingRuntimeV2 {
   async listReceived() {
     return this.serialized(async () => {
       const state = await this.ensureState();
-      return Object.freeze(clone(state.receivedEvents));
+      return Object.freeze(state.receivedEvents.map(publicReceivedEvent));
     });
+  }
+
+  async downloadAttachment(eventID) {
+    return this.serialized(async () => {
+      let state = await this.ensureState();
+      const normalizedEventID = canonicalUUID(eventID, "Attachment event ID");
+      const receivedIndex = state.receivedEvents.findIndex(({ event }) =>
+        event.id === normalizedEventID
+      );
+      let received = state.receivedEvents[receivedIndex];
+      if (!received || received.projection?.kind !== "attachment") {
+        throw new DurablePairwiseMessagingV2Error(
+          "unknownAttachment",
+          "The received attachment event is not available in this relationship."
+        );
+      }
+      const descriptor = validateDirectAttachmentDescriptorV1(received.projection.descriptor);
+      const runtime = validateAttachmentRuntimeMetadata(received.projection._attachmentRuntime);
+      const relay = await this.relayClientFactory(runtime.relay);
+      if (typeof relay?.fetchAttachment !== "function") {
+        throw new TypeError("Relay client must implement fetchAttachment(...).");
+      }
+      const messageKey = decodeCanonicalBase64(
+        runtime.messageKey,
+        32,
+        "Attachment message key"
+      );
+      const plaintext = new Uint8Array(descriptor.byteCount);
+      try {
+        for (let chunkIndex = 0; chunkIndex < descriptor.chunkCount; chunkIndex += 1) {
+          const storedChunks = received.projection._attachmentChunks ?? [];
+          let stored = storedChunks.find(({ chunk }) => chunk.chunkIndex === chunkIndex) ?? null;
+          let chunk;
+          if (stored === null) {
+            chunk = validateDirectAttachmentRelayChunkV1(
+              await relay.fetchAttachment({ attachmentId: descriptor.id, chunkIndex }),
+              descriptor
+            );
+            stored = attachmentDownloadRecord(received.event.id, chunk);
+            // Each encrypted chunk is immutable and durable before plaintext
+            // is returned to the caller. A crash can refetch a missing chunk;
+            // it never writes plaintext to browser or host storage.
+            const candidate = clone(state);
+            const candidateProjection = candidate.receivedEvents[receivedIndex].projection;
+            candidateProjection._attachmentChunks ??= [];
+            candidateProjection._attachmentChunks.push(stored);
+            candidate.updatedAt = monotonicStateTimestamp(candidate, swiftISODate());
+            await this.saveCandidate(candidate);
+            state = candidate;
+            received = state.receivedEvents[receivedIndex];
+          } else {
+            chunk = validateAttachmentDownloadRecord(stored, received.event.id, descriptor);
+          }
+          const decrypted = await decryptDirectAttachmentChunkV1({
+            crypto: this.crypto,
+            descriptor,
+            messageKey,
+            conversationId: runtime.conversationId,
+            sessionId: runtime.sessionId,
+            messageCounter: runtime.messageCounter,
+            chunk
+          });
+          const offset = chunkIndex * descriptor.chunkSize;
+          plaintext.set(decrypted, offset);
+          decrypted.fill(0);
+        }
+        const digest = base64(await this.crypto.sha256(plaintext));
+        if (digest !== descriptor.sha256) {
+          throw new DurablePairwiseMessagingV2Error(
+            "attachmentDigestMismatch",
+            "The decrypted attachment does not match its authenticated descriptor."
+          );
+        }
+        return Object.freeze({ descriptor, bytes: plaintext });
+      } catch (error) {
+        plaintext.fill(0);
+        throw error;
+      } finally {
+        messageKey.fill(0);
+      }
+    });
+  }
+
+  async uploadAttachmentChunks(intent, relayEndpoint) {
+    const descriptor = attachmentDescriptorFromEvent(intent.event);
+    const relay = await this.relayClientFactory(relayEndpoint);
+    if (typeof relay?.uploadAttachment !== "function") {
+      throw new TypeError("Relay client must implement uploadAttachment(...).");
+    }
+    for (let chunkIndex = 0; chunkIndex < descriptor.chunkCount; chunkIndex += 1) {
+      const record = intent._attachmentChunks?.[chunkIndex];
+      const request = validateAttachmentUploadRecord(
+        record,
+        intent.event.id,
+        descriptor,
+        chunkIndex
+      );
+      const accepted = validateDirectAttachmentRelayChunkV1(
+        await relay.uploadAttachment(request),
+        descriptor
+      );
+      if (accepted.chunkIndex !== chunkIndex ||
+          !equalCanonical(accepted.payload, request.payload)) {
+        throw new DurablePairwiseMessagingV2Error(
+          "attachmentRelaySubstitution",
+          "Relay accepted a different encrypted attachment chunk."
+        );
+      }
+    }
   }
 
   async processReceivedBundle({ state, payload, receivedAt, sourceRouteID }) {
@@ -1191,7 +1422,7 @@ export class DurablePairwiseMessagingRuntimeV2 {
 
     let decoded;
     try {
-      decoded = await decryptNativeProtocolEnvelope({
+      decoded = await decryptNativeProtocolEnvelopeWithMessageKey({
         crypto: this.crypto,
         pqc: this.pqc,
         localIdentity: relationship.localIdentity,
@@ -1225,7 +1456,10 @@ export class DurablePairwiseMessagingRuntimeV2 {
       return Object.freeze({ kind: "quarantined", eventID: envelope.eventId });
     }
 
+    const attachmentMessageKey = decoded.messageKey ?? null;
+    if (Object.hasOwn(decoded, "messageKey")) delete decoded.messageKey;
     if (decoded.kind === "quarantinedControl") {
+      wipeSensitiveBytes(attachmentMessageKey);
       compactArrayHistory(
         state.quarantinedControls,
         MAXIMUM_QUARANTINED_CONTROLS,
@@ -1246,6 +1480,32 @@ export class DurablePairwiseMessagingRuntimeV2 {
 
     compactArrayHistory(state.receivedEvents, MAXIMUM_RECEIVED_EVENTS, 384);
     let projection = decoded.projection;
+    if (projection?.kind === "attachment") {
+      try {
+        if (!(attachmentMessageKey instanceof Uint8Array) ||
+            attachmentMessageKey.byteLength !== 32) {
+          throw new DurablePairwiseMessagingV2Error(
+            "invalidAttachmentKey",
+            "Authenticated attachment event did not retain its one-time message key."
+          );
+        }
+        projection = Object.freeze({
+          ...projection,
+          _attachmentRuntime: Object.freeze({
+            messageKey: base64(attachmentMessageKey),
+            conversationId: envelope.conversationId,
+            sessionId: envelope.sessionId,
+            messageCounter: envelope.messageCounter,
+            relay: normalizeRelayEndpoint(sourceRoute.relay)
+          }),
+          _attachmentChunks: Object.freeze([])
+        });
+      } finally {
+        wipeSensitiveBytes(attachmentMessageKey);
+      }
+    } else {
+      wipeSensitiveBytes(attachmentMessageKey);
+    }
     if (decoded.kind === "control") {
       await applyReceivedRelationshipControl({
         crypto: this.crypto,
@@ -1270,7 +1530,11 @@ export class DurablePairwiseMessagingRuntimeV2 {
     };
     state.receivedEvents.push(stored);
     applyAuthenticatedReceipt(state, decoded, receivedAt);
-    return Object.freeze({ kind: decoded.kind, event: decoded.event, projection });
+    return Object.freeze({
+      kind: decoded.kind,
+      event: decoded.event,
+      projection: publicProjection(projection)
+    });
   }
 
   async ensureState() {
@@ -1568,6 +1832,37 @@ export async function validateDurablePairwiseMessagingStateV2({
     validateConversationEvent(received.event);
     canonicalTimestamp(received.receivedAt, "Received event time");
     requirePlainRecord(received.projection, "Received event projection");
+    if (received.projection.kind === "attachment") {
+      const descriptor = validateDirectAttachmentDescriptorV1(received.projection.descriptor);
+      if (received.projection._attachmentRuntime !== undefined) {
+        validateAttachmentRuntimeMetadata(received.projection._attachmentRuntime);
+      }
+      const chunks = received.projection._attachmentChunks ?? [];
+      if (!Array.isArray(chunks) || chunks.length > descriptor.chunkCount ||
+          (chunks.length > 0 && received.projection._attachmentRuntime === undefined)) {
+        throw new DurablePairwiseMessagingV2Error(
+          "invalidState",
+          "Attachment download journal bounds are invalid."
+        );
+      }
+      const chunkIndexes = new Set();
+      for (const record of chunks) {
+        const chunk = validateAttachmentDownloadRecord(record, received.event.id, descriptor);
+        if (chunkIndexes.has(chunk.chunkIndex)) {
+          throw new DurablePairwiseMessagingV2Error(
+            "invalidState",
+            "Attachment download journal contains duplicate chunks."
+          );
+        }
+        chunkIndexes.add(chunk.chunkIndex);
+      }
+    } else if (Object.hasOwn(received.projection, "_attachmentRuntime") ||
+        Object.hasOwn(received.projection, "_attachmentChunks")) {
+      throw new DurablePairwiseMessagingV2Error(
+        "invalidState",
+        "Only authenticated attachment projections may retain attachment runtime state."
+      );
+    }
     if (receivedEnvelopeIDs.has(received.envelopeID)) {
       throw new DurablePairwiseMessagingV2Error("invalidState", "Received envelopes are duplicated.");
     }
@@ -1688,7 +1983,7 @@ function requireJSONValue(value, label, depth = 0) {
 }
 
 async function validateIntent({ crypto, relationship, intent, sessionIDs }) {
-  exact(intent, [
+  const fields = [
     "id",
     "sequence",
     "sessionID",
@@ -1702,7 +1997,9 @@ async function validateIntent({ crypto, relationship, intent, sessionIDs }) {
     "delivery",
     "createdAt",
     "updatedAt"
-  ], "Outbound intent");
+  ];
+  if (Object.hasOwn(intent, "_attachmentChunks")) fields.push("_attachmentChunks");
+  exact(intent, fields, "Outbound intent");
   canonicalUUID(intent.id, "Intent ID");
   integer(intent.sequence, "Intent sequence", 1, Number.MAX_SAFE_INTEGER);
   if (!boundedString(intent.sessionID, 256) ||
@@ -1724,6 +2021,7 @@ async function validateIntent({ crypto, relationship, intent, sessionIDs }) {
     throw new DurablePairwiseMessagingV2Error("invalidState", "Intent delivery scope is invalid.");
   }
   const pending = isPendingIntent(intent);
+  const attachment = isAttachmentEvent(event);
   if (pending) {
     const envelope = validateDirectEnvelopeV4(intent.directEnvelope);
     if (envelope.eventId !== event.id || envelope.sessionId !== intent.sessionID ||
@@ -1768,9 +2066,38 @@ async function validateIntent({ crypto, relationship, intent, sessionIDs }) {
         canonicalTimestamp(routeDelivery.acceptedAt, "Route acceptance time");
       }
     }
+    if (attachment) {
+      const descriptor = attachmentDescriptorFromEvent(event);
+      if (!Array.isArray(intent._attachmentChunks) ||
+          intent._attachmentChunks.length !== descriptor.chunkCount) {
+        throw new DurablePairwiseMessagingV2Error(
+          "invalidState",
+          "Pending attachment intent is missing its encrypted chunk journal."
+        );
+      }
+      for (let chunkIndex = 0; chunkIndex < descriptor.chunkCount; chunkIndex += 1) {
+        validateAttachmentUploadRecord(
+          intent._attachmentChunks[chunkIndex],
+          event.id,
+          descriptor,
+          chunkIndex
+        );
+      }
+    } else if (Object.hasOwn(intent, "_attachmentChunks")) {
+      throw new DurablePairwiseMessagingV2Error(
+        "invalidState",
+        "Only pending attachment intents may retain encrypted chunks."
+      );
+    }
   } else if (intent.directEnvelope !== null || !Array.isArray(intent.routeDeliveries) ||
       intent.routeDeliveries.length !== 0) {
     throw new DurablePairwiseMessagingV2Error("invalidState", "Final intent retained retry material.");
+  }
+  if (!pending && Object.hasOwn(intent, "_attachmentChunks")) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidState",
+      "Final attachment intent retained encrypted chunk retry material."
+    );
   }
   canonicalTimestamp(intent.createdAt, "Intent creation time");
   canonicalTimestamp(intent.updatedAt, "Intent update time");
@@ -2617,6 +2944,173 @@ function isBlockingIntent(intent) {
   return isPendingIntent(intent) || intent.status === "permanentFailure";
 }
 
+function isAttachmentEvent(event) {
+  return event?.kind === "application" &&
+    contentTypeCanonicalName(event.content?.type) ===
+      contentTypeCanonicalName(standardContentTypes.attachment);
+}
+
+function attachmentDescriptorFromEvent(event) {
+  if (!isAttachmentEvent(event)) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachment",
+      "The event is not a standard direct attachment."
+    );
+  }
+  const payload = decodeCanonicalBase64Variable(
+    event.content.payload,
+    16 * 1_024,
+    "Attachment descriptor payload"
+  );
+  try {
+    const descriptor = validateDirectAttachmentDescriptorV1(
+      parseExactJSON(decoder.decode(payload))
+    );
+    if (!equalBytes(payload, canonicalJsonBytes(descriptor))) {
+      throw new DurablePairwiseMessagingV2Error(
+        "invalidAttachment",
+        "Attachment descriptor payload is not canonical."
+      );
+    }
+    return descriptor;
+  } finally {
+    payload.fill(0);
+  }
+}
+
+async function validatePreparedAttachmentInput(crypto, value, content) {
+  exact(value, ["descriptor", "plaintext"], "Prepared attachment input");
+  const descriptor = validateDirectAttachmentDescriptorV1(value.descriptor);
+  const contentDescriptor = attachmentDescriptorFromEvent({
+    kind: "application",
+    content
+  });
+  const plaintext = copySensitiveBytes(value.plaintext, "Attachment plaintext");
+  try {
+    if (!equalCanonical(descriptor, contentDescriptor) ||
+        plaintext.byteLength !== descriptor.byteCount ||
+        base64(await crypto.sha256(plaintext)) !== descriptor.sha256) {
+      throw new DurablePairwiseMessagingV2Error(
+        "invalidAttachment",
+        "Prepared attachment bytes do not match their authenticated descriptor."
+      );
+    }
+    return Object.freeze({ descriptor, plaintext: value.plaintext });
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+function attachmentUploadRecord(eventID, request) {
+  return {
+    schema: "org.noctweave.js.direct-attachment-upload-chunk.v1",
+    eventID: canonicalUUID(eventID, "Attachment event ID"),
+    request: clone(request)
+  };
+}
+
+function validateAttachmentUploadRecord(value, eventID, descriptor, chunkIndex) {
+  exact(value, ["schema", "eventID", "request"], "Attachment upload journal");
+  if (value.schema !== "org.noctweave.js.direct-attachment-upload-chunk.v1" ||
+      canonicalUUID(value.eventID, "Attachment journal event ID") !== eventID) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachmentJournal",
+      "Encrypted attachment upload journal has the wrong scope."
+    );
+  }
+  exact(
+    value.request,
+    ["attachmentId", "chunkIndex", "payload", "ttlSeconds", "idempotencyKey"],
+    "Attachment upload request"
+  );
+  const chunk = validateDirectAttachmentRelayChunkV1({
+    attachmentId: value.request.attachmentId,
+    chunkIndex: value.request.chunkIndex,
+    payload: value.request.payload
+  }, descriptor);
+  if (chunk.chunkIndex !== chunkIndex ||
+      (value.request.ttlSeconds !== descriptor.relayTTLSeconds) ||
+      canonicalBase64(
+        value.request.idempotencyKey,
+        32,
+        "Attachment upload idempotency key"
+      ) !== value.request.idempotencyKey) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachmentJournal",
+      "Encrypted attachment upload journal is malformed."
+    );
+  }
+  return clone(value.request);
+}
+
+function attachmentDownloadRecord(eventID, chunk) {
+  return {
+    schema: "org.noctweave.js.direct-attachment-download-chunk.v1",
+    eventID: canonicalUUID(eventID, "Attachment event ID"),
+    chunk: clone(chunk)
+  };
+}
+
+function validateAttachmentDownloadRecord(value, eventID, descriptor) {
+  exact(value, ["schema", "eventID", "chunk"], "Attachment download journal");
+  if (value.schema !== "org.noctweave.js.direct-attachment-download-chunk.v1" ||
+      canonicalUUID(value.eventID, "Attachment journal event ID") !== eventID) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachmentJournal",
+      "Encrypted attachment download journal has the wrong scope."
+    );
+  }
+  return validateDirectAttachmentRelayChunkV1(value.chunk, descriptor);
+}
+
+function validateAttachmentRuntimeMetadata(value) {
+  if (value === undefined) {
+    throw new DurablePairwiseMessagingV2Error(
+      "attachmentKeyUnavailable",
+      "This attachment predates the durable browser attachment runtime."
+    );
+  }
+  exact(value, [
+    "messageKey",
+    "conversationId",
+    "sessionId",
+    "messageCounter",
+    "relay"
+  ], "Attachment runtime metadata");
+  canonicalBase64(value.messageKey, 32, "Attachment message key");
+  if (!boundedString(value.conversationId, 256) || !boundedString(value.sessionId, 256)) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachmentJournal",
+      "Attachment cryptographic context is invalid."
+    );
+  }
+  integer(value.messageCounter, "Attachment message counter", 0, Number.MAX_SAFE_INTEGER);
+  const relay = normalizeRelayEndpoint(value.relay);
+  if (!equalCanonical(relay, value.relay)) {
+    throw new DurablePairwiseMessagingV2Error(
+      "invalidAttachmentJournal",
+      "Attachment relay endpoint is not canonical."
+    );
+  }
+  return Object.freeze({ ...value, relay });
+}
+
+function publicProjection(projection) {
+  const value = clone(projection);
+  delete value._attachmentRuntime;
+  delete value._attachmentChunks;
+  return Object.freeze(value);
+}
+
+function publicReceivedEvent(received) {
+  return Object.freeze({
+    envelopeID: received.envelopeID,
+    event: clone(received.event),
+    projection: publicProjection(received.projection),
+    receivedAt: received.receivedAt
+  });
+}
+
 function publicIntent(intent) {
   return Object.freeze({
     id: intent.id,
@@ -2812,6 +3306,37 @@ function canonicalBase64(value, exactBytes, label) {
     throw new TypeError(`${label} must be canonical base64.`);
   }
   return value;
+}
+
+function decodeCanonicalBase64(value, exactBytes, label) {
+  canonicalBase64(value, exactBytes, label);
+  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+}
+
+function decodeCanonicalBase64Variable(value, maximumBytes, label) {
+  if (typeof value !== "string" || value.length === 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) {
+    throw new TypeError(`${label} must be canonical base64.`);
+  }
+  const decoded = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  if (decoded.byteLength === 0 || decoded.byteLength > maximumBytes || base64(decoded) !== value) {
+    decoded.fill(0);
+    throw new TypeError(`${label} must be canonical base64.`);
+  }
+  return decoded;
+}
+
+function copySensitiveBytes(value, label) {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  throw new TypeError(`${label} must be bytes.`);
+}
+
+function wipeSensitiveBytes(value) {
+  if (value instanceof Uint8Array) value.fill(0);
 }
 
 function integer(value, label, minimum, maximum) {

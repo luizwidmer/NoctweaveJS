@@ -26,11 +26,19 @@ const elements = {
   groupMessageStatus: $("#groupMessageStatus"),
   admissionPanel: $("#admissionPanel"),
   admissionRequest: $("#admissionRequest"),
+  admissionRequestFile: $("#admissionRequestFile"),
+  admissionRequestSummary: $("#admissionRequestSummary"),
   admissionResponse: $("#admissionResponse"),
+  admissionResponseActions: $("#admissionResponseActions"),
   acceptAdmission: $("#acceptAdmission"),
   copyAdmissionResponse: $("#copyAdmissionResponse"),
   admissionStatus: $("#admissionStatus")
 };
+
+const GROUP_ARTIFACT_MAX_BYTES = 24 * 1_024 * 1_024;
+const GROUP_REQUEST_PREFIX = "noctweave-group-admission-v1:";
+const GROUP_WELCOME_PREFIX = "noctweave-group-welcome-v1:";
+const GROUP_ARTIFACT_MEDIA_TYPE = "application/vnd.noctweave.group-exchange";
 
 const state = {
   selectedGroupID: null,
@@ -51,6 +59,18 @@ elements.sendGroupMessage.addEventListener("click", () =>
   perform(sendMessage, elements.groupMessageStatus));
 elements.acceptAdmission.addEventListener("click", () =>
   perform(acceptAdmission, elements.admissionStatus));
+$("#openAdmissionRequest").addEventListener("click", () => elements.admissionRequestFile.click());
+elements.admissionRequestFile.addEventListener("change", () =>
+  perform(importAdmissionRequest, elements.admissionStatus));
+elements.admissionRequest.addEventListener("input", () => {
+  clearAdmissionResponse();
+  elements.admissionRequestSummary.textContent = elements.admissionRequest.value.trim()
+    ? "Manual request entered · verify its source before approval"
+    : "No request loaded.";
+  updateAdmissionReadiness();
+});
+$("#shareAdmissionResponse").addEventListener("click", () =>
+  perform(shareWelcome, elements.admissionStatus));
 elements.copyAdmissionResponse.addEventListener("click", () =>
   perform(copyWelcome, elements.admissionStatus));
 elements.groupMessage.addEventListener("keydown", (event) => {
@@ -147,7 +167,9 @@ function renderGroups(groups) {
 }
 
 function selectGroup(groupID) {
+  const changedGroup = state.selectedGroupID !== groupID;
   state.selectedGroupID = groupID;
+  if (changedGroup) resetAdmissionExchange();
   const group = state.groups.find((candidate) => candidate.groupID === groupID);
   elements.selectedGroupName.textContent = state.localNames[groupID] ?? `Group ${groupID.slice(0, 8)}`;
   elements.selectedGroupID.textContent = groupID;
@@ -210,22 +232,149 @@ function renderMessages(events) {
 
 async function acceptAdmission() {
   requireSelectedGroup();
+  const requestLink = normalizedGroupArtifact(
+    elements.admissionRequest.value,
+    GROUP_REQUEST_PREFIX,
+    "group admission request"
+  );
+  clearAdmissionResponse();
   const result = await api(`/groups/${state.selectedGroupID}/admissions`, {
     method: "POST",
-    body: { requestLink: elements.admissionRequest.value }
+    body: { requestLink }
   });
-  elements.admissionResponse.value = result.responseLink;
+  elements.admissionResponse.value = normalizedGroupArtifact(
+    result.responseLink,
+    GROUP_WELCOME_PREFIX,
+    "group Welcome"
+  );
+  elements.admissionResponseActions.hidden = false;
+  elements.admissionRequest.value = "";
+  elements.admissionRequestSummary.textContent = "Request consumed · signed Welcome ready";
+  updateAdmissionReadiness();
   elements.admissionStatus.textContent = result.maintenanceComplete
     ? "Member added. Return this one-use Welcome to the requesting device."
     : "Welcome created; group maintenance still has durable retry work.";
   await refreshGroups();
 }
 
+async function importAdmissionRequest() {
+  const file = elements.admissionRequestFile.files?.[0];
+  elements.admissionRequestFile.value = "";
+  if (!file) return;
+  elements.admissionRequest.value = "";
+  elements.admissionRequestSummary.textContent = "No request loaded.";
+  clearAdmissionResponse();
+  updateAdmissionReadiness();
+  if (file.size < 1 || file.size > GROUP_ARTIFACT_MAX_BYTES) {
+    throw new Error("The group request file is empty or exceeds 24 MiB.");
+  }
+  let value;
+  try {
+    value = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+  } catch {
+    throw new Error("The group request file is not valid UTF-8.");
+  }
+  elements.admissionRequest.value = normalizedGroupArtifact(
+    value,
+    GROUP_REQUEST_PREFIX,
+    "group admission request"
+  );
+  elements.admissionRequestSummary.textContent = `${file.name} · ${formatBytes(file.size)} · ready to verify`;
+  elements.admissionStatus.textContent = "Request loaded exactly from file. Verify and add the member when ready.";
+  updateAdmissionReadiness();
+}
+
+async function shareWelcome() {
+  const value = normalizedGroupArtifact(
+    elements.admissionResponse.value,
+    GROUP_WELCOME_PREFIX,
+    "group Welcome"
+  );
+  const filename = `Noctweave Group Welcome ${state.selectedGroupID.slice(0, 8)}.noctgroup`;
+  const file = new File([value], filename, { type: GROUP_ARTIFACT_MEDIA_TYPE });
+  if (typeof navigator.share === "function" &&
+      typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
+    await navigator.share({
+      title: "Noctweave group Welcome",
+      text: "One-use Noctweave group Welcome. Return it only to the device that created the request.",
+      files: [file]
+    });
+    elements.admissionStatus.textContent = "Welcome shared. Keep no extra copies after the requesting device joins.";
+    return;
+  }
+  downloadArtifact(value, filename);
+  elements.admissionStatus.textContent = "Welcome file saved. Send it privately, then delete the transferred copy after use.";
+}
+
 async function copyWelcome() {
-  const value = elements.admissionResponse.value.trim();
-  if (!value) throw new Error("Generate a Welcome response first.");
+  const value = normalizedGroupArtifact(
+    elements.admissionResponse.value,
+    GROUP_WELCOME_PREFIX,
+    "group Welcome"
+  );
   await navigator.clipboard.writeText(value);
-  elements.admissionStatus.textContent = "Welcome copied.";
+  elements.admissionStatus.textContent = "Welcome copied as a fallback. Prefer the file path for large groups and clear the system clipboard after use.";
+}
+
+function normalizedGroupArtifact(value, prefix, label) {
+  if (typeof value !== "string") throw new Error(`The ${label} is missing.`);
+  const normalized = value.trim();
+  const byteLength = new TextEncoder().encode(normalized).byteLength;
+  if (!normalized.startsWith(prefix) || byteLength < prefix.length ||
+      byteLength > GROUP_ARTIFACT_MAX_BYTES) {
+    throw new Error(`This is not a supported ${label}.`);
+  }
+  return normalized;
+}
+
+function downloadArtifact(value, filename) {
+  const blob = new Blob([value], { type: GROUP_ARTIFACT_MEDIA_TYPE });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function formatBytes(value) {
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_024 * 1_024) return `${(value / 1_024).toFixed(1)} KiB`;
+  return `${(value / (1_024 * 1_024)).toFixed(1)} MiB`;
+}
+
+function admissionRequestIsReady() {
+  try {
+    normalizedGroupArtifact(
+      elements.admissionRequest.value,
+      GROUP_REQUEST_PREFIX,
+      "group admission request"
+    );
+    return state.selectedGroupID !== null;
+  } catch {
+    return false;
+  }
+}
+
+function updateAdmissionReadiness() {
+  elements.acceptAdmission.disabled = state.busy || !admissionRequestIsReady();
+}
+
+function clearAdmissionResponse() {
+  elements.admissionResponse.value = "";
+  elements.admissionResponseActions.hidden = true;
+}
+
+function resetAdmissionExchange() {
+  elements.admissionRequest.value = "";
+  elements.admissionRequestFile.value = "";
+  elements.admissionRequestSummary.textContent = "No request loaded.";
+  clearAdmissionResponse();
+  elements.admissionStatus.textContent = "No pending admission.";
+  updateAdmissionReadiness();
 }
 
 async function api(path, options = {}) {
@@ -266,6 +415,8 @@ function setButtonsDisabled(disabled) {
     button.disabled = disabled || (
       (button === elements.syncGroup || button === elements.sendGroupMessage) &&
       state.selectedGroupID === null
+    ) || (
+      button === elements.acceptAdmission && !admissionRequestIsReady()
     );
   }
 }

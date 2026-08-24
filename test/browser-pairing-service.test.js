@@ -165,6 +165,12 @@ test("browser personas persist independent crash-resumable pairing machines", as
   assert.equal(offererFinal.relationship.relationshipID, responderFinal.relationship.relationshipID);
   assert.equal(offererFinal.relationship.peerIdentity.relationshipPseudonym, "Bob for Alice");
   assert.equal(JSON.stringify(offererFinal.relationship).includes(offererPersona.displayName), false);
+  assert.equal(offererFinal.rendezvousDeletionRequests.length, 1);
+  assert.equal(responderFinal.rendezvousDeletionRequests.length, 1);
+  assert.notEqual(
+    offererFinal.rendezvousDeletionRequests[0].laneId,
+    responderFinal.rendezvousDeletionRequests[0].laneId
+  );
 
   const duplicatedRelationship = persisted(offererFinal.persona);
   const reused = persisted(duplicatedRelationship.relationships[0]);

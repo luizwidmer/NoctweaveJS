@@ -2,20 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("production and browser example expose the shared appearance control", async () => {
+test("production exposes the appearance control and the browser example redirects to it", async () => {
   const [productionHTML, exampleHTML, css] = await Promise.all([
     readFile(new URL("../client/index.html", import.meta.url), "utf8"),
     readFile(new URL("../examples/browser-client/index.html", import.meta.url), "utf8"),
     readFile(new URL("../client/styles.css", import.meta.url), "utf8")
   ]);
 
-  for (const html of [productionHTML, exampleHTML]) {
-    assert.match(html, /data-appearance-control/);
-    assert.match(html, /data-appearance-select/);
-    assert.match(html, /value="system"[^>]*>System/);
-    assert.match(html, /value="light"[^>]*>Light/);
-    assert.match(html, /value="dark"[^>]*>Dark/);
-  }
+  assert.match(productionHTML, /data-appearance-control/);
+  assert.match(productionHTML, /data-appearance-select/);
+  assert.match(productionHTML, /value="system"[^>]*>System/);
+  assert.match(productionHTML, /value="light"[^>]*>Light/);
+  assert.match(productionHTML, /value="dark"[^>]*>Dark/);
+  assert.match(exampleHTML, /url=\.\.\/\.\.\/client\//u);
+  assert.match(exampleHTML, /location\.replace\("\.\.\/\.\.\/client\/"\)/u);
   for (const token of ["canvas", "surface", "raised", "field", "text", "muted", "border", "accent", "status", "shadow"]) {
     assert.match(css, new RegExp(`--${token}:`), `missing semantic token --${token}`);
   }

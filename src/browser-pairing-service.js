@@ -315,7 +315,11 @@ export class NoctweaveBrowserPairingService {
       persona: validateBrowserPersonaState(persona),
       relationship,
       receipt: finalized.receipt,
-      rendezvousDeletionRequests: adapter.deletionRequests()
+      // Successful peers cannot know that the other side has consumed its
+      // final frame. Delete only this role's inbound lane, whose contents are
+      // already durably processed. The peer deletes its own inbound lane
+      // after reaching the same terminal state.
+      rendezvousDeletionRequests: [adapter.deletionRequest({ receivingAs: pairing.role })]
     };
   }
 

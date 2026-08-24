@@ -54,8 +54,10 @@ const unset = Symbol("unset desktop encrypted record");
  * slot additionally carries authenticated lifecycle metadata around one such
  * envelope; its persona payload remains encrypted. URL profiles, browser
  * storage keys, message content, the passphrase, the derived AES key, and
- * decrypted protocol state never cross RPC. This is a local encryption
- * boundary, not anonymity from the desktop host.
+ * decrypted protocol state never cross this state RPC. The separate,
+ * user-approved attachment export RPC is a short-lived and digest-bound
+ * plaintext exception. This is a local encryption boundary, not anonymity
+ * from the desktop host.
  */
 export class DesktopRelationshipStateAnchorStore {
   readonly encryptedStateStoreBackend: {

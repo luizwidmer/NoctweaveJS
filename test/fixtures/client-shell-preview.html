@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoctweaveJS shell visual fixture</title>
+</head>
+<body>
+  <p>Loading the production shell…</p>
+  <script type="module">
+    const response = await fetch("/client/");
+    const source = await response.text();
+    const preview = new DOMParser().parseFromString(source, "text/html");
+    preview.querySelector('script[src="./index.js"]')?.remove();
+    for (const element of preview.querySelectorAll("[src], [href]")) {
+      for (const attribute of ["src", "href"]) {
+        const value = element.getAttribute(attribute);
+        if (value?.startsWith("./")) {
+          element.setAttribute(attribute, `/client/${value.slice(2)}`);
+        }
+      }
+    }
+    preview.getElementById("vaultGate").hidden = true;
+    const shell = preview.getElementById("appShell");
+    shell.hidden = false;
+    shell.inert = false;
+    const previewParameters = new URL(location.href).searchParams;
+    const requestedView = previewParameters.get("view") ?? "chats";
+    const requestedTheme = previewParameters.get("theme");
+    if (requestedTheme === "light" || requestedTheme === "dark") {
+      preview.documentElement.dataset.theme = requestedTheme;
+    }
+    const copy = {
+      chats: ["Chats", "Private conversations and groups"],
+      pairing: ["Contact Book", "Add contacts with relay pairing or a one-use invitation"],
+      relays: ["Relays", "Verify and choose this persona's transport"],
+      identity: ["Identity Management", "Local labels and relationship-scoped authority"],
+      settings: ["Settings", "Appearance and protected local state"]
+    };
+    if (Object.hasOwn(copy, requestedView)) {
+      for (const section of preview.querySelectorAll("[data-client-view]")) {
+        section.hidden = section.dataset.clientView !== requestedView;
+      }
+      const [title, subtitle] = copy[requestedView];
+      preview.getElementById("viewTitle").textContent = title;
+      preview.getElementById("viewSubtitle").textContent = subtitle;
+    }
+    document.replaceChild(
+      document.importNode(preview.documentElement, true),
+      document.documentElement
+    );
+  </script>
+</body>
+</html>

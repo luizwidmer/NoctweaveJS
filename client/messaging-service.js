@@ -15,6 +15,7 @@ import {
   createOpaqueRoutePayloadKeyV2,
   createOpaqueRouteProofNonceV2,
   createOpaqueSendRouteV2,
+  durablePairwiseMessagingV2,
   makeOpaqueRouteCreateRequestV2,
   makeOpaqueRouteTeardownRequestV2,
   promoteProbedPairwiseRouteV2,
@@ -49,8 +50,10 @@ const APPLICATION_VAULT_SLOT_ANCHOR_KEY = "browser-application-vault-slot-anchor
 const APPLICATION_VAULT_SLOT_STATE_KEY = "browser-application-vault-slot-state-v2";
 const APPLICATION_VAULT_SCHEMA = "org.noctweave.browser-application-vault-slot.v2";
 
-export const browserMessagingAttachmentBlocker =
-  "Encrypted attachment upload is not yet exposed by the durable browser runtime.";
+export const browserMessagingAttachmentMaximumBytes =
+  durablePairwiseMessagingV2.maximumDurableAttachmentBytes;
+export const browserMessagingAttachmentStatus =
+  "Attachments are encrypted before upload; plaintext is never stored by the browser runtime. Maximum 3 MiB.";
 export const browserRollbackAnchorRequirement =
   "Durable messaging requires an embedding host that provides an authenticated, atomic relationship-local monotonic anchor. Ordinary browser storage does not provide hardware rollback resistance.";
 
@@ -542,11 +545,24 @@ export class NoctweaveBrowserMessagingServiceV2 {
     return Object.freeze({ intent, resumed, snapshot: await this.snapshot(relationship, at) });
   }
 
-  async prepareFile() {
-    throw new BrowserMessagingAvailabilityError(
-      "attachmentUnavailable",
-      browserMessagingAttachmentBlocker
-    );
+  async sendAttachment({ relationship, bytes, mimeType, at = Date.now() }) {
+    const availability = await this.availabilityFor(relationship, at);
+    if (!availability.canSend) {
+      throw new BrowserMessagingAvailabilityError(availability.maintenanceState, availability.message);
+    }
+    const runtime = await this.runtimeFor(relationship);
+    const intent = await runtime.prepareAttachment({ bytes, mimeType });
+    const resumed = await runtime.resumeOutbound();
+    return Object.freeze({ intent, resumed, snapshot: await this.snapshot(relationship, at) });
+  }
+
+  async downloadAttachment({ relationship, eventID, at = Date.now() }) {
+    const runtime = await this.runtimeFor(relationship);
+    const downloaded = await runtime.downloadAttachment(eventID);
+    return Object.freeze({
+      downloaded,
+      snapshot: await this.snapshot(relationship, at)
+    });
   }
 
   async resumeOutbound(relationship, at = Date.now()) {
@@ -1518,6 +1534,7 @@ export class NoctweaveBrowserMessagingServiceV2 {
         for (const method of [
           "open",
           "prepareText",
+          "prepareAttachment",
           "prepareDeliveryReceipt",
           "prepareReadReceipt",
           "resumeOutbound",
@@ -1533,6 +1550,7 @@ export class NoctweaveBrowserMessagingServiceV2 {
           "destroyRelationshipState",
           "listOutbound",
           "listReceived",
+          "downloadAttachment",
           "discard"
         ]) {
           if (typeof runtime?.[method] !== "function") {

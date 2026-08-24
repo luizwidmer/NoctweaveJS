@@ -21,7 +21,8 @@ import {
   BrowserMessagingAvailabilityError,
   NoctweaveBrowserMessagingServiceV2,
   browserMessageTimelineV2,
-  browserMessagingAttachmentBlocker,
+  browserMessagingAttachmentMaximumBytes,
+  browserMessagingAttachmentStatus,
   describeBrowserRelationshipAvailabilityV2
 } from "../client/messaging-service.js";
 import { runContactPairingConformanceV2 } from "../test-support/contact-pairing-conformance.js";
@@ -270,6 +271,7 @@ test("browser service synchronizes every healthy local route and keeps local-fir
   const runtime = {
     open: async () => ({}),
     prepareText: async () => ({}),
+    prepareAttachment: async () => ({}),
     prepareDeliveryReceipt: async () => ({}),
     prepareReadReceipt: async () => ({}),
     resumeOutbound: async () => ({ completed: 0, intents: [] }),
@@ -288,6 +290,7 @@ test("browser service synchronizes every healthy local route and keeps local-fir
     },
     listOutbound: async () => [],
     listReceived: async () => [],
+    downloadAttachment: async () => ({}),
     discard: async () => ({})
   };
   const service = new NoctweaveBrowserMessagingServiceV2({
@@ -314,6 +317,7 @@ test("browser open reconciles newer durable relationship state before network pr
   const runtime = {
     open: async () => ({}),
     prepareText: async () => ({}),
+    prepareAttachment: async () => ({}),
     prepareDeliveryReceipt: async () => ({}),
     prepareReadReceipt: async () => ({}),
     resumeOutbound: async () => ({ completed: 0, intents: [] }),
@@ -329,6 +333,7 @@ test("browser open reconciles newer durable relationship state before network pr
     syncReceive: async () => ({ received: [], hasMore: false, relayCommit: { status: "deferred" } }),
     listOutbound: async () => [],
     listReceived: async () => [],
+    downloadAttachment: async () => ({}),
     discard: async () => ({})
   };
   let persisted = null;
@@ -451,10 +456,16 @@ test("blocked, expiring, and expired routes are represented honestly and fail cl
     (error) => error instanceof BrowserMessagingAvailabilityError && error.code === "blocked"
   );
   await assert.rejects(
-    () => service.prepareFile({ relationship: fixture.alice }),
-    (error) => error.code === "attachmentUnavailable" &&
-      error.message === browserMessagingAttachmentBlocker
+    () => service.sendAttachment({
+      relationship: blocked,
+      bytes: new Uint8Array([1]),
+      mimeType: "application/octet-stream",
+      at: createdAt
+    }),
+    (error) => error instanceof BrowserMessagingAvailabilityError && error.code === "blocked"
   );
+  assert.match(browserMessagingAttachmentStatus, /encrypted before upload/i);
+  assert.equal(browserMessagingAttachmentMaximumBytes, 3 * 1024 * 1024);
 });
 
 test("browser timeline renders authenticated fallback and receipt state without control spoofing", () => {

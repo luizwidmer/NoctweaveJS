@@ -300,6 +300,29 @@ export async function encryptNativeApplicationEnvelope(options) {
   });
 }
 
+// Attachment transport needs the exact one-time message key long enough to
+// derive and persist encrypted blob chunks beside the already prepared
+// envelope. The caller owns the returned copy and must wipe it after the
+// encrypted chunk journal is durable. Ordinary application callers continue
+// to receive only the envelope from encryptNativeApplicationEnvelope(...).
+export async function encryptNativeApplicationEnvelopeWithMessageKey(options) {
+  if (!isPeerPairwiseIdentityV2(options?.peerIdentity)) {
+    throw new Error("Typed application envelopes require a verified pairwise peer.");
+  }
+  const eventKind = options.eventKind ?? "application";
+  if (eventKind !== "application") {
+    throw new Error("Only attachment application events may retain a message key.");
+  }
+  return encryptNativeEnvelopePayload({
+    ...options,
+    text: null,
+    content: validateEncodedContent(options.content),
+    relation: options.relation ?? null,
+    eventKind,
+    retainMessageKey: true
+  });
+}
+
 async function encryptNativeEnvelopePayload({
   crypto,
   pqc,
@@ -313,7 +336,8 @@ async function encryptNativeEnvelopePayload({
   bootstrap = { kind: "none" },
   eventId = swiftUUID(),
   clientTransactionId = swiftUUID(),
-  sentAt = swiftISODate()
+  sentAt = swiftISODate(),
+  retainMessageKey = false
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
   validateDirectV4Conversation(conversation);
@@ -360,7 +384,8 @@ async function encryptNativeEnvelopePayload({
     eventId: applicationEvent.id,
     canonicalSentAt,
     bootstrap,
-    negotiated
+    negotiated,
+    retainMessageKey
   });
 }
 
@@ -444,10 +469,13 @@ async function encryptNativePreparedWireEnvelope({
   eventId,
   canonicalSentAt,
   bootstrap,
-  negotiated
+  negotiated,
+  retainMessageKey = false
 }) {
   let ownSigning;
   let prepared;
+  let retainedMessageKey;
+  let returnedRetainedKey = false;
   try {
     await verifyRelationshipEndpointAuthorityV4({
       crypto,
@@ -516,11 +544,16 @@ async function encryptNativePreparedWireEnvelope({
     }
     envelope.signature = base64(signature);
     commitChain(conversation.sendChain, candidateSendChain);
-    return validateDirectEnvelopeV4(envelope);
+    const validated = validateDirectEnvelopeV4(envelope);
+    if (!retainMessageKey) return validated;
+    retainedMessageKey = new Uint8Array(prepared.key);
+    returnedRetainedKey = true;
+    return Object.freeze({ envelope: validated, messageKey: retainedMessageKey });
   } finally {
     wipeBytes(ownSigning?.secretKey);
     wipeBytes(prepared?.key);
     wipeBytes(plaintext);
+    if (!returnedRetainedKey) wipeBytes(retainedMessageKey);
   }
 }
 
@@ -594,6 +627,17 @@ export async function decryptNativeProtocolEnvelope(options) {
   return decryptNativeEnvelopePayload({ ...options, expectedWireKind: null });
 }
 
+// Durable attachment receive state keeps a private copy of the one-time
+// message key inside the encrypted relationship record. Public projections
+// strip that copy before they reach the browser UI.
+export async function decryptNativeProtocolEnvelopeWithMessageKey(options) {
+  return decryptNativeEnvelopePayload({
+    ...options,
+    expectedWireKind: null,
+    retainAttachmentMessageKey: true
+  });
+}
+
 // Text-oriented projection. Unknown visible application content becomes its
 // authenticated fallback; silent content is returned as `null` and must not
 // create a chat bubble.
@@ -615,7 +659,8 @@ async function decryptNativeEnvelopePayload({
   conversation,
   envelope,
   receivedAt,
-  expectedWireKind = null
+  expectedWireKind = null,
+  retainAttachmentMessageKey = false
 }) {
   requirePeerPairwiseIdentity(peerIdentity);
   const negotiated = await validateCurrentDirectV4Negotiation({
@@ -646,6 +691,8 @@ async function decryptNativeEnvelopePayload({
     fromBase64(directEnvelope.payload.tag, "envelope tag", 16, 16)
   );
   let plaintext;
+  let retainedMessageKey;
+  let returnedRetainedKey = false;
   try {
     plaintext = await crypto.aesGcmDecrypt({
       key,
@@ -682,6 +729,9 @@ async function decryptNativeEnvelopePayload({
           negotiation
         });
         decoded = { kind: event.kind, event, projection };
+        if (retainAttachmentMessageKey && projection.kind === "attachment") {
+          retainedMessageKey = new Uint8Array(key);
+        }
       } catch (error) {
         throw new NoctweaveRemoteEnvelopeError(
           "unsupportedPayload",
@@ -702,10 +752,13 @@ async function decryptNativeEnvelopePayload({
       });
     }
     commitChain(conversation.receiveChain, candidateReceiveChain);
-    return decoded;
+    if (!retainAttachmentMessageKey) return decoded;
+    returnedRetainedKey = true;
+    return { ...decoded, messageKey: retainedMessageKey ?? null };
   } finally {
     wipeBytes(key);
     wipeBytes(plaintext);
+    if (!returnedRetainedKey) wipeBytes(retainedMessageKey);
   }
 }
 

@@ -98,6 +98,7 @@ export * from "./relationship-control-v2.js";
 export * from "./relationship-local-policy-v2.js";
 export * from "./contact-pairing-v2.js";
 export * from "./durable-pairwise-messaging-v2.js";
+export * from "./attachment-v1.js";
 export {
   advanceDeliveryState,
   contentTypeCanonicalName,
@@ -163,8 +164,10 @@ export {
   decryptNativeApplicationEnvelope,
   decryptNativeEnvelope,
   decryptNativeProtocolEnvelope,
+  decryptNativeProtocolEnvelopeWithMessageKey,
   decryptNativeRelationshipControlEnvelope,
   encryptNativeApplicationEnvelope,
+  encryptNativeApplicationEnvelopeWithMessageKey,
   encryptNativeRelationshipControlEnvelope,
   encryptNativeTextEnvelope,
   findPairwiseRelationshipForEnvelope,

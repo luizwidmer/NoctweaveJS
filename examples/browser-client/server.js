@@ -11,9 +11,9 @@ const port = Number(process.env.PORT ?? 5173);
 const maxBodyBytes = 1_000_000;
 const proxyTimeoutMs = 10_000;
 const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
-const defaultClientDocument = process.env.NOCTWEAVE_CLIENT === "production"
-  ? "/client/index.html"
-  : "/examples/browser-client/index.html";
+const defaultClientPath = process.env.NOCTWEAVE_CLIENT === "production"
+  ? "/client/"
+  : "/examples/browser-client/";
 const defaultCLIPath = normalize(join(
   root,
   "..",
@@ -126,8 +126,7 @@ async function serveGroupCompanion(request, response) {
 }
 
 server.listen(port, "127.0.0.1", () => {
-  const path = process.env.NOCTWEAVE_CLIENT === "production" ? "/client/" : "/examples/browser-client/";
-  console.log(`NoctweaveJS client: http://127.0.0.1:${port}${path}`);
+  console.log(`NoctweaveJS client: http://127.0.0.1:${port}${defaultClientPath}`);
 });
 
 async function proxyRelay(request, response) {
@@ -184,11 +183,15 @@ async function proxyRelay(request, response) {
 async function serveStatic(request, response) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   const decodedPath = decodeURIComponent(url.pathname);
-  const pathname = decodedPath === "/"
-    ? defaultClientDocument
-    : decodedPath.endsWith("/")
-      ? `${decodedPath}index.html`
-      : decodedPath;
+  if (decodedPath === "/") {
+    writeResponse(response, 302, "", "text/plain; charset=utf-8", {
+      location: defaultClientPath
+    });
+    return;
+  }
+  const pathname = decodedPath.endsWith("/")
+    ? `${decodedPath}index.html`
+    : decodedPath;
   const filePath = normalize(join(root, pathname));
   if (filePath !== root && !filePath.startsWith(rootPrefix)) {
     writeResponse(response, 403, "Forbidden", "text/plain; charset=utf-8");
@@ -289,7 +292,7 @@ function writeJSON(response, status, payload) {
   writeResponse(response, status, JSON.stringify(payload), "application/json; charset=utf-8");
 }
 
-function writeResponse(response, status, body, contentType) {
+function writeResponse(response, status, body, contentType, additionalHeaders = {}) {
   const headers = {
     "content-type": contentType,
     "cache-control": "no-store",
@@ -297,7 +300,8 @@ function writeResponse(response, status, body, contentType) {
     "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
     "cross-origin-resource-policy": "same-origin",
-    "content-security-policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' http: https: ws: wss:; img-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    "content-security-policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' http: https: ws: wss:; img-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    ...additionalHeaders
   };
   response.writeHead(status, headers);
   response.end(body);

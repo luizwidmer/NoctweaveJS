@@ -241,6 +241,16 @@ export class NoctweaveRelayClient {
     return response.listings;
   }
 
+  async uploadAttachment(request, options = {}) {
+    const response = await this.send(relayRequests.uploadAttachment(request), options);
+    return response.chunk;
+  }
+
+  async fetchAttachment(request, options = {}) {
+    const response = await this.send(relayRequests.fetchAttachment(request), options);
+    return response.chunk;
+  }
+
   async registerFederationNode(request, options = {}) {
     const relayRequest = relayRequests.registerFederationNode(request);
     const response = await this.send(relayRequest, options);

@@ -1,15 +1,30 @@
 import type { ElectrobunConfig } from "electrobun";
 
+const isUITestBuild = process.env.NOCTWEAVE_UI_TEST_BUILD === "1";
+const requestedUITestProfile = process.env.NOCTWEAVE_UI_TEST_PROFILE;
+const uiTestProfile = requestedUITestProfile !== undefined
+  && /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(requestedUITestProfile)
+  ? requestedUITestProfile
+  : "instance";
+const uiTestProfileName = uiTestProfile
+  .split("-")
+  .map((part) => part[0].toUpperCase() + part.slice(1))
+  .join(" ");
+
 export default {
   app: {
-    name: "NoctweaveJS",
-    identifier: "org.noctweave.js-client",
+    name: isUITestBuild ? `NoctweaveJS UI Test ${uiTestProfileName}` : "NoctweaveJS",
+    identifier: isUITestBuild
+      ? `org.noctweave.js-client.ui-test.${uiTestProfile}`
+      : "org.noctweave.js-client",
     version: "0.1.0",
     description: "Open-source post-quantum Noctweave messaging client."
   },
   build: {
     bun: {
-      entrypoint: "desktop/bun/index.ts"
+      entrypoint: isUITestBuild
+        ? "desktop/ui-test-bun/index.ts"
+        : "desktop/bun/index.ts"
     },
     views: {
       mainview: {

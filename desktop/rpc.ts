@@ -29,6 +29,17 @@ export type DesktopRelationshipStateScope = {
   relationshipID: string;
 };
 
+export type DesktopAttachmentExportAuthorization = {
+  mimeType: string;
+  byteCount: number;
+  sha256: string;
+};
+
+export type DesktopAttachmentExportWrite = {
+  token: string;
+  bytesBase64: string;
+};
+
 export type NoctweaveDesktopRPC = {
   bun: RPCSchema<{
     requests: {
@@ -39,6 +50,14 @@ export type NoctweaveDesktopRPC = {
       relayFetch: {
         params: DesktopRelayRequest;
         response: DesktopRelayResponse;
+      };
+      authorizeAttachmentExport: {
+        params: DesktopAttachmentExportAuthorization;
+        response: { token: string | null };
+      };
+      writeAttachmentExport: {
+        params: DesktopAttachmentExportWrite;
+        response: { saved: true; fileName: string; byteCount: number };
       };
       relationshipStateCapability: {
         params: Record<never, never>;

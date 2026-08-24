@@ -27,6 +27,7 @@ import {
   createProtocolCapabilityManifest,
   createOpaqueSendRouteV2,
   defaultContentTypeCapabilities,
+  durablePairwiseMessagingV2,
   encodeContactPairingInvitationV2,
   decodeContactPairingInvitationV2,
   derivePairwiseDirectV4Binding,
@@ -530,6 +531,130 @@ test("receive sync saves reassembly, session, event, and cursor before relay GC"
   assert.equal(persisted.receivedEvents[0].event.id, outbound.event.id);
   assert.equal(persisted.localReceiveRoutes[0].committedSequence, packets.length);
   assert.equal(persisted.sessions.length, 1);
+});
+
+test("attachment chunks persist before upload and restart downloads exact authenticated bytes", async () => {
+  const fixture = await pairedFixture();
+  const aliceBackend = new SingleRelationshipStateMemoryStore(stateKey(fixture.alice));
+  const aliceStore = encryptedStore(aliceBackend, 31);
+  const relayChunks = new Map();
+  const packets = [];
+  const alice = runtimeFor({
+    fixture,
+    relationship: fixture.alice,
+    store: aliceStore,
+    relayClientFactory: () => ({
+      uploadAttachment: async (request) => {
+        const key = `${request.attachmentId}:${request.chunkIndex}`;
+        const accepted = {
+          attachmentId: request.attachmentId,
+          chunkIndex: request.chunkIndex,
+          payload: structuredClone(request.payload)
+        };
+        const prior = relayChunks.get(key);
+        if (prior && JSON.stringify(prior) !== JSON.stringify(accepted)) {
+          throw new Error("attachment idempotency conflict");
+        }
+        relayChunks.set(key, accepted);
+        return accepted;
+      },
+      enqueueOpaqueRoute: async ({ packet }) => {
+        packets.push(structuredClone(packet));
+        return enqueueReceipt(packet, packets.length);
+      }
+    })
+  });
+  const oversized = new Uint8Array(
+    durablePairwiseMessagingV2.maximumDurableAttachmentBytes + 1
+  );
+  await assert.rejects(
+    () => alice.prepareAttachment({
+      bytes: oversized,
+      mimeType: "application/octet-stream",
+      clientTransactionId: swiftUUID()
+    }),
+    (error) => error instanceof DurablePairwiseMessagingV2Error &&
+      error.code === "attachmentCapacityExceeded"
+  );
+  oversized.fill(0);
+  assert.equal(aliceBackend.records.size, 0, "oversized input advances no durable state");
+  const source = new Uint8Array(70_123);
+  for (let index = 0; index < source.length; index += 1) source[index] = index % 251;
+  const prepared = await alice.prepareAttachment({
+    bytes: source,
+    mimeType: "application/octet-stream",
+    clientTransactionId: swiftUUID()
+  });
+  assert.equal(relayChunks.size, 0, "prepare performs no relay I/O");
+  assert.deepEqual([...aliceBackend.records.keys()], [stateKey(fixture.alice)]);
+  assert.equal((await aliceStore.get(stateKey(fixture.alice))).intents[0]._attachmentChunks.length, 2);
+  const resumed = await alice.resumeOutbound();
+  assert.equal(resumed.completed, 1);
+  assert.equal(relayChunks.size, 2);
+  assert.ok(packets.length > 0);
+  assert.deepEqual([...aliceBackend.records.keys()], [stateKey(fixture.alice)]);
+  assert.equal(
+    Object.hasOwn((await aliceStore.get(stateKey(fixture.alice))).intents[0], "_attachmentChunks"),
+    false
+  );
+
+  const bobBackend = new SingleRelationshipStateMemoryStore(stateKey(fixture.bob));
+  const bobStore = encryptedStore(bobBackend, 32);
+  let fetches = 0;
+  const bobFactory = () => ({
+    fetchAttachment: async ({ attachmentId, chunkIndex }) => {
+      fetches += 1;
+      const chunk = relayChunks.get(`${attachmentId}:${chunkIndex}`);
+      if (!chunk) throw new Error("missing attachment chunk");
+      return structuredClone(chunk);
+    }
+  });
+  const bob = runtimeFor({
+    fixture,
+    relationship: fixture.bob,
+    store: bobStore,
+    relayClientFactory: bobFactory
+  });
+  await bob.open();
+  const batch = await syncBatch({
+    crypto: fixture.crypto,
+    localReceiveRoute: fixture.bob.localReceiveRoutes[0],
+    packets
+  });
+  const received = await bob.syncReceive({
+    client: receiveWebClient({ fixture, batch }),
+    authorizedAt: swiftISODate()
+  });
+  assert.equal(received.received[0].projection.kind, "attachment");
+  assert.equal(Object.hasOwn(received.received[0].projection, "_attachmentRuntime"), false);
+  assert.equal(Object.hasOwn(received.received[0].projection, "_attachmentChunks"), false);
+  const listed = await bob.listReceived();
+  assert.equal(Object.hasOwn(listed[0].projection, "_attachmentRuntime"), false);
+  assert.equal(Object.hasOwn(listed[0].projection, "_attachmentChunks"), false);
+
+  const downloaded = await bob.downloadAttachment(prepared.event.id);
+  assert.deepEqual(downloaded.bytes, source);
+  assert.equal(fetches, 2);
+  assert.deepEqual([...bobBackend.records.keys()], [stateKey(fixture.bob)]);
+  assert.equal(
+    (await bobStore.get(stateKey(fixture.bob))).receivedEvents[0]
+      .projection._attachmentChunks.length,
+    2
+  );
+
+  const reopened = runtimeFor({
+    fixture,
+    relationship: fixture.bob,
+    store: encryptedStore(bobBackend, 32),
+    relayClientFactory: () => ({
+      fetchAttachment: async () => { throw new Error("cached encrypted chunks were not reused"); }
+    })
+  });
+  const afterRestart = await reopened.downloadAttachment(prepared.event.id);
+  assert.deepEqual(afterRestart.bytes, source);
+  source.fill(0);
+  downloaded.bytes.fill(0);
+  afterRestart.bytes.fill(0);
 });
 
 test("authenticated malformed packet frames are durably quarantined before cursor advance", async () => {
@@ -1425,6 +1550,34 @@ class ToggleMemoryStore extends MemoryNoctweaveStore {
     if (this.failWrites) throw new Error("injected storage failure");
     this.writeOrder.push("localSave");
     return super.set(key, value);
+  }
+}
+
+class SingleRelationshipStateMemoryStore extends ToggleMemoryStore {
+  constructor(allowedKey) {
+    super();
+    this.allowedKey = allowedKey;
+  }
+
+  requireAllowedKey(key) {
+    if (key !== this.allowedKey) {
+      throw new Error("Encrypted relationship state key is outside its anchor scope.");
+    }
+  }
+
+  async get(key) {
+    this.requireAllowedKey(key);
+    return super.get(key);
+  }
+
+  async set(key, value) {
+    this.requireAllowedKey(key);
+    return super.set(key, value);
+  }
+
+  async delete(key) {
+    this.requireAllowedKey(key);
+    return super.delete(key);
   }
 }
 

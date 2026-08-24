@@ -6,6 +6,12 @@ import type {
 
 export const desktopRelationshipStateCapability: Readonly<DesktopRelationshipStateCapability>;
 
+export interface DesktopSecureVault {
+  get(scope: { service: string; account: string }): Promise<string | null>;
+  set(scope: { service: string; account: string; value: string }): Promise<void>;
+  delete(scope: { service: string; account: string }): Promise<void>;
+}
+
 export class MacOSKeychainVault {
   constructor(options?: { securityPath?: string });
   get(scope: { service: string; account: string }): Promise<string | null>;
@@ -30,7 +36,7 @@ export class WindowsCredentialManagerVault {
 export class DesktopRelationshipStateStore {
   constructor(options?: {
     rootDirectory?: string;
-    secureVault?: MacOSKeychainVault | LinuxSecretServiceVault | WindowsCredentialManagerVault;
+    secureVault?: DesktopSecureVault;
     capability?: DesktopRelationshipStateCapability;
     faultInjector?: ((stage: string, scope: unknown) => Promise<void> | void) | null;
   });

@@ -27,7 +27,8 @@ import {
 import {
   HostAnchoredBrowserApplicationVaultV2,
   NoctweaveBrowserMessagingServiceV2,
-  browserMessagingAttachmentBlocker,
+  browserMessagingAttachmentMaximumBytes,
+  browserMessagingAttachmentStatus,
   browserRollbackAnchorRequirement,
   executeAnchoredBrowserLocalBurnV2
 } from "./messaging-service.js";
@@ -61,7 +62,8 @@ const state = {
   messageBusy: false,
   lastMaintenanceAt: 0,
   pumpTimer: null,
-  messagePumpTimer: null
+  messagePumpTimer: null,
+  activeView: "chats"
 };
 const RELAY_PREFERENCE_KEY = "application:relay-preference:v1";
 const ACTIVE_PAIRING_POLL_MS = 1_000;
@@ -120,7 +122,21 @@ const elements = {
   relayPairingResults: $("#relayPairingResults"),
   startRelayVisibility: $("#startRelayVisibility"),
   findRelayPeers: $("#findRelayPeers"),
-  stopRelayPairing: $("#stopRelayPairing")
+  stopRelayPairing: $("#stopRelayPairing"),
+  viewTitle: $("#viewTitle"),
+  viewSubtitle: $("#viewSubtitle"),
+  openPairingView: $("#openPairingView"),
+  openAttachment: $("#openAttachment")
+};
+
+const clientViews = [...document.querySelectorAll("[data-client-view]")];
+const clientViewNavigation = [...document.querySelectorAll("[data-client-view-target]")];
+const clientViewCopy = {
+  chats: ["Chats", "Private conversations and groups"],
+  pairing: ["Contact Book", "Add contacts with relay pairing or a one-use invitation"],
+  relays: ["Relays", "Verify and choose this persona's transport"],
+  identity: ["Identity Management", "Local labels and relationship-scoped authority"],
+  settings: ["Settings", "Appearance and protected local state"]
 };
 
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
@@ -143,6 +159,13 @@ $("#resumePairings").addEventListener("click", () => run(resumeAllPairings));
 elements.startRelayVisibility.addEventListener("click", () => run(startRelayVisibility));
 elements.findRelayPeers.addEventListener("click", () => run(findRelayPeers));
 elements.stopRelayPairing.addEventListener("click", () => run(stopRelayPairing));
+elements.openPairingView.addEventListener("click", () => activateClientView("pairing"));
+for (const control of clientViewNavigation) {
+  control.addEventListener("click", () => activateClientView(
+    control.dataset.clientViewTarget,
+    control
+  ));
+}
 elements.sendMessage.addEventListener("click", () => runMessaging(sendMessage));
 elements.resumeOutbox.addEventListener("click", () => runMessaging(resumeSelectedOutbox));
 elements.syncMessages.addEventListener("click", () => runMessaging(syncSelectedMessages));
@@ -151,7 +174,8 @@ elements.relationshipConsent.addEventListener("change", () => runMessaging(updat
 elements.muteRelationship.addEventListener("click", () => runMessaging(toggleSelectedRelationshipMute));
 elements.deliveryReceiptsEnabled.addEventListener("change", () => runMessaging(updateReceiptPreferences));
 elements.readReceiptsEnabled.addEventListener("change", () => runMessaging(updateReceiptPreferences));
-elements.attachmentFile.addEventListener("change", () => runMessaging(rejectAttachmentSelection));
+elements.attachmentFile.addEventListener("change", () => runMessaging(sendSelectedAttachment));
+elements.openAttachment.addEventListener("click", () => elements.attachmentFile.click());
 $("#lockProfile").addEventListener("click", lockProfile);
 $("#burnProfile").addEventListener("click", () => runMessaging(burnLocalPersona));
 document.addEventListener("visibilitychange", () => {
@@ -375,10 +399,28 @@ function showApp() {
   elements.app.hidden = false;
   elements.app.inert = false;
   globalThis.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
+  activateClientView("chats");
   selectInitialRelationship();
   renderPersona();
   startPairingPump();
   startMessagePump();
+}
+
+function activateClientView(view, selectedControl = null) {
+  if (!Object.hasOwn(clientViewCopy, view)) return;
+  state.activeView = view;
+  for (const section of clientViews) {
+    section.hidden = section.dataset.clientView !== view;
+  }
+  for (const control of clientViewNavigation) {
+    const selected = control === selectedControl;
+    control.setAttribute("aria-current", selected ? "page" : "false");
+  }
+  const [defaultTitle, defaultSubtitle] = clientViewCopy[view];
+  const title = selectedControl?.dataset.viewTitle ?? defaultTitle;
+  const subtitle = selectedControl?.dataset.viewSubtitle ?? defaultSubtitle;
+  elements.viewTitle.textContent = title;
+  elements.viewSubtitle.textContent = subtitle;
 }
 
 function lockProfile() {
@@ -1068,6 +1110,7 @@ function selectRelationship(relationshipID) {
   state.messageSnapshot = null;
   state.safetyNumber = null;
   state.messageSyncStatus = "Opening encrypted relationship state…";
+  activateClientView("chats");
   renderPersona();
   void runMessaging(() => refreshSelectedMessages({ resumeOutbound: true, synchronize: true }));
 }
@@ -1438,9 +1481,81 @@ async function completeLocalBurn({ persona, messaging }) {
   lockProfile();
 }
 
-async function rejectAttachmentSelection() {
-  elements.attachmentFile.value = "";
-  await state.messaging.prepareFile();
+async function sendSelectedAttachment() {
+  requireUnlocked();
+  const relationship = requireSelectedRelationship();
+  const file = elements.attachmentFile.files?.[0];
+  if (!file) return;
+  if (state.messageBusy) throw new Error("Messaging is already working.");
+  if (!Number.isSafeInteger(file.size) || file.size <= 0 ||
+      file.size > browserMessagingAttachmentMaximumBytes) {
+    elements.attachmentFile.value = "";
+    throw new Error(
+      `Attachments must contain 1 to ${browserMessagingAttachmentMaximumBytes} bytes.`
+    );
+  }
+  state.messageBusy = true;
+  renderSelectedMessages();
+  let bytes;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+    const sent = await state.messaging.sendAttachment({
+      relationship,
+      bytes,
+      mimeType: canonicalAttachmentMIME(file.type)
+    });
+    state.messageSnapshot = sent.snapshot;
+    const accepted = sent.intent.status === "relayAccepted" ||
+      sent.resumed.intents.some(({ id, status }) =>
+        id === sent.intent.id && status === "relayAccepted");
+    state.messageSyncStatus = accepted
+      ? "Attachment chunks and descriptor are encrypted, durable, and accepted by a peer route relay."
+      : "Attachment is encrypted in the local outbox; relay retry is pending.";
+  } finally {
+    bytes?.fill(0);
+    elements.attachmentFile.value = "";
+    state.messageBusy = false;
+    renderSelectedMessages();
+  }
+}
+
+async function downloadReceivedAttachment(eventID) {
+  const relationship = requireSelectedRelationship();
+  if (state.messageBusy) throw new Error("Messaging is already working.");
+  state.messageBusy = true;
+  renderSelectedMessages();
+  let bytes;
+  let objectURL;
+  try {
+    const result = await state.messaging.downloadAttachment({ relationship, eventID });
+    state.messageSnapshot = result.snapshot;
+    bytes = result.downloaded.bytes;
+    const descriptor = result.downloaded.descriptor;
+    const desktopExport = globalThis.__noctweaveDesktopExportAttachment;
+    if (typeof desktopExport === "function") {
+      const exported = await desktopExport({
+        bytes,
+        mimeType: descriptor.mimeType,
+        sha256: descriptor.sha256
+      });
+      state.messageSyncStatus = exported.saved
+        ? `Attachment verified and saved as ${exported.fileName} (${exported.byteCount} bytes).`
+        : `Attachment verified (${exported.byteCount} bytes); save canceled.`;
+    } else {
+      objectURL = URL.createObjectURL(new Blob([bytes], { type: descriptor.mimeType }));
+      const link = document.createElement("a");
+      link.href = objectURL;
+      link.download = attachmentDownloadName(descriptor.mimeType);
+      link.click();
+      state.messageSyncStatus =
+        `Attachment verified (${bytes.byteLength} bytes) and handed to the system download flow.`;
+    }
+  } finally {
+    if (objectURL) setTimeout(() => URL.revokeObjectURL(objectURL), 30_000);
+    bytes?.fill(0);
+    state.messageBusy = false;
+    renderSelectedMessages();
+  }
 }
 
 function requireSelectedRelationship() {
@@ -1489,8 +1604,9 @@ function renderSelectedMessages() {
     (relationship ? state.messageSyncStatus : "Complete a fresh pairing to begin messaging.");
   elements.selectedRelationshipState.dataset.state = availability?.maintenanceState ?? "unavailable";
   elements.outboxStatus.textContent = state.messageSyncStatus;
-  elements.attachmentStatus.textContent = browserMessagingAttachmentBlocker;
-  elements.attachmentFile.disabled = true;
+  elements.attachmentStatus.textContent = browserMessagingAttachmentStatus;
+  elements.attachmentFile.disabled = !availability?.canSend || state.messageBusy;
+  elements.openAttachment.disabled = !availability?.canSend || state.messageBusy;
   elements.messageText.disabled = !availability?.canSend || state.messageBusy;
   elements.sendMessage.disabled = !availability?.canSend || state.messageBusy;
   elements.resumeOutbox.disabled = !relationship || availability?.consent === "blocked" ||
@@ -1513,11 +1629,33 @@ function renderSelectedMessages() {
     "Unavailable until a relationship is selected.";
 
   if (!snapshot || snapshot.timeline.length === 0) {
-    elements.messageList.textContent = relationship
-      ? "No visible messages stored for this relationship."
-      : "Select a relationship to view its encrypted local history.";
+    elements.messageList.dataset.empty = "true";
+    const empty = document.createElement("div");
+    empty.className = "conversationEmpty";
+    if (!relationship) {
+      const mark = document.createElement("img");
+      mark.src = "./assets/noctweave-mark.svg";
+      mark.alt = "";
+      const title = document.createElement("h2");
+      title.textContent = "Welcome to Noctweave";
+      const explanation = document.createElement("p");
+      explanation.textContent = "Start with a contact invitation. Every conversation receives independent post-quantum identity and encryption state.";
+      const add = document.createElement("button");
+      add.type = "button";
+      add.textContent = "Add Contact";
+      add.addEventListener("click", () => activateClientView("pairing"));
+      empty.append(mark, title, explanation, add);
+    } else {
+      const title = document.createElement("h2");
+      title.textContent = "No messages yet";
+      const explanation = document.createElement("p");
+      explanation.textContent = "Messages in this disposable relationship will appear here.";
+      empty.append(title, explanation);
+    }
+    elements.messageList.replaceChildren(empty);
     return;
   }
+  delete elements.messageList.dataset.empty;
   elements.messageList.replaceChildren(...snapshot.timeline.map((message) => {
     const item = document.createElement("article");
     item.className = `messageBubble ${message.direction}`;
@@ -1531,6 +1669,17 @@ function renderSelectedMessages() {
       message.failureCode
     ].filter(Boolean).join(" · ");
     item.append(text, metadata);
+    if (message.direction === "inbound" && message.contentKind === "attachment") {
+      const download = pairingButton(
+        document.documentElement.dataset.runtime === "desktop"
+          ? "Save verified attachment…"
+          : "Download verified attachment",
+        () => runMessaging(() => downloadReceivedAttachment(message.eventID)),
+        "subtle"
+      );
+      download.disabled = state.messageBusy;
+      item.append(download);
+    }
     if (message.direction === "inbound" &&
         relationship?.localPolicy.readReceiptsEnabled && availability?.canSend) {
       const markRead = pairingButton("Send read receipt", () =>
@@ -1547,6 +1696,29 @@ function renderSelectedMessages() {
     }
     return item;
   }));
+}
+
+function canonicalAttachmentMIME(value) {
+  const normalized = typeof value === "string"
+    ? value.split(";", 1)[0].trim().toLowerCase()
+    : "";
+  return normalized.length > 0 && normalized.length <= 128 &&
+    /^[\x20-\x3a\x3c-\x7e]+$/u.test(normalized)
+    ? normalized
+    : "application/octet-stream";
+}
+
+function attachmentDownloadName(mimeType) {
+  const suffix = ({
+    "text/plain": "txt",
+    "application/pdf": "pdf",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a"
+  })[mimeType.toLowerCase()] ?? "bin";
+  return `noctweave-attachment.${suffix}`;
 }
 
 function renderPendingPairings() {

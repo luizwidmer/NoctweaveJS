@@ -10,10 +10,15 @@ document.documentElement.dataset.runtime = "desktop";
 declare global {
   var __noctweaveDesktopRelayFetch: ((request: DesktopRelayRequest) => Promise<Response>) | undefined;
   var __noctweaveDesktopWasmBinary: Uint8Array | undefined;
+  var __noctweaveDesktopExportAttachment: ((request: {
+    bytes: Uint8Array;
+    mimeType: string;
+    sha256: string;
+  }) => Promise<{ saved: boolean; fileName: string | null; byteCount: number }>) | undefined;
 }
 
 const desktopRPC = Electroview.defineRPC<NoctweaveDesktopRPC>({
-  maxRequestTime: 20_000,
+  maxRequestTime: 120_000,
   handlers: {
     requests: {},
     messages: {}
@@ -40,6 +45,23 @@ globalThis.__noctweaveDesktopRelayFetch = async (request) => {
     }
   });
 };
+globalThis.__noctweaveDesktopExportAttachment = async ({ bytes, mimeType, sha256 }) => {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+    throw new TypeError("Desktop attachment export bytes are invalid.");
+  }
+  const authorization = await desktop.rpc!.request.authorizeAttachmentExport({
+    mimeType,
+    byteCount: bytes.byteLength,
+    sha256
+  });
+  if (authorization.token === null) {
+    return Object.freeze({ saved: false, fileName: null, byteCount: bytes.byteLength });
+  }
+  return desktop.rpc!.request.writeAttachmentExport({
+    token: authorization.token,
+    bytesBase64: encodeBase64(bytes)
+  });
+};
 
 await import("../../client/app.js");
 
@@ -50,4 +72,13 @@ function decodeBase64(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function encodeBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }

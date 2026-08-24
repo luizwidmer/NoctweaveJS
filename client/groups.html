@@ -76,13 +76,28 @@
         <section class="panel compact" id="admissionPanel" hidden>
           <p class="eyebrow">Invite native member</p>
           <h3>Accept a one-use group admission</h3>
-          <p class="info">On the macOS or iPhone client, prepare a join request for this group ID and relay. Paste that request here; return the generated Welcome link to the same device.</p>
-          <label for="admissionRequest">Admission request</label>
-          <textarea id="admissionRequest" rows="6" placeholder="noctweave-group-admission-v1:…"></textarea>
-          <button id="acceptAdmission">Generate signed Welcome</button>
-          <label for="admissionResponse">Welcome response</label>
-          <textarea id="admissionResponse" rows="6" readonly placeholder="The one-use Welcome appears here."></textarea>
-          <div class="buttonRow"><button id="copyAdmissionResponse" class="subtle">Copy Welcome</button></div>
+          <p class="info">On the macOS or iPhone client, save its one-use request as a <code>.noctgroup</code> file. Open it here, generate the Welcome, and return the new file to that same device.</p>
+          <div class="groupArtifactActions">
+            <button id="openAdmissionRequest">Open request file</button>
+            <input id="admissionRequestFile" type="file" accept=".noctgroup,application/vnd.noctweave.group-exchange,text/plain" hidden>
+            <span id="admissionRequestSummary" class="fieldHint">No request loaded.</span>
+          </div>
+          <details class="pairingRawData groupArtifactRaw">
+            <summary>Paste request manually</summary>
+            <label for="admissionRequest">Admission request</label>
+            <textarea id="admissionRequest" rows="6" maxlength="25165824" spellcheck="false" autocomplete="off" placeholder="noctweave-group-admission-v1:…"></textarea>
+          </details>
+          <button id="acceptAdmission" disabled>Verify request and add member</button>
+          <div id="admissionResponseActions" class="groupArtifactOutput" hidden>
+            <strong>Signed Welcome ready</strong>
+            <p class="fieldHint">Return this file through the same authenticated private channel. It works only for the request you just approved.</p>
+            <div class="buttonRow"><button id="shareAdmissionResponse">Share or save Welcome</button><button id="copyAdmissionResponse" class="subtle">Copy fallback</button></div>
+            <details class="pairingRawData groupArtifactRaw">
+              <summary>Show raw Welcome</summary>
+              <label for="admissionResponse">Welcome response</label>
+              <textarea id="admissionResponse" rows="6" readonly aria-label="Raw group Welcome" placeholder="The one-use Welcome appears here."></textarea>
+            </details>
+          </div>
           <p id="admissionStatus" class="info" role="status">No pending admission.</p>
         </section>
       </section>

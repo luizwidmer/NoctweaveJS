@@ -35,7 +35,8 @@ test("production browser client binds only present one-use pairing controls", as
     "readReceiptsEnabled",
     "safetyNumber",
     "retryRouteTeardown",
-    "attachmentFile"
+    "attachmentFile",
+    "openAttachment"
   ]) {
     assert.equal(ids.has(id), true, id);
   }
@@ -118,10 +119,12 @@ test("browser shell binds completed relationships to durable send, retry, and lo
   for (const operation of [
     "DurablePairwiseMessagingRuntimeV2",
     "prepareText",
+    "prepareAttachment",
     "resumeOutbound",
     "syncReceive",
     "listOutbound",
     "listReceived",
+    "downloadAttachment",
     "discard",
     "NoctweaveWebClient"
   ]) {
@@ -143,7 +146,7 @@ test("browser shell binds completed relationships to durable send, retry, and lo
   assert.doesNotMatch(script, /textContent\s*=.*(?:sendCapability|readCredential|payloadKey|privateKey)/);
 });
 
-test("browser shell exposes route and block state while attachment transport stays honestly disabled", async () => {
+test("browser shell exposes route state and durable encrypted attachment controls", async () => {
   const [html, script, service] = await Promise.all([
     readFile(new URL("../client/index.html", import.meta.url), "utf8"),
     readFile(new URL("../client/app.js", import.meta.url), "utf8"),
@@ -160,7 +163,13 @@ test("browser shell exposes route and block state while attachment transport sta
   assert.match(html, /Ordinary browser storage is not hardware rollback-resistant/);
   assert.match(script, /globalThis\.noctweaveRelationshipStateAnchorStoreFactory/);
   assert.match(html, /id="attachmentFile"[^>]*disabled/);
-  assert.match(html, /Encrypted attachment upload is not yet exposed by the durable browser runtime/);
+  assert.match(html, /Attachments are encrypted before upload; plaintext is never stored/);
+  assert.match(html, /Maximum 3 MiB/);
+  assert.match(script, /state\.messaging\.sendAttachment/);
+  assert.match(script, /state\.messaging\.downloadAttachment/);
+  assert.match(script, /__noctweaveDesktopExportAttachment/);
+  assert.match(script, /browserMessagingAttachmentMaximumBytes/);
+  assert.match(script, /elements\.attachmentFile\.disabled = !availability\?\.canSend/);
   assert.doesNotMatch(service, /installationId|selfSync|globalIdentity/);
   for (const phrase of [
     "Message request",
@@ -177,7 +186,7 @@ test("browser shell exposes route and block state while attachment transport sta
   assert.ok(block.indexOf("persistRelationshipPolicy") < block.indexOf("teardownRelationshipRoutes"));
   assert.match(block, /cannot be resurrected/);
   const burnStart = script.indexOf("async function burnLocalPersona");
-  const burnEnd = script.indexOf("async function rejectAttachmentSelection", burnStart);
+  const burnEnd = script.indexOf("async function sendSelectedAttachment", burnStart);
   const burn = script.slice(burnStart, burnEnd);
   assert.ok(burn.indexOf("beginBurn") < burn.indexOf("executeAnchoredBrowserLocalBurnV2"));
   const aggregateBurn = service.slice(
@@ -222,14 +231,11 @@ test("reference browser example runs the production protocol surface", async () 
     readFile(new URL("../examples/browser-client/index.html", import.meta.url), "utf8")
   ]);
   assert.match(exampleScript, /import "\.\.\/\.\.\/client\/app\.js"/);
-  for (const html of [productionHTML, exampleHTML]) {
-    assert.match(html, /no account recovery|no protocol key/i);
-    assert.match(html, /one-use/i);
-    assert.doesNotMatch(html, /signed public code|reusable compatibility/i);
-  }
-  const productionIDs = [...productionHTML.matchAll(/id="([^"]+)"/g)].map((match) => match[1]).sort();
-  const exampleIDs = [...exampleHTML.matchAll(/id="([^"]+)"/g)].map((match) => match[1]).sort();
-  assert.deepEqual(exampleIDs, productionIDs);
+  assert.match(productionHTML, /no account recovery|no protocol key/i);
+  assert.match(productionHTML, /one-use/i);
+  assert.doesNotMatch(productionHTML, /signed public code|reusable compatibility/i);
+  assert.match(exampleHTML, /url=\.\.\/\.\.\/client\//u);
+  assert.match(exampleHTML, /location\.replace\("\.\.\/\.\.\/client\/"\)/u);
 });
 
 test("browser surfaces package the canonical Noctweave mark", async () => {

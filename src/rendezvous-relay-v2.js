@@ -328,6 +328,15 @@ export class RendezvousRelayAdapterV2 {
       })));
   }
 
+  deletionRequest({ receivingAs }) {
+    const { registration } = this.lane(rendezvousRelayInboundDirectionV2(receivingAs));
+    return freezeWire(validateDeleteRendezvousTransportV2Request({
+      routeCapability: this.routeCapability,
+      laneId: registration.laneId,
+      deleteCapability: registration.deleteCapability
+    }));
+  }
+
   async sealOpen({ open, frameID } = {}) {
     let payload;
     try {

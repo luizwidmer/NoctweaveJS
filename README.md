@@ -509,10 +509,16 @@ client supplies that boundary on macOS:
   authenticated burned generation;
 - the WebView encrypts each relationship record with the unlocked vault key;
 - Bun receives only the relationship ID that binds a fixed application scope and the
-  `EncryptedNoctweaveStore` envelope, never message content, decrypted protocol
-  state, WebView storage keys, URL profile names, or the vault key; changing
-  those WebView details cannot mint a new burn scope, and this remains a local
-  encryption boundary rather than anonymity from the desktop host;
+  `EncryptedNoctweaveStore` envelope during normal operation, never message
+  content, decrypted protocol state, WebView storage keys, URL profile names,
+  or the vault key; changing those WebView details cannot mint a new burn scope,
+  and this remains a local encryption boundary rather than anonymity from the
+  desktop host;
+- a user-approved attachment export is the sole deliberate plaintext exception:
+  the WebView first requests a native destination-folder chooser, then a one-use,
+  short-lived capability carries at most 3 MiB to Bun; Bun rechecks the
+  authenticated byte count and SHA-256, refuses overwrites and symlinks, writes
+  the requested local file with mode `0600`, and never logs its content;
 - a fsynced filesystem journal uses hashed scope identifiers, stages the
   ciphertext and transition, and a fail-closed scope lock serializes competing
   host processes without race-prone stale-lock reclamation;
