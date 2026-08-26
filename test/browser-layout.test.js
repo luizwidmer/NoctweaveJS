@@ -53,8 +53,8 @@ test("production messaging uses the native sidebar and one-surface-at-a-time lay
 
   for (const label of [
     "Chats",
-    "Contact Book",
-    "My Code",
+    "People",
+    "You",
     "Groups",
     "Relays",
     "Identity Management",
@@ -64,7 +64,8 @@ test("production messaging uses the native sidebar and one-surface-at-a-time lay
   }
   assert.match(html, /class="shell nativeShell"/u);
   assert.match(html, /data-client-view="chats"/u);
-  assert.match(html, /data-client-view="pairing"[^>]*hidden/u);
+  assert.match(html, /data-client-view="people"[^>]*hidden/u);
+  assert.match(html, /data-client-view="you"[^>]*hidden/u);
   assert.match(html, /data-client-view="relays"[^>]*hidden/u);
   assert.match(css, /\.nativeShell\s*\{/u);
   assert.match(css, /grid-template:\s*minmax\(0, 1fr\)\s*\/\s*minmax\(248px, 286px\)/u);

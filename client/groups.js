@@ -15,8 +15,9 @@ const elements = {
   groupName: $("#groupName"),
   createRelay: $("#createRelay"),
   createGroup: $("#createGroup"),
-  refreshGroups: $("#refreshGroups"),
   groupList: $("#groupList"),
+  groupEmptyState: $("#groupEmptyState"),
+  groupConversationPanel: $("#groupConversationPanel"),
   selectedGroupName: $("#selectedGroupName"),
   selectedGroupID: $("#selectedGroupID"),
   syncGroup: $("#syncGroup"),
@@ -51,8 +52,6 @@ elements.setupCompanion.addEventListener("click", () =>
   perform(setupCompanion, elements.companionStatus));
 elements.createGroup.addEventListener("click", () =>
   perform(createGroup, elements.groupMessageStatus));
-elements.refreshGroups.addEventListener("click", () =>
-  perform(refreshGroups, elements.groupMessageStatus));
 elements.syncGroup.addEventListener("click", () =>
   perform(syncMessages, elements.groupMessageStatus));
 elements.sendGroupMessage.addEventListener("click", () =>
@@ -81,6 +80,10 @@ elements.groupMessage.addEventListener("keydown", (event) => {
 });
 
 void perform(boot, elements.companionStatus);
+setInterval(() => {
+  if (!elements.setupPanel.hidden || document.visibilityState !== "visible") return;
+  void perform(refreshGroups, elements.groupMessageStatus);
+}, 5_000);
 
 async function boot() {
   const status = await api("/status");
@@ -172,6 +175,8 @@ function selectGroup(groupID) {
   if (changedGroup) resetAdmissionExchange();
   const group = state.groups.find((candidate) => candidate.groupID === groupID);
   elements.selectedGroupName.textContent = state.localNames[groupID] ?? `Group ${groupID.slice(0, 8)}`;
+  elements.groupEmptyState.hidden = true;
+  elements.groupConversationPanel.hidden = false;
   elements.selectedGroupID.textContent = groupID;
   elements.syncGroup.disabled = false;
   elements.groupMessage.disabled = false;
@@ -190,6 +195,7 @@ async function syncMessages() {
   state.groups = await api("/groups");
   renderGroups(state.groups);
   elements.groupMessageStatus.textContent = `Synchronized ${events.length} durable event${events.length === 1 ? "" : "s"}.`;
+  elements.syncGroup.hidden = true;
 }
 
 async function sendMessage() {
@@ -403,6 +409,9 @@ async function perform(operation, errorTarget = elements.companionStatus) {
       elements.companionStatus.textContent = `Action needs attention: ${message}`;
     } else {
       errorTarget.textContent = message;
+      if (errorTarget === elements.groupMessageStatus && state.selectedGroupID !== null) {
+        elements.syncGroup.hidden = false;
+      }
     }
   } finally {
     state.busy = false;

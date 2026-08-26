@@ -12,14 +12,6 @@
     <div class="vaultCard">
       <div class="vaultTopRow">
         <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
-        <div class="appearanceControl" data-appearance-control>
-          <label for="onboardingAppearancePreference">Appearance</label>
-          <select id="onboardingAppearancePreference" data-appearance-select aria-label="Appearance">
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </div>
       </div>
       <p class="eyebrow">Encrypted local persona</p>
       <h1 id="vaultTitle">Create your local persona</h1>
@@ -59,20 +51,14 @@
     <aside class="nativeSidebar" aria-label="Noctweave navigation">
       <header class="nativeBrand">
         <img src="./assets/noctweave-mark.svg" alt="">
-        <div><strong>Noctweave</strong><span>Post-quantum chat</span></div>
+        <div><strong>Noctweave</strong><span>Secure chat</span></div>
       </header>
-      <button class="nativePrimaryAction" data-client-view-target="pairing"><span aria-hidden="true">＋</span> Add Contact</button>
       <nav class="nativeNavigation">
         <button class="nativeNavItem nativeChatsHome" data-client-view-target="chats"><span aria-hidden="true">◌</span><span>Chats</span></button>
-        <p class="nativeSectionLabel">Chats</p>
-        <div id="relationshipList" class="contactList nativeChatList">No conversations yet.</div>
-        <p class="nativeSectionLabel">Library</p>
-        <button class="nativeNavItem" data-client-view-target="pairing" data-view-title="Contact Book" data-view-subtitle="Add contacts with relay pairing or a one-use invitation"><span aria-hidden="true">◎</span><span>Contact Book</span></button>
-        <button class="nativeNavItem" data-client-view-target="pairing" data-view-title="My Code" data-view-subtitle="Create and share one expiring relationship invitation"><span aria-hidden="true">⌁</span><span>My Code</span></button>
-        <a class="nativeNavItem" href="./groups.html"><span aria-hidden="true">◉</span><span>Groups</span></a>
-        <button class="nativeNavItem" data-client-view-target="relays"><span aria-hidden="true">⌘</span><span>Relays</span></button>
-        <button class="nativeNavItem" data-client-view-target="identity"><span aria-hidden="true">◇</span><span>Identity Management</span></button>
-        <button class="nativeNavItem" data-client-view-target="settings"><span aria-hidden="true">⚙</span><span>Settings</span></button>
+        <button class="nativeNavItem" data-client-view-target="people"><span aria-hidden="true">◎</span><span>People</span></button>
+        <button class="nativeNavItem" data-client-view-target="you"><span aria-hidden="true">◇</span><span>You</span></button>
+        <p class="nativeSectionLabel" id="relationshipSectionLabel" hidden>Chats</p>
+        <div id="relationshipList" class="contactList nativeChatList" hidden></div>
       </nav>
       <footer class="nativeSidebarStatus"><span class="statusDot" aria-hidden="true"></span><span id="status">Ready</span></footer>
     </aside>
@@ -82,6 +68,7 @@
         <div><h1 id="viewTitle">Chats</h1><p id="viewSubtitle">Private conversations and groups</p></div>
         <div class="nativeToolbarActions">
           <button id="openAttachment" class="subtle" disabled title="Attach an encrypted file">Files</button>
+          <a class="buttonLink subtle groupsShortcut" href="./groups.html">Groups</a>
           <button id="openPairingView" class="nativeIconButton" aria-label="Add contact" title="Add contact">＋</button>
         </div>
       </header>
@@ -91,7 +78,7 @@
           <div class="messagingPanel nativeConversation">
           <div class="messageHeader">
             <div><p class="eyebrow">Selected relationship</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>
-            <div class="buttonRow"><button id="syncMessages" class="subtle" disabled>Sync</button><button id="resumeOutbox" class="subtle" disabled>Retry outbox</button><button id="retryRouteTeardown" class="danger" hidden disabled>Retry route teardown</button><button id="muteRelationship" class="subtle" disabled>Mute 8 hours</button></div>
+            <div class="buttonRow"><button id="syncMessages" class="subtle" hidden disabled>Sync</button><button id="resumeOutbox" class="subtle" hidden disabled>Retry outbox</button><button id="retryRouteTeardown" class="danger" hidden disabled>Retry route teardown</button><button id="muteRelationship" class="subtle" hidden disabled>Mute 8 hours</button></div>
           </div>
           <p id="selectedRelationshipState" class="relationshipState" role="status">Complete a fresh pairing to begin messaging.</p>
           <details class="conversationDetails">
@@ -108,8 +95,8 @@
             <div class="conversationEmpty">
               <img src="./assets/noctweave-mark.svg" alt="">
               <h2>Welcome to Noctweave</h2>
-              <p>Start with a contact invitation. Every conversation receives independent post-quantum identity and encryption state.</p>
-              <button data-client-view-target="pairing">Add Contact</button>
+              <p>Start with a one-use invitation. Every conversation receives independent secure relationship authority and encryption state.</p>
+              <button data-client-view-target="people">Add Contact</button>
             </div>
           </div>
           <div class="nativeComposer">
@@ -122,7 +109,7 @@
           </div>
         </section>
 
-        <section class="clientView nativePage" id="pairingView" data-client-view="pairing" hidden>
+        <section class="clientView nativePage" id="pairingView" data-client-view="people" hidden>
           <div class="nativePageIntro"><p class="eyebrow">One-use pairing</p><h2>Pair in two steps</h2><p>Use a relay lobby in a few clicks, or exchange one expiring invitation.</p></div>
           <div class="panel pairingQuickStart">
           <p>Share one expiring invitation, then leave both clients open. The relay carries the encrypted handshake and both sides finish automatically.</p>
@@ -189,8 +176,17 @@
           </div>
         </section>
 
+        <section class="clientView nativePage" id="youView" data-client-view="you" hidden>
+          <div class="nativePageIntro"><p class="eyebrow">This installation</p><h2>You</h2><p>Manage the active local persona, relay choices, and app protections.</p></div>
+          <section class="panel nativeSettingsCard">
+            <button class="nativeSettingRow nativeDestinationRow" data-client-view-target="identity"><div><strong>Persona</strong><p>Local identity compartments and relationship-scoped authority.</p></div><span aria-hidden="true">›</span></button>
+            <button class="nativeSettingRow nativeDestinationRow" data-client-view-target="relays"><div><strong>Relays</strong><p>Verified transport choices for new relationships.</p></div><span aria-hidden="true">›</span></button>
+            <button class="nativeSettingRow nativeDestinationRow" data-client-view-target="settings"><div><strong>Settings</strong><p>Appearance and protected local state.</p></div><span aria-hidden="true">›</span></button>
+          </section>
+        </section>
+
         <section class="clientView nativePage" id="relaysView" data-client-view="relays" hidden>
-          <div class="nativePageIntro"><p class="eyebrow">Opaque delivery</p><h2>Relays</h2><p>Choose and verify the transport used by this local persona.</p></div>
+          <div class="nativePageIntro"><button class="subtle" data-client-view-target="you">Back to You</button><p class="eyebrow">Opaque delivery</p><h2>Relays</h2><p>Choose and verify the transport used by this local persona.</p></div>
           <section class="panel nativeSettingsCard">
             <label for="relay">Relay URL</label>
             <input id="relay" placeholder="https://relay.example" spellcheck="false" inputmode="url">
@@ -199,7 +195,7 @@
         </section>
 
         <section class="clientView nativePage" id="identityView" data-client-view="identity" hidden>
-          <div class="nativePageIntro"><p class="eyebrow">Local-only profile</p><h2>Identity Management</h2><p>Your label organizes this installation; each relationship still uses independent post-quantum authority.</p></div>
+          <div class="nativePageIntro"><button class="subtle" data-client-view-target="you">Back to You</button><p class="eyebrow">Local-only profile</p><h2>Identity Management</h2><p>Your label organizes this installation; each relationship still uses independent secure authority.</p></div>
           <section class="panel nativeIdentityCard">
             <img src="./assets/noctweave-mark.svg" alt="">
             <div><p class="eyebrow">Local persona</p><h2 id="personaName"></h2><p class="info">This label has no protocol key or routable identifier and never leaves the encrypted vault.</p></div>
@@ -208,7 +204,7 @@
         </section>
 
         <section class="clientView nativePage" id="settingsView" data-client-view="settings" hidden>
-          <div class="nativePageIntro"><p class="eyebrow">This installation</p><h2>Settings</h2><p>Appearance and local encrypted-state controls.</p></div>
+          <div class="nativePageIntro"><button class="subtle" data-client-view-target="you">Back to You</button><p class="eyebrow">This installation</p><h2>Settings</h2><p>Appearance and local encrypted-state controls.</p></div>
           <section class="panel nativeSettingsCard">
             <div class="nativeSettingRow"><div><strong>Appearance</strong><p>Follow the system or choose a fixed theme.</p></div><div class="appearanceControl compact" data-appearance-control><label for="appAppearancePreference">Appearance</label><select id="appAppearancePreference" data-appearance-select aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div>
             <div class="nativeSettingRow"><div><strong>Lock local persona</strong><p>Clear decrypted state from this window.</p></div><button id="lockProfile" class="subtle">Lock</button></div>

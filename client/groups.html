@@ -12,9 +12,9 @@
   <main class="shell">
     <section class="hero">
       <div class="heroIdentity"><img src="./assets/noctweave-mark.svg" alt=""><div>
-        <p class="eyebrow">NoctweaveJS + local Core companion</p>
+        <p class="eyebrow">NoctweaveJS Groups</p>
         <h1>Group workspace</h1>
-        <p>Group-scoped credentials and relay routes remain independent from your pairwise persona.</p>
+        <p>Group-only conversations backed by a local Core companion.</p>
       </div></div>
       <div class="heroActions">
         <div class="status" id="companionStatus">Checking companion…</div>
@@ -54,17 +54,23 @@
         </section>
 
         <section class="panel compact" id="groupListPanel" hidden>
-          <div class="pairingHeader"><div><p class="eyebrow">Local groups</p><h3>Group book</h3></div><button id="refreshGroups" class="subtle">Refresh</button></div>
+          <div class="pairingHeader"><div><p class="eyebrow">Local groups</p><h3>Group book</h3></div></div>
           <div id="groupList" class="contactList">No groups yet.</div>
         </section>
       </aside>
 
       <section class="chatPanel">
-        <div class="chatHeader"><div><p class="eyebrow">Experimental group runtime</p><h2 id="selectedGroupName">Select or create a group</h2></div></div>
+        <section class="panel groupEmpty" id="groupEmptyState">
+          <h2>Select or create a group</h2>
+          <p>The encrypted conversation and composer appear after a group is selected.</p>
+          <details><summary>Runtime details</summary><p>The loopback Core companion holds group-scoped credentials and plaintext locally; relays receive encrypted group events only.</p></details>
+        </section>
+        <div id="groupConversationPanel" hidden>
+        <div class="chatHeader"><div><p class="eyebrow">Group workspace</p><h2 id="selectedGroupName">Selected group</h2></div></div>
         <section class="panel messagingPanel">
           <div class="messageHeader">
             <div><p class="eyebrow">Group conversation</p><h3 id="selectedGroupID">No group selected</h3></div>
-            <div class="buttonRow"><button id="syncGroup" class="subtle" disabled>Sync</button></div>
+            <div class="buttonRow"><button id="syncGroup" class="subtle" hidden disabled>Retry sync</button></div>
           </div>
           <div id="groupMessages" class="messageList" aria-live="polite">Select a group to view its encrypted local history.</div>
           <label for="groupMessage">Message</label>
@@ -100,6 +106,7 @@
           </div>
           <p id="admissionStatus" class="info" role="status">No pending admission.</p>
         </section>
+        </div>
       </section>
     </section>
   </main>

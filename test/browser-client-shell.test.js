@@ -45,6 +45,10 @@ test("production browser client binds only present one-use pairing controls", as
   assert.match(html, /Enter your name, not theirs/);
   assert.match(html, /no protocol key or routable identifier/i);
   assert.match(html, /Durable pairwise messaging/);
+  assert.match(html, /id="syncMessages"[^>]*hidden/);
+  assert.match(html, /id="resumeOutbox"[^>]*hidden/);
+  assert.match(html, /id="muteRelationship"[^>]*hidden/);
+  assert.match(script, /elements\.muteRelationship\.hidden = !relationship/);
 });
 
 test("browser shell drives both persisted rendezvous roles through relay transport", async () => {

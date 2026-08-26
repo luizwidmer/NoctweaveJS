@@ -6,6 +6,7 @@
 .groupArtifactOutput { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--raised); }
 .groupArtifactOutput p { margin: 0; }
 .groupEmpty { padding: 20px; text-align: center; color: var(--muted); }
+#groupConversationPanel { display: grid; gap: 16px; }
 @media (max-width: 760px) {
   #selectedGroupID { max-width: 84vw; }
 }

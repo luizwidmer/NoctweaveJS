@@ -40,10 +40,11 @@ test("Electrobun desktop shell packages the existing client, PQ WASM, and secure
   assert.match(view, /await import\("\.\.\/\.\.\/client\/app\.js"\)/);
   assert.match(html, /src="\.\/index\.js"/);
   assert.match(html, /class="shell nativeShell"/);
-  assert.match(html, />Contact Book</);
+  assert.match(html, />People</);
+  assert.match(html, />You</);
   assert.match(html, />Identity Management</);
   assert.match(html, /data-client-view="chats"/);
-  assert.match(html, /data-client-view="pairing"/);
+  assert.match(html, /data-client-view="people"/);
   assert.match(hostState, /MacOSKeychainVault/);
   assert.match(hostState, /afterSecureCommit/);
   assert.match(hostState, /afterSecureDestroy/);

@@ -96,6 +96,7 @@ const elements = {
   personaName: $("#personaName"),
   relationshipCount: $("#relationshipCount"),
   relationshipList: $("#relationshipList"),
+  relationshipSectionLabel: $("#relationshipSectionLabel"),
   selectedRelationshipName: $("#selectedRelationshipName"),
   selectedRelationshipState: $("#selectedRelationshipState"),
   messageList: $("#messageList"),
@@ -133,7 +134,8 @@ const clientViews = [...document.querySelectorAll("[data-client-view]")];
 const clientViewNavigation = [...document.querySelectorAll("[data-client-view-target]")];
 const clientViewCopy = {
   chats: ["Chats", "Private conversations and groups"],
-  pairing: ["Contact Book", "Add contacts with relay pairing or a one-use invitation"],
+  people: ["People", "Add contacts with relay pairing or a one-use invitation"],
+  you: ["You", "Persona, relays, and app settings"],
   relays: ["Relays", "Verify and choose this persona's transport"],
   identity: ["Identity Management", "Local labels and relationship-scoped authority"],
   settings: ["Settings", "Appearance and protected local state"]
@@ -159,7 +161,7 @@ $("#resumePairings").addEventListener("click", () => run(resumeAllPairings));
 elements.startRelayVisibility.addEventListener("click", () => run(startRelayVisibility));
 elements.findRelayPeers.addEventListener("click", () => run(findRelayPeers));
 elements.stopRelayPairing.addEventListener("click", () => run(stopRelayPairing));
-elements.openPairingView.addEventListener("click", () => activateClientView("pairing"));
+elements.openPairingView.addEventListener("click", () => activateClientView("people"));
 for (const control of clientViewNavigation) {
   control.addEventListener("click", () => activateClientView(
     control.dataset.clientViewTarget,
@@ -412,8 +414,10 @@ function activateClientView(view, selectedControl = null) {
   for (const section of clientViews) {
     section.hidden = section.dataset.clientView !== view;
   }
+  const primaryView = ["relays", "identity", "settings"].includes(view) ? "you" : view;
   for (const control of clientViewNavigation) {
-    const selected = control === selectedControl;
+    const selected = control.closest(".nativeNavigation") !== null &&
+      control.dataset.clientViewTarget === primaryView;
     control.setAttribute("aria-current", selected ? "page" : "false");
   }
   const [defaultTitle, defaultSubtitle] = clientViewCopy[view];
@@ -1584,7 +1588,11 @@ function renderPersona() {
     return item;
   }));
   if (state.persona.relationships.length === 0) {
-    elements.relationshipList.textContent = "No completed pairwise relationships yet.";
+    elements.relationshipList.hidden = true;
+    elements.relationshipSectionLabel.hidden = true;
+  } else {
+    elements.relationshipList.hidden = false;
+    elements.relationshipSectionLabel.hidden = false;
   }
   renderPendingPairings();
   renderSelectedMessages();
@@ -1612,6 +1620,9 @@ function renderSelectedMessages() {
   elements.resumeOutbox.disabled = !relationship || availability?.consent === "blocked" ||
     availability?.routeTeardownState !== null || state.messageBusy;
   elements.syncMessages.disabled = !availability?.canReceive || state.messageBusy;
+  elements.syncMessages.hidden = !relationship || !/(paused|failed|error)/i.test(state.messageSyncStatus);
+  elements.syncMessages.textContent = "Retry sync";
+  elements.resumeOutbox.hidden = !relationship;
   const teardownPending = availability?.routeTeardownState === "pending";
   elements.retryRouteTeardown.hidden = !teardownPending;
   elements.retryRouteTeardown.disabled = !teardownPending || state.messageBusy;
@@ -1620,6 +1631,7 @@ function renderSelectedMessages() {
   elements.relationshipConsent.disabled = policyLocked;
   elements.relationshipConsent.value = relationship?.localPolicy.consent ?? "accepted";
   elements.muteRelationship.disabled = policyLocked;
+  elements.muteRelationship.hidden = !relationship;
   elements.muteRelationship.textContent = availability?.muted ? "Unmute" : "Mute 8 hours";
   elements.deliveryReceiptsEnabled.disabled = policyLocked;
   elements.readReceiptsEnabled.disabled = policyLocked;
@@ -1639,11 +1651,11 @@ function renderSelectedMessages() {
       const title = document.createElement("h2");
       title.textContent = "Welcome to Noctweave";
       const explanation = document.createElement("p");
-      explanation.textContent = "Start with a contact invitation. Every conversation receives independent post-quantum identity and encryption state.";
+      explanation.textContent = "Start with a one-use invitation. Every conversation receives independent secure relationship authority and encryption state.";
       const add = document.createElement("button");
       add.type = "button";
       add.textContent = "Add Contact";
-      add.addEventListener("click", () => activateClientView("pairing"));
+      add.addEventListener("click", () => activateClientView("people"));
       empty.append(mark, title, explanation, add);
     } else {
       const title = document.createElement("h2");

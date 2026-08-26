@@ -8,7 +8,7 @@
 <body>
   <p>Loading the production shell…</p>
   <script type="module">
-    const response = await fetch("/client/");
+    const response = await fetch("/client/", { cache: "no-store" });
     const source = await response.text();
     const preview = new DOMParser().parseFromString(source, "text/html");
     preview.querySelector('script[src="./index.js"]')?.remove();
@@ -32,7 +32,8 @@
     }
     const copy = {
       chats: ["Chats", "Private conversations and groups"],
-      pairing: ["Contact Book", "Add contacts with relay pairing or a one-use invitation"],
+      people: ["People", "Add contacts with relay pairing or a one-use invitation"],
+      you: ["You", "Persona, relay, and local-state settings"],
       relays: ["Relays", "Verify and choose this persona's transport"],
       identity: ["Identity Management", "Local labels and relationship-scoped authority"],
       settings: ["Settings", "Appearance and protected local state"]
@@ -44,6 +45,12 @@
       const [title, subtitle] = copy[requestedView];
       preview.getElementById("viewTitle").textContent = title;
       preview.getElementById("viewSubtitle").textContent = subtitle;
+      for (const item of preview.querySelectorAll(".nativeNavItem")) {
+        item.setAttribute(
+          "aria-current",
+          item.dataset.clientViewTarget === requestedView ? "page" : "false"
+        );
+      }
     }
     document.replaceChild(
       document.importNode(preview.documentElement, true),

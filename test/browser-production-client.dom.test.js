@@ -123,7 +123,6 @@ class TestDocument {
   querySelectorAll(selector) {
     if (selector === "[data-appearance-select]") {
       return [
-        this.get("onboardingAppearancePreference"),
         this.get("appAppearancePreference")
       ];
     }
