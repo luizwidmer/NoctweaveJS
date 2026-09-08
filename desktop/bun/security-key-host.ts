@@ -11,6 +11,10 @@ export class DesktopSecurityKeyHost {
   private presentCredential: string | null = null;
   private presenceGeneration = 0;
   private presenceConfirmedAt = 0;
+  private attachmentProcess: ChildProcessWithoutNullStreams | null = null;
+  private attachedDevices: string[] = [];
+  private attachmentConfirmedAt = 0;
+  private attachmentIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly executable: string;
   constructor(executable: string) { this.executable = executable; }
 
@@ -23,6 +27,55 @@ export class DesktopSecurityKeyHost {
   cancel() {
     this.active?.kill("SIGTERM");
     return { cancelled: true };
+  }
+
+  attachmentStatus() {
+    if (!this.capability().available) return { known: false, devices: [] };
+    if (!this.attachmentProcess) this.watchAttached();
+    if (this.attachmentIdleTimer) clearTimeout(this.attachmentIdleTimer);
+    this.attachmentIdleTimer = setTimeout(() => this.stopWatchingAttached(), 3_000);
+    const age = Date.now() - this.attachmentConfirmedAt;
+    const known = this.attachmentConfirmedAt > 0 && age >= 0 && age < 1_500;
+    return { known, devices: known ? [...this.attachedDevices] : [] };
+  }
+
+  stopWatchingAttached() {
+    const child = this.attachmentProcess;
+    this.attachmentProcess = null;
+    this.attachedDevices = [];
+    this.attachmentConfirmedAt = 0;
+    if (this.attachmentIdleTimer) clearTimeout(this.attachmentIdleTimer);
+    this.attachmentIdleTimer = null;
+    child?.kill("SIGTERM");
+    return { stopped: true };
+  }
+
+  private watchAttached() {
+    const child = spawn(this.executable, [], { stdio: ["pipe", "pipe", "pipe"],
+      env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" } });
+    this.attachmentProcess = child;
+    let buffer = "";
+    const stopped = () => { if (this.attachmentProcess === child) this.stopWatchingAttached(); };
+    child.stdout.on("data", (data: Buffer) => {
+      if (this.attachmentProcess !== child) return;
+      buffer += data.toString("utf8");
+      if (buffer.length > 4_096) { stopped(); return; }
+      while (buffer.includes("\n")) {
+        const index = buffer.indexOf("\n");
+        const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+        try {
+          const value = JSON.parse(line);
+          if (Object.keys(value).join(",") !== "devices" || !Array.isArray(value.devices)
+            || value.devices.length > 32 || new Set(value.devices).size !== value.devices.length
+            || value.devices.some((token: unknown) => typeof token !== "string" || !/^[1-9][0-9]{0,19}$/.test(token))) throw new Error();
+          this.attachedDevices = value.devices;
+          this.attachmentConfirmedAt = Date.now();
+        } catch { stopped(); return; }
+      }
+    });
+    child.stderr.on("data", (data: Buffer) => data.fill(0));
+    child.on("close", stopped); child.on("error", stopped); child.stdin.on("error", stopped);
+    child.stdin.end(JSON.stringify({ operation: "watch-attached", options: {} }));
   }
 
   presenceStatus() {

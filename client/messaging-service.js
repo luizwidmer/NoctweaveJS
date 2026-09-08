@@ -1,4 +1,5 @@
 import { createSecurityKeyEntry, openWithSecurityKey, validateSecurityKeyEntries } from "./security-keys.js";
+import { validateHiddenUnlockMethods } from "./unlock-visibility.js";
 import {
   DurablePairwiseMessagingRuntimeV2,
   DurablePairwiseMessagingV2Error,
@@ -176,6 +177,9 @@ export class HostAnchoredBrowserApplicationVaultV2 {
         await this.assertKeyPresent(this.keyPresenceLease?.authenticator, this.keyPresenceLease?.id, generation, signal);
       }
       const next = validateApplicationVaultSlotRecord({ ...current,
+        ...(current.hiddenUnlockMethods === undefined ? {} : {
+          hiddenUnlockMethods: current.securityKeys.length === 1
+            ? current.hiddenUnlockMethods.filter((method) => method !== "securityKey") : current.hiddenUnlockMethods }),
         securityKeys: current.securityKeys.filter((entry) => entry.id !== id), updatedAt: monotonicTimestamp(current.updatedAt) });
       await this.commitSlot(next);
       this.assertSecurityKeyOperation(generation, signal);
@@ -213,6 +217,7 @@ export class HostAnchoredBrowserApplicationVaultV2 {
     return this.serialized(async () => {
       const record = await this.loadSlot();
       return { required: record?.requireSecurityKeyPresence === true,
+        hiddenMethods: [...(record?.hiddenUnlockMethods ?? [])],
         keys: record?.status === "active" ? (record.securityKeys ?? []).map(({ id, name }) => ({ id, name })) : [] };
     });
   }
@@ -282,6 +287,41 @@ export class HostAnchoredBrowserApplicationVaultV2 {
       catch (error) { this.lock(); this.onSecurityKeyDisconnected?.(); throw error; }
       if (required) this.startKeyPresenceMonitor(authenticator, verified.key.id);
       else this.stopKeyPresenceMonitor();
+    });
+  }
+
+  async setUnlockMethodVisibility({ hiddenMethods, passphrase, authenticator, signal }) {
+    const generation = this.operationGeneration;
+    return this.serialized(async () => {
+      this.assertSecurityKeyOperation(generation, signal);
+      const current = await this.loadSlot();
+      if (!this.innerRepository || current?.status !== "active" || current.vaultScopeID !== this.innerVaultScopeID) {
+        throw new Error("Unlock the vault to change lock-screen privacy.");
+      }
+      const hiddenUnlockMethods = validateHiddenUnlockMethods(hiddenMethods);
+      if (hiddenUnlockMethods.includes("securityKey") && !current.securityKeys?.length) {
+        throw new Error("Register a security key before hiding its unlock option.");
+      }
+      await this.verifiedPassphraseSession(current, passphrase);
+      let verifiedKey;
+      if (current.requireSecurityKeyPresence) {
+        const verified = await openWithSecurityKey({ keys: current.securityKeys,
+          scope: current.vaultScopeID, authenticator, signal, crypto: this.storageCrypto });
+        verified.passphrase = "";
+        verifiedKey = verified.key;
+        await this.assertKeyPresent(authenticator, verifiedKey.id, generation, signal);
+      }
+      this.assertSecurityKeyOperation(generation, signal);
+      const next = validateApplicationVaultSlotRecord({ ...current, hiddenUnlockMethods,
+        ...(verifiedKey ? { securityKeys: current.securityKeys.map((key) => key.id === verifiedKey.id ? verifiedKey : key) } : {}),
+        updatedAt: monotonicTimestamp(current.updatedAt) });
+      await this.commitSlot(next);
+      this.assertSecurityKeyOperation(generation, signal);
+      if (verifiedKey) {
+        try { await this.assertKeyPresent(authenticator, verifiedKey.id, generation, signal); }
+        catch (error) { this.lock(); this.onSecurityKeyDisconnected?.(); throw error; }
+        this.startKeyPresenceMonitor(authenticator, verifiedKey.id);
+      }
     });
   }
 
@@ -458,6 +498,7 @@ export class HostAnchoredBrowserApplicationVaultV2 {
         status: "burned",
         ...(current.securityKeys === undefined ? {} : { securityKeys: [] }),
         ...(current.requireSecurityKeyPresence === undefined ? {} : { requireSecurityKeyPresence: false }),
+        ...(current.hiddenUnlockMethods === undefined ? {} : { hiddenUnlockMethods: [] }),
         salt: null,
         encryptedRecord: null,
         updatedAt: monotonicTimestamp(current.updatedAt)
@@ -2261,9 +2302,15 @@ function validateApplicationVaultSlotRecord(value) {
     "createdAt",
     "updatedAt",
     ...(Object.hasOwn(value ?? {}, "securityKeys") ? ["securityKeys"] : []),
-    ...(Object.hasOwn(value ?? {}, "requireSecurityKeyPresence") ? ["requireSecurityKeyPresence"] : [])
+    ...(Object.hasOwn(value ?? {}, "requireSecurityKeyPresence") ? ["requireSecurityKeyPresence"] : []),
+    ...(Object.hasOwn(value ?? {}, "hiddenUnlockMethods") ? ["hiddenUnlockMethods"] : [])
   ], "Application vault slot record");
   if (Object.hasOwn(value, "securityKeys")) validateSecurityKeyEntries(value.securityKeys);
+  if (Object.hasOwn(value, "hiddenUnlockMethods")) {
+    const hidden = validateHiddenUnlockMethods(value.hiddenUnlockMethods);
+    if (hidden.includes("securityKey") && !value.securityKeys?.length
+      || value.status === "burned" && hidden.length) throw new Error("Invalid unlock-method visibility.");
+  }
   if (Object.hasOwn(value, "requireSecurityKeyPresence") && (typeof value.requireSecurityKeyPresence !== "boolean"
     || (value.requireSecurityKeyPresence && (value.status !== "active" && value.status !== "burning"
       || !(value.securityKeys?.length > 0))))) throw new Error("Invalid continuous key presence policy.");

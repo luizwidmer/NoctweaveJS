@@ -9,7 +9,8 @@
 </head>
 <body>
   <section class="vaultGate" id="vaultGate" aria-labelledby="vaultTitle">
-    <div class="vaultCard">
+    <p id="vaultLoading" role="status">Opening Noctweave…</p>
+    <div class="vaultCard" id="vaultCard" hidden>
       <div class="vaultTopRow">
         <div class="vaultMark" aria-hidden="true"><img src="./assets/noctweave-mark.svg" alt=""></div>
       </div>
@@ -32,6 +33,7 @@
         <div class="onboardingRelayRow"><input id="onboardingRelay" placeholder="https://relay.example" spellcheck="false" inputmode="url"><button id="onboardingRelayCheck" class="subtle">Test relay</button></div>
         <p id="onboardingRelayInfo" class="fieldHint" role="status">The relay will be verified before this persona is created.</p>
       </div>
+      <section id="passphraseUnlock">
       <label for="vaultPassphrase">Persona passphrase</label>
       <input id="vaultPassphrase" type="password" autocomplete="new-password" maxlength="1024">
       <div id="vaultConfirmationRow">
@@ -43,6 +45,7 @@
         <button id="unlockVault" class="primaryWide">Create secure persona</button>
         <button id="forgetVault" class="subtle danger" hidden>Delete local persona</button>
       </div>
+      </section>
       <section id="securityKeyUnlock" class="keyUnlock" hidden aria-label="Security key unlock">
         <p id="keyUnlockHint" class="fieldHint">Or unlock with a registered security key.</p>
         <div data-key-pin-field hidden><label for="unlockKeyPIN">Security key PIN</label><input id="unlockKeyPIN" type="password" autocomplete="off" maxlength="63"></div>
@@ -230,6 +233,22 @@
               <label class="checkControl"><input id="keepSecurityKeyConnected" type="checkbox"><span>Keep key connected</span></label>
               <p class="fieldHint">Require the verified USB key for the entire session. Removing it locks the app. Your passphrase alone cannot bypass this setting. Disable this option before adding or removing the active key.</p>
               <button id="saveKeyPresence" class="subtle">Save connection requirement</button>
+            </section>
+            <section class="unlockVisibilitySettings" aria-labelledby="unlockPrivacyTitle">
+              <h3 id="unlockPrivacyTitle">Lock-screen privacy</h3>
+              <p class="fieldHint">Hide individual unlock methods. Your configured protection stays enforced.</p>
+              <label class="checkControl"><input id="hideSecurityKeyUnlock" type="checkbox"><span>Hide security key</span></label>
+              <p class="fieldHint">The passphrase field always stays visible. Hidden key controls are absent while waiting. The desktop app detects a connected USB key and starts authentication. In a browser, leave the passphrase blank and select Unlock to start the browser-managed key flow. Authentication prompts appear only once that flow starts.</p>
+              <label for="visibilityPassphrase">Confirm your vault passphrase</label>
+              <input id="visibilityPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+              <div id="visibilityKeyPINField" hidden>
+                <label for="visibilityKeyPIN">Security key PIN</label>
+                <input id="visibilityKeyPIN" type="password" autocomplete="off" maxlength="63">
+                <p class="fieldHint">Keep key connected is enabled. Verify and touch your registered key to save this change.</p>
+              </div>
+              <button id="saveUnlockVisibility" class="subtle">Save lock-screen privacy</button>
+              <button id="cancelUnlockPrivacy" class="subtle" hidden>Cancel</button>
+              <p id="unlockPrivacyStatus" class="fieldHint" role="status"></p>
             </section>
           </section>
         </section>

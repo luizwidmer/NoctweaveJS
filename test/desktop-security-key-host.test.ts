@@ -18,6 +18,15 @@ let input = "";
 process.stdin.on("data", chunk => input += chunk);
 process.stdin.on("end", () => {
   const request = JSON.parse(input);
+  if (request.operation === "watch-attached") {
+    const emit = () => {
+      const mode = fs.readFileSync(${JSON.stringify(mode)}, "utf8");
+      if (mode === "silent") return;
+      const devices = mode === "present" ? ["1234"] : mode === "malformed" ? ["not-a-token"] : [];
+      process.stdout.write(JSON.stringify({ devices }) + "\\n");
+    };
+    emit(); setInterval(emit, 100); return;
+  }
   if (request.operation === "watch-presence") {
     const emit = () => {
       const mode = fs.readFileSync(${JSON.stringify(mode)}, "utf8");
@@ -35,7 +44,7 @@ process.stdin.on("end", () => {
 `, { mode: 0o700 });
   const host = new DesktopSecurityKeyHost(executable);
   try { await run(host, mode); }
-  finally { host.cancel(); host.releasePresence(); await rm(directory, { recursive: true, force: true }); }
+  finally { host.cancel(); host.releasePresence(); host.stopWatchingAttached(); await rm(directory, { recursive: true, force: true }); }
 }
 const request = (scenario = "valid") => ({ operation: "get" as const, options: { scenario }, pin: "test PIN" });
 const macOS = { skip: process.platform !== "darwin" };
@@ -86,6 +95,35 @@ test("desktop key host rejects unbounded, malformed, concurrent and cancelled op
     await assert.rejects(host.request(request()), /already running/);
     host.cancel();
     await rejected;
+    assert.equal(host.presenceStatus().present, false);
+  });
+});
+
+
+test("attachment discovery observes insertion and removal without authenticating a credential", macOS, async () => {
+  await fixture(async (host, mode) => {
+    assert.deepEqual(host.attachmentStatus(), { known: false, devices: [] });
+    await until(() => host.attachmentStatus().known);
+    assert.deepEqual(host.attachmentStatus().devices, ["1234"]);
+    assert.equal(host.presenceStatus().present, false);
+    await writeFile(mode, "absent");
+    await until(() => host.attachmentStatus().devices.length === 0);
+    await writeFile(mode, "present");
+    await until(() => host.attachmentStatus().devices.length === 1);
+    host.stopWatchingAttached();
+    assert.equal(host.attachmentStatus().known, false);
+  });
+});
+
+test("attachment discovery rejects malformed and stale helper output", macOS, async () => {
+  await fixture(async (host, mode) => {
+    await until(() => host.attachmentStatus().known);
+    await writeFile(mode, "silent");
+    await until(() => !host.attachmentStatus().known);
+    assert.deepEqual(host.attachmentStatus().devices, []);
+    await writeFile(mode, "malformed");
+    await delay(150);
+    assert.equal(host.attachmentStatus().known, false);
     assert.equal(host.presenceStatus().present, false);
   });
 });

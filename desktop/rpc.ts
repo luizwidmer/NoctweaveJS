@@ -49,6 +49,8 @@ export type NoctweaveDesktopRPC = {
         response: { available: boolean; rpID: string; origin: string; continuousPresence: boolean };
       };
       securityKeyPresence: { params: Record<never, never>; response: { present: boolean; credentialID: string | null } };
+      securityKeyAttachments: { params: Record<never, never>; response: { known: boolean; devices: string[] } };
+      stopSecurityKeyAttachments: { params: Record<never, never>; response: { stopped: boolean } };
       releaseSecurityKeyPresence: { params: Record<never, never>; response: { released: boolean } };
       securityKeyRequest: { params: SecurityKeyRequest; response: SecurityKeyResult };
       cancelSecurityKeyRequest: { params: Record<never, never>; response: { cancelled: boolean } };

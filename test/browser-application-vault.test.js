@@ -8,8 +8,80 @@ import {
   executeAnchoredBrowserLocalBurnV2
 } from "../client/messaging-service.js";
 import { base64 } from "../src/index.js";
+import { unlockFailureMessage } from "../client/unlock-visibility.js";
 
 const passphrase = "correct horse battery staple";
+
+test("unlock-method visibility defaults to visible and requires authenticated persistence", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  assert.deepEqual((await vault.securityKeyProtection()).hiddenMethods, []);
+  assert.equal(Object.hasOwn(host.currentRecord(), "hiddenUnlockMethods"), false);
+  await assert.rejects(() => vault.setUnlockMethodVisibility({ hiddenMethods: ["passphrase"], passphrase: "wrong passphrase" }));
+  for (const hiddenMethods of [null, true, ["pin"], ["passphrase", "passphrase"], ["securityKey"]]) {
+    await assert.rejects(() => vault.setUnlockMethodVisibility({ hiddenMethods, passphrase }));
+  }
+  await vault.setUnlockMethodVisibility({ hiddenMethods: ["passphrase"], passphrase });
+  vault.lock();
+  const restored = applicationVault(host);
+  assert.deepEqual((await restored.securityKeyProtection()).hiddenMethods, ["passphrase"]);
+  await assert.rejects(() => restored.setUnlockMethodVisibility({ hiddenMethods: [], passphrase }), /Unlock the vault/);
+  await assert.rejects(() => restored.unlock({ passphrase: "wrong passphrase" }));
+  assert.deepEqual((await restored.unlock({ passphrase })).persona, { revision: 1 });
+  const key = new SecurityKeyFixture();
+  await restored.addSecurityKey({ passphrase, name: "Daily", authenticator: key });
+  for (const hiddenMethods of [[], ["securityKey"], ["passphrase"], ["passphrase", "securityKey"]]) {
+    await restored.setUnlockMethodVisibility({ hiddenMethods, passphrase });
+    assert.deepEqual((await applicationVault(host).securityKeyProtection()).hiddenMethods, hiddenMethods);
+  }
+  await restored.removeSecurityKey({ id: key.id, passphrase });
+  assert.deepEqual((await restored.securityKeyProtection()).hiddenMethods, ["passphrase"]);
+  await restored.beginBurn();
+  await restored.finishBurn();
+  assert.deepEqual(host.currentRecord().hiddenUnlockMethods, []);
+});
+
+test("hiding a required key never bypasses presence, fresh authentication, cancellation, or removal locking", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  const key = new SecurityKeyFixture();
+  key.continuousPresence = true;
+  let connected = true;
+  key.isPresent = async (id) => connected && id === key.id;
+  key.releasePresence = () => {};
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  await vault.addSecurityKey({ passphrase, name: "Daily", authenticator: key });
+  await vault.setSecurityKeyPresenceRequired({ required: true, passphrase, authenticator: key });
+  const calls = key.calls;
+  await vault.setUnlockMethodVisibility({ hiddenMethods: ["passphrase", "securityKey"], passphrase, authenticator: key });
+  assert.equal(key.calls, calls + 1);
+  assert.equal(host.currentRecord().requireSecurityKeyPresence, true);
+  const generation = host.anchor.generation;
+  key.beforeGet = async () => vault.lock();
+  await assert.rejects(() => vault.setUnlockMethodVisibility({ hiddenMethods: [], passphrase, authenticator: key }), /cancelled/);
+  assert.equal(host.anchor.generation, generation);
+  assert.deepEqual((await vault.securityKeyProtection()).hiddenMethods, ["passphrase", "securityKey"]);
+  await assert.rejects(() => vault.unlock({ passphrase }), /registered security key/);
+  key.beforeGet = null;
+  await vault.unlockWithSecurityKey({ authenticator: key });
+  connected = false;
+  assert.equal(await vault.checkSecurityKeyPresence(), false);
+  assert.equal(vault.innerRepository, null);
+  connected = true;
+  assert.equal(vault.innerRepository, null);
+  await vault.unlockWithSecurityKey({ authenticator: key });
+  vault.lock();
+});
+
+test("discreet unlock errors never enumerate hidden factors or removal requirements", () => {
+  for (const hidden of [["passphrase"], ["securityKey"], ["passphrase", "securityKey"]]) {
+    for (const message of ["Connect a security key", "FIDO PIN blocked", "Biometrics unavailable", "USB key disconnected"]) {
+      assert.equal(unlockFailureMessage(message, hidden), "Unable to unlock. Try again.");
+    }
+  }
+  assert.equal(unlockFailureMessage("Original error", []), "Unable to unlock. Try again.");
+});
 
 test("fixed application vault slot authenticates scope, burn, and fresh reinitialization", async () => {
   const host = new AtomicApplicationSlotHost();

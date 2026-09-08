@@ -87,6 +87,8 @@ globalThis.__noctweaveDesktopExportAttachment = async ({ bytes, mimeType, sha256
 globalThis.__noctweaveDesktopSecurityKeys = Object.freeze({
   ...await desktop.rpc!.request.securityKeyCapability({}),
   presence: () => desktop.rpc!.request.securityKeyPresence({}),
+  attachments: () => desktop.rpc!.request.securityKeyAttachments({}),
+  stopAttachments: () => desktop.rpc!.request.stopSecurityKeyAttachments({}),
   releasePresence: () => desktop.rpc!.request.releaseSecurityKeyPresence({}),
   request: (request: SecurityKeyRequest) => desktop.rpc!.request.securityKeyRequest(request),
   cancel: () => desktop.rpc!.request.cancelSecurityKeyRequest({})

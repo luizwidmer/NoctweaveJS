@@ -3,12 +3,53 @@ import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createSecurityKeyEntry } from "../client/security-keys.js";
+import { SecurityKeyFixture } from "./helpers/security-key-fixture.js";
 import {
   DesktopRelationshipStateStore,
   relationshipStateScope
 } from "../desktop/bun/relationship-state-store.js";
 
 const relationshipID = "12345678-1234-4234-9234-123456789ABC";
+
+test("desktop host preserves and authenticates key records, presence policy, and unlock visibility", async () => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), "noctweave-unlock-visibility-"));
+  const secureVault = new MemorySecureVault();
+  const scope = { relationshipID: "4E574156-4556-4002-8000-000000000001" };
+  const record = applicationVaultRecord(encryptedRecord(21));
+  const key = await createSecurityKeyEntry({ scope: record.vaultScopeID, passphrase: "correct horse battery staple",
+    name: "Daily", keys: [], authenticator: new SecurityKeyFixture() });
+  Object.assign(record, { securityKeys: [key], requireSecurityKeyPresence: true,
+    hiddenUnlockMethods: ["passphrase", "securityKey"] });
+  try {
+    const store = hostStore({ rootDirectory, secureVault });
+    const anchor = await store.commit({ ...scope, expectedAnchor: null, nextGeneration: 1,
+      nextStateDigest: digest(21), encryptedRecord: record });
+    assert.deepEqual(await store.load(scope), { anchor, encryptedRecord: record });
+    const path = relationshipStateScope(scope, { rootDirectory }).paths.state;
+    const original = await readFile(path, "utf8");
+    for (const mutate of [
+      (record) => { record.hiddenUnlockMethods = []; },
+      (record) => { record.requireSecurityKeyPresence = false; },
+      (record) => { record.securityKeys[0].counter += 1; },
+      (record) => { record.securityKeys[0].name = "Replacement"; },
+      (record) => { delete record.hiddenUnlockMethods; }
+    ]) {
+      const tampered = JSON.parse(original);
+      mutate(tampered.encryptedRecord);
+      await writeFile(path, JSON.stringify(tampered), "utf8");
+      await assert.rejects(() => hostStore({ rootDirectory, secureVault }).load(scope), /digest verification failed/);
+    }
+    await writeFile(path, original, "utf8");
+    for (const invalid of [{ hiddenUnlockMethods: ["pin"] }, { hiddenUnlockMethods: ["passphrase", "passphrase"] },
+      { requireSecurityKeyPresence: "yes" }, { securityKeys: [], requireSecurityKeyPresence: true },
+      { securityKeys: null }]) {
+      await assert.rejects(() => store.commit({ ...scope, expectedAnchor: anchor, nextGeneration: 2,
+        nextStateDigest: digest(22), encryptedRecord: { ...record, ...invalid } }));
+    }
+    assert.deepEqual(await store.load(scope), { anchor, encryptedRecord: record });
+  } finally { await rm(rootDirectory, { recursive: true, force: true }); }
+});
 
 test("desktop host commits ciphertext with a Keychain CAS and detects filesystem rollback", async () => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "noctweave-anchor-"));

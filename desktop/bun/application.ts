@@ -47,6 +47,8 @@ export async function startDesktopApplication({
         loadPostQuantumWasm: () => loadPostQuantumWasm(),
         securityKeyCapability: () => securityKeys.capability(),
         securityKeyPresence: () => securityKeys.presenceStatus(),
+        securityKeyAttachments: () => securityKeys.attachmentStatus(),
+        stopSecurityKeyAttachments: () => securityKeys.stopWatchingAttached(),
         releaseSecurityKeyPresence: () => securityKeys.releasePresence(),
         securityKeyRequest: (request) => securityKeys.request(request),
         cancelSecurityKeyRequest: () => securityKeys.cancel(),
@@ -80,5 +82,5 @@ export async function startDesktopApplication({
       y: 60
     }
   });
-  window.on("close", () => { securityKeys.cancel(); securityKeys.releasePresence(); });
+  window.on("close", () => { securityKeys.cancel(); securityKeys.releasePresence(); securityKeys.stopWatchingAttached(); });
 }

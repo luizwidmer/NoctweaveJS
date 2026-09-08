@@ -10,6 +10,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter as pathDelimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { validateSecurityKeyEntries } from "../../client/security-keys.js";
+import { validateHiddenUnlockMethods } from "../../client/unlock-visibility.js";
 
 const execFileAsync = promisify(execFile);
 const runtimeAnchorVersion = 2;
@@ -720,11 +722,29 @@ function validateApplicationVaultRecord(record) {
     "salt",
     "encryptedRecord",
     "createdAt",
-    "updatedAt"
+    "updatedAt",
+    ...(Object.hasOwn(record ?? {}, "securityKeys") ? ["securityKeys"] : []),
+    ...(Object.hasOwn(record ?? {}, "requireSecurityKeyPresence") ? ["requireSecurityKeyPresence"] : []),
+    ...(Object.hasOwn(record ?? {}, "hiddenUnlockMethods") ? ["hiddenUnlockMethods"] : [])
   ], "application vault record");
   if (record.stateSchema !== applicationVaultStateSchema || record.version !== 2 ||
       !new Set(["active", "burning", "burned"]).has(record.status)) {
     throw new Error("Desktop application vault record is invalid.");
+  }
+  if (Object.hasOwn(record, "securityKeys")) validateSecurityKeyEntries(record.securityKeys);
+  if (Object.hasOwn(record, "requireSecurityKeyPresence") &&
+    (typeof record.requireSecurityKeyPresence !== "boolean" || record.requireSecurityKeyPresence &&
+      (record.status === "burned" || !record.securityKeys?.length))) {
+    throw new Error("Invalid continuous key presence policy.");
+  }
+  if (Object.hasOwn(record, "hiddenUnlockMethods")) {
+    const hidden = validateHiddenUnlockMethods(record.hiddenUnlockMethods);
+    if (hidden.includes("securityKey") && !record.securityKeys?.length || record.status === "burned" && hidden.length) {
+      throw new Error("Invalid unlock-method visibility.");
+    }
+  }
+  if (record.status === "burned" && record.securityKeys?.length) {
+    throw new Error("Burned desktop application vault retained security key authority.");
   }
   canonicalUUID(record.vaultScopeID);
   validateCanonicalTimestamp(record.createdAt, "application vault creation time");
@@ -761,7 +781,11 @@ function canonicalApplicationVaultRecord(record) {
       ? null
       : canonicalEncryptedEnvelope(record.encryptedRecord),
     createdAt: record.createdAt,
-    updatedAt: record.updatedAt
+    updatedAt: record.updatedAt,
+    ...(Object.hasOwn(record, "securityKeys") ? { securityKeys: record.securityKeys.map((entry) =>
+      Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]]))) } : {}),
+    ...(Object.hasOwn(record, "requireSecurityKeyPresence") ? { requireSecurityKeyPresence: record.requireSecurityKeyPresence } : {}),
+    ...(Object.hasOwn(record, "hiddenUnlockMethods") ? { hiddenUnlockMethods: [...record.hiddenUnlockMethods] } : {})
   };
 }
 

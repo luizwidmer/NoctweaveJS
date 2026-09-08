@@ -592,3 +592,9 @@ small { color: var(--muted); }
 .securityKeySettings .buttonRow { margin-top: 6px; }
 .securityKeySettings .keyPresenceSettings { margin-top: 8px; border: 1px solid var(--border); }
 .keyPresenceSettings .checkControl { margin: 0; }
+
+.unlockVisibilitySettings { display: grid; gap: 12px; margin-top: 8px; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface, #ffffff08); }
+.unlockVisibilitySettings input[type="checkbox"] { width: auto; }
+.unlockVisibilitySettings .checkControl { margin: 0; }
+#visibilityKeyPINField { display: grid; gap: 8px; }
+#visibilityKeyPINField[hidden] { display: none; }

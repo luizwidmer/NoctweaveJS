@@ -4,15 +4,20 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createProtocolCapabilityManifest } from "../src/index.js";
+import { SecurityKeyFixture } from "./helpers/security-key-fixture.js";
 
 // This is an executable DOM-level production-shell test. It deliberately uses
 // a small IndexedDB/DOM harness instead of source-text assertions: the test
 // imports client/index.js, drives the same buttons as a browser, and proves
 // that a first-run persona reaches the client shell. A real browser runner can
 // replace this harness without changing the production entry point.
-if (process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD !== "1") {
+if (!process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD) {
   test("production browser client acknowledges IndexedDB limits and creates a persona", async () => {
     const result = await runChildSmoke();
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  });
+  test("key attachment replaces the waiting passphrase; removal and cancellation restore it", async () => {
+    const result = await runChildSmoke("key-stages");
     assert.equal(result.code, 0, result.stderr || result.stdout);
   });
 }
@@ -21,6 +26,17 @@ async function runProductionBrowserSmoke() {
   const html = await readFile(new URL("../client/index.html", import.meta.url), "utf8");
   const dom = new TestDocument([...html.matchAll(/id="([^"]+)"/gu)].map((match) => match[1]));
   const previous = installBrowserHarness(dom);
+  const keyStages = process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD === "key-stages";
+  const key = new SecurityKeyFixture();
+  let attached = [];
+  if (keyStages) {
+    globalThis.__noctweaveDesktopSecurityKeys = {
+      available: true, rpID: key.rpID, origin: key.origin,
+      attachments: async () => ({ known: true, devices: attached }),
+      stopAttachments: async () => {}, cancel: async () => {}, releasePresence: async () => {},
+      request: async ({ operation, options }) => ({ credential: await key[operation](options) })
+    };
+  }
   try {
     await import(`../client/index.js?dom-smoke=${Date.now()}`);
     await settle();
@@ -39,15 +55,55 @@ async function runProductionBrowserSmoke() {
     assert.equal(dom.get("personaName").textContent, "Browser smoke persona", dom.get("vaultError").textContent);
     assert.match(dom.get("relayInfo").textContent, /transport verified/i);
     assert.equal(dom.get("vaultGate").hidden, true);
+    if (keyStages) {
+      dom.get("keyVaultPassphrase").value = "correct horse battery staple";
+      dom.get("securityKeyName").value = "Test key";
+      await dom.get("registerSecurityKey").click();
+      await waitFor(() => dom.get("keySetupStatus").textContent.startsWith("Key registered"));
+      await waitFor(() => !dom.get("saveUnlockVisibility").disabled);
+      dom.get("hideSecurityKeyUnlock").checked = true;
+      dom.get("visibilityPassphrase").value = "correct horse battery staple";
+      await dom.get("saveUnlockVisibility").click();
+      await waitFor(() => dom.get("unlockPrivacyStatus").textContent === "Lock-screen privacy saved.");
+      await dom.get("lockProfile").click();
+      await waitFor(() => !dom.get("vaultGate").hidden && dom.get("securityKeyUnlock").hidden);
+      assert.equal(dom.get("passphraseUnlock").hidden, false);
+      dom.get("vaultPassphrase").value = "partially entered waiting password";
+      key.beforeGet = async () => { throw new Error("Test key needs another attempt"); };
+      attached = ["test-key"];
+      await waitFor(() => !dom.get("securityKeyUnlock").hidden);
+      await waitFor(() => dom.get("keyUnlockStatus").textContent === "Unable to unlock. Try again.");
+      assert.equal(dom.get("passphraseUnlock").hidden, true);
+      assert.equal(dom.get("passphraseUnlock").inert, true);
+      assert.equal(dom.get("vaultPassphrase").value, "");
+      assert.ok(dom.get("vaultPassphrase").blurred);
+      assert.equal(dom.get("appShell").hidden, true);
+      attached = [];
+      await waitFor(() => !dom.get("passphraseUnlock").hidden);
+      assert.equal(dom.get("passphraseUnlock").inert, false);
+      assert.equal(dom.get("securityKeyUnlock").hidden, true);
+      attached = ["test-key"];
+      await waitFor(() => !dom.get("securityKeyUnlock").hidden);
+      await dom.get("cancelKeyUnlock").click();
+      assert.equal(dom.get("passphraseUnlock").hidden, false);
+      assert.equal(dom.get("passphraseUnlock").inert, false);
+      assert.equal(dom.get("securityKeyUnlock").hidden, true);
+      assert.equal(dom.get("appShell").hidden, true);
+      await waitFor(() => !dom.get("unlockWithKey").disabled);
+    }
   } finally {
+    dom.hidden = true;
+    dom.visibilityState = "hidden";
+    dom.dispatch("visibilitychange");
+    await settle();
     restoreBrowserHarness(previous);
   }
 }
 
-function runChildSmoke() {
+function runChildSmoke(scenario = "1") {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
-      env: { ...process.env, NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD: "1" },
+      env: { ...process.env, NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD: scenario },
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
@@ -77,6 +133,8 @@ class TestElement {
   addEventListener(type, listener) {
     this.listeners.set(type, listener);
   }
+
+  blur() { this.blurred = true; }
 
   async click() {
     if (this.disabled) throw new Error(`Test element ${this.id} is disabled.`);
@@ -134,8 +192,10 @@ class TestDocument {
   }
 
   addEventListener(type, listener) {
-    this.listeners.set(type, listener);
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
+
+  dispatch(type) { for (const listener of this.listeners.get(type) ?? []) listener(); }
 }
 
 function installBrowserHarness(document) {
@@ -146,7 +206,8 @@ function installBrowserHarness(document) {
     confirm: globalThis.confirm,
     setInterval: globalThis.setInterval,
     clearInterval: globalThis.clearInterval,
-    navigator: globalThis.navigator
+    navigator: globalThis.navigator,
+    __noctweaveDesktopSecurityKeys: globalThis.__noctweaveDesktopSecurityKeys
   };
   globalThis.document = document;
   globalThis.indexedDB = new TestIndexedDB();
@@ -286,6 +347,12 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 100));
 }
 
-if (process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD === "1") {
+async function waitFor(predicate) {
+  const deadline = Date.now() + 10_000;
+  while (!predicate() && Date.now() < deadline) await settle();
+  assert.ok(predicate(), "Expected production UI transition did not occur.");
+}
+
+if (process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD) {
   await runProductionBrowserSmoke();
 }
