@@ -2,6 +2,7 @@
 node_modules/
 artifacts/
 build/
+.build/
 coverage/
 wasm/build/
 vendor/liboqs/

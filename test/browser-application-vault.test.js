@@ -1,3 +1,4 @@
+import { SecurityKeyFixture } from "./helpers/security-key-fixture.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -269,3 +270,103 @@ class AtomicApplicationSlotHost {
     return base64(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", input)));
   }
 }
+
+
+test("hardware unlock preserves host anchoring, spare keys, passphrase recovery, and terminal burn", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  const primary = new SecurityKeyFixture(), spare = new SecurityKeyFixture();
+  await assert.rejects(() => vault.addSecurityKey({ passphrase: "incorrect passphrase", name: "Daily", authenticator: primary }));
+  assert.equal(primary.calls, 0);
+  const registered = await vault.addSecurityKey({ passphrase, name: "Daily", authenticator: primary });
+  await vault.addSecurityKey({ passphrase, name: "Spare", authenticator: spare });
+  assert.equal((await vault.securityKeyStatus()).length, 2);
+  const before = structuredClone(host.currentRecord());
+  vault.lock();
+  const opened = await vault.unlockWithSecurityKey({ authenticator: spare });
+  assert.deepEqual(opened.persona, { revision: 1 });
+  assert.equal(host.currentRecord().securityKeys[1].counter, 2);
+  const current = structuredClone(host.currentRecord());
+  host.replaceRecord(before);
+  await assert.rejects(() => applicationVault(host).inspect(), (error) => error.code === "vaultRollbackDetected");
+  host.replaceRecord(current);
+  await vault.removeSecurityKey({ id: registered.id, passphrase });
+  assert.equal((await vault.securityKeyStatus()).length, 1);
+  vault.lock();
+  await assert.rejects(() => vault.unlockWithSecurityKey({ authenticator: primary }));
+  assert.deepEqual((await vault.unlock({ passphrase })).persona, { revision: 1 });
+  await vault.beginBurn();
+  await assert.rejects(() => vault.unlockWithSecurityKey({ authenticator: spare }));
+  await vault.finishBurn();
+  assert.deepEqual(host.currentRecord().securityKeys, []);
+});
+
+test("locking during registration or a key assertion prevents late activation and commits", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  const key = new SecurityKeyFixture();
+  key.beforeGet = async () => vault.lock();
+  await assert.rejects(() => vault.addSecurityKey({ passphrase, name: "Cancelled", authenticator: key }), /cancelled/);
+  assert.equal((await vault.securityKeyStatus()).length, 0);
+  key.beforeGet = null;
+  await vault.unlock({ passphrase });
+  await vault.addSecurityKey({ passphrase, name: "Daily", authenticator: key });
+  vault.lock();
+  const generation = host.anchor.generation;
+  key.beforeGet = async () => vault.lock();
+  await assert.rejects(() => vault.unlockWithSecurityKey({ authenticator: key }), /cancelled/);
+  assert.equal(vault.innerRepository, null);
+  assert.equal(host.anchor.generation, generation);
+});
+
+
+test("continuous presence locks on removal, rejects passphrase bypass, and requires a fresh assertion after reinsertion", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  const key = new SecurityKeyFixture();
+  key.continuousPresence = true;
+  let connected = true;
+  key.isPresent = async (id) => connected && id === key.id;
+  key.releasePresence = () => {};
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  await vault.addSecurityKey({ passphrase, name: "Daily", authenticator: key });
+  await vault.setSecurityKeyPresenceRequired({ required: true, passphrase, authenticator: key });
+  assert.equal((await vault.securityKeyProtection()).required, true);
+  await assert.rejects(() => vault.removeSecurityKey({ id: key.id, passphrase }), /Disable/);
+  const removed = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Removal did not lock the vault")), 2_000);
+    vault.onSecurityKeyDisconnected = () => { clearTimeout(timeout); resolve(); };
+  });
+  connected = false;
+  await removed;
+  assert.equal(vault.innerRepository, null);
+  await assert.rejects(() => vault.unlock({ passphrase }), /registered security key/);
+  const calls = key.calls;
+  connected = true;
+  assert.equal(vault.innerRepository, null, "Reinsertion alone must never resume access");
+  const opened = await vault.unlockWithSecurityKey({ authenticator: key });
+  assert.deepEqual(opened.persona, { revision: 1 });
+  assert.equal(key.calls, calls + 1);
+  await vault.setSecurityKeyPresenceRequired({ required: false, passphrase, authenticator: key });
+  vault.lock();
+  assert.deepEqual((await vault.unlock({ passphrase })).persona, { revision: 1 });
+});
+
+test("continuous presence rejects unsupported transports and fails closed on disconnect during policy persistence", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  const key = new SecurityKeyFixture();
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+  await vault.addSecurityKey({ passphrase, name: "Daily", authenticator: key });
+  await assert.rejects(() => vault.setSecurityKeyPresenceRequired({ required: true, passphrase, authenticator: key }), /macOS/);
+  assert.equal((await vault.securityKeyProtection()).required, false);
+  key.continuousPresence = true;
+  let checks = 0;
+  key.isPresent = async () => ++checks === 1;
+  await assert.rejects(() => vault.setSecurityKeyPresenceRequired({ required: true, passphrase, authenticator: key }), /connected/);
+  assert.equal(vault.innerRepository, null);
+  assert.equal((await vault.securityKeyProtection()).required, true);
+  await assert.rejects(() => vault.unlock({ passphrase }), /registered security key/);
+});

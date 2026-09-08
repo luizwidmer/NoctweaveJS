@@ -1,3 +1,4 @@
+import type { SecurityKeyRequest, SecurityKeyResult } from "./bun/security-key-host.js";
 import type { RPCSchema } from "electrobun/bun";
 
 export type DesktopRelayRequest = {
@@ -43,6 +44,14 @@ export type DesktopAttachmentExportWrite = {
 export type NoctweaveDesktopRPC = {
   bun: RPCSchema<{
     requests: {
+      securityKeyCapability: {
+        params: Record<never, never>;
+        response: { available: boolean; rpID: string; origin: string; continuousPresence: boolean };
+      };
+      securityKeyPresence: { params: Record<never, never>; response: { present: boolean; credentialID: string | null } };
+      releaseSecurityKeyPresence: { params: Record<never, never>; response: { released: boolean } };
+      securityKeyRequest: { params: SecurityKeyRequest; response: SecurityKeyResult };
+      cancelSecurityKeyRequest: { params: Record<never, never>; response: { cancelled: boolean } };
       loadPostQuantumWasm: {
         params: Record<never, never>;
         response: string;

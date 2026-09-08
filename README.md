@@ -60,6 +60,18 @@ npm run build:oqs-wasm
 
 Set `NOCTWEAVE_LIBOQS_DIR` when the pinned liboqs checkout lives elsewhere.
 
+## Hardware security-key unlock
+
+In the client **Settings → Security keys**, confirm the current vault passphrase, name the key, and choose **Register key**. A compatible FIDO2 authenticator must support user verification and the PRF extension (or CTAP2 `hmac-secret` through the native SDK). Enrollment creates the credential and verifies a fresh assertion before storing an authenticated, encrypted passphrase wrapper. Up to eight keys can be registered. The hardware-key PIN is entered only in the desktop app; a browser presents its own trusted WebAuthn prompt.
+
+Ordinary key unlock retains the vault passphrase as an explicit recovery method. On macOS desktop, **Keep key connected** additionally requires a registered USB key throughout the unlocked session. Enabling or disabling it requires the passphrase and a fresh key assertion. While it is enabled, passphrase-only unlock is disabled. Removal or a failed connection monitor locks the vault; reinsertion requires a new key verification. Add spare keys before enabling this option, or authenticate and disable it before changing the active key.
+
+This option controls app access. The existing vault is still passphrase encrypted, and this feature is not tamper-resistant licensing against someone who controls the host or modifies the app. Browsers, NFC, Linux desktop, and Windows desktop do not expose continuous presence in this implementation. Browser PRF support depends on both the browser and the authenticator; unsupported combinations report an error instead of falling back silently. Browser and desktop credentials have different RP scopes and must be enrolled separately.
+
+The macOS build bundles `NoctweaveSecurityKeyBridge`, built from `../NoctweaveSecurityKeys` in the parent Noctweave checkout. Alternatively, set `NOCTWEAVE_SECURITY_KEYS_PACKAGE` to that package's absolute path. A full Xcode installation with Swift 6.1 or later is required. The package includes the official YubiKit Swift 1.3.0 library source and a documented read-only USB attachment accessor; it does not configure/reset your key or implement PIV/OTP.
+
+NoctweaveJS remains Apache-2.0 licensed. The separately bundled helper is AGPL-3.0-or-later and includes YubiKit's Apache-2.0 license and notices. Distributions must also provide the corresponding helper source as required by its license. No key credential or unlock operation changes Noctweave protocol identities or messaging encryption.
+
 ## Experimental calls
 
 Call setup requires the full `NoctweaveCryptoSuite`: WebCrypto supplies

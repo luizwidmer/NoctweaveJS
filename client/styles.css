@@ -569,3 +569,26 @@ small { color: var(--muted); }
   .nativeSettingRow { align-items: flex-start; flex-direction: column; gap: 12px; }
   .nativeInlineActions { align-items: flex-start; flex-direction: column; }
 }
+
+/* Security key forms share the existing rounded settings surfaces. */
+.keyUnlock { border-top: 1px solid var(--border, #ffffff20); margin-top: 20px; padding-top: 16px; }
+.keyUnlock .buttonRow { display: flex; flex-wrap: wrap; gap: 10px; }
+.securityKeySettings { display: flex; flex-direction: column; gap: 10px; }
+.securityKeySettings h3, .securityKeySettings p { margin: 0; }
+.securityKeySettings input { width: 100%; min-width: 0; box-sizing: border-box; }
+.registeredKeys { display: grid; gap: 8px; }
+.registeredKey { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: var(--surface, #ffffff08); }
+.registeredKey span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.registeredKey button { flex-shrink: 0; }
+[data-key-pin-field][hidden], .keyUnlock[hidden] { display: none; }
+
+.keyPresenceSettings { display: grid; gap: 12px; border-radius: 16px; padding: 16px; background: var(--surface, #ffffff08); }
+.keyPresenceSettings[hidden] { display: none; }
+.keyPresenceSettings input[type="checkbox"] { width: auto; }
+
+.securityKeySettings label { margin: 4px 0 0; }
+.securityKeySettings [data-key-pin-field] { display: grid; gap: 8px; }
+.securityKeySettings [data-key-pin-field][hidden] { display: none; }
+.securityKeySettings .buttonRow { margin-top: 6px; }
+.securityKeySettings .keyPresenceSettings { margin-top: 8px; border: 1px solid var(--border); }
+.keyPresenceSettings .checkControl { margin: 0; }

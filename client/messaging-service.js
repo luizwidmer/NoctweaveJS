@@ -1,3 +1,4 @@
+import { createSecurityKeyEntry, openWithSecurityKey, validateSecurityKeyEntries } from "./security-keys.js";
 import {
   DurablePairwiseMessagingRuntimeV2,
   DurablePairwiseMessagingV2Error,
@@ -96,6 +97,10 @@ export class HostAnchoredBrowserApplicationVaultV2 {
     this.innerRepository = null;
     this.innerVaultScopeID = null;
     this.queue = Promise.resolve();
+    this.operationGeneration = 0;
+    this.keyPresenceTimer = null;
+    this.keyPresenceLease = null;
+    this.onSecurityKeyDisconnected = null;
   }
 
   async inspect() {
@@ -105,6 +110,178 @@ export class HostAnchoredBrowserApplicationVaultV2 {
         status: record?.status ?? "empty",
         vaultScopeID: record?.vaultScopeID ?? null
       });
+    });
+  }
+
+  async securityKeyStatus() {
+    return this.serialized(async () => {
+      const record = await this.loadSlot();
+      return record?.status === "active"
+        ? (record.securityKeys ?? []).map(({ id, name }) => ({ id, name })) : [];
+    });
+  }
+
+  assertSecurityKeyOperation(generation, signal) {
+    signal?.throwIfAborted();
+    if (generation !== this.operationGeneration) throw new Error("Security key operation was cancelled.");
+  }
+
+  async verifiedPassphraseSession(current, passphrase) {
+    const salt = decodeBase64(current.salt);
+    try {
+      const session = this.createInnerSession({ passphrase, salt, vaultScopeID: current.vaultScopeID,
+        encryptedRecord: current.encryptedRecord });
+      const persona = await session.repository.load(applicationVaultPersonaStateKey(current.vaultScopeID));
+      if (!persona) throw new Error("The vault passphrase could not be verified.");
+      return { session, persona };
+    } finally { salt.fill(0); }
+  }
+
+  async addSecurityKey({ passphrase, name, authenticator, signal }) {
+    const generation = this.operationGeneration;
+    return this.serialized(async () => {
+      this.assertSecurityKeyOperation(generation, signal);
+      const current = await this.loadSlot();
+      if (!this.innerRepository || current?.status !== "active" || current.vaultScopeID !== this.innerVaultScopeID) {
+        throw new Error("Unlock the vault before adding a key.");
+      }
+      if (current.requireSecurityKeyPresence) throw new Error("Disable Keep key connected before adding a spare key.");
+      await this.verifiedPassphraseSession(current, passphrase);
+      this.assertSecurityKeyOperation(generation, signal);
+      const entry = await createSecurityKeyEntry({ passphrase, name, keys: current.securityKeys ?? [],
+        scope: current.vaultScopeID, authenticator, signal, crypto: this.storageCrypto });
+      this.assertSecurityKeyOperation(generation, signal);
+      const next = validateApplicationVaultSlotRecord({ ...current,
+        securityKeys: [...(current.securityKeys ?? []), entry], updatedAt: monotonicTimestamp(current.updatedAt) });
+      await this.commitSlot(next);
+      this.assertSecurityKeyOperation(generation, signal);
+      return { id: entry.id, name: entry.name };
+    });
+  }
+
+  async removeSecurityKey({ id, passphrase, signal }) {
+    const generation = this.operationGeneration;
+    return this.serialized(async () => {
+      const current = await this.loadSlot();
+      if (!this.innerRepository || current?.status !== "active" || current.vaultScopeID !== this.innerVaultScopeID) {
+        throw new Error("Unlock the vault before removing a key.");
+      }
+      await this.verifiedPassphraseSession(current, passphrase);
+      this.assertSecurityKeyOperation(generation, signal);
+      if (!(current.securityKeys ?? []).some((entry) => entry.id === id)) throw new Error("Key not found.");
+      if (current.requireSecurityKeyPresence) {
+        if (current.securityKeys.length === 1 || this.keyPresenceLease?.id === id) {
+          throw new Error("Disable Keep key connected before removing the active key.");
+        }
+        await this.assertKeyPresent(this.keyPresenceLease?.authenticator, this.keyPresenceLease?.id, generation, signal);
+      }
+      const next = validateApplicationVaultSlotRecord({ ...current,
+        securityKeys: current.securityKeys.filter((entry) => entry.id !== id), updatedAt: monotonicTimestamp(current.updatedAt) });
+      await this.commitSlot(next);
+      this.assertSecurityKeyOperation(generation, signal);
+    });
+  }
+
+  async unlockWithSecurityKey({ authenticator, signal }) {
+    const generation = this.operationGeneration;
+    return this.serialized(async () => {
+      this.assertSecurityKeyOperation(generation, signal);
+      const current = await this.loadSlot();
+      if (current?.status !== "active") throw new Error("This vault cannot be unlocked with a security key.");
+      const verified = await openWithSecurityKey({ keys: current.securityKeys ?? [],
+        scope: current.vaultScopeID, authenticator, signal, crypto: this.storageCrypto });
+      try {
+        const { session, persona } = await this.verifiedPassphraseSession(current, verified.passphrase);
+        this.assertSecurityKeyOperation(generation, signal);
+        if (current.requireSecurityKeyPresence) await this.assertKeyPresent(authenticator, verified.key.id, generation, signal);
+        const next = validateApplicationVaultSlotRecord({ ...current,
+          securityKeys: current.securityKeys.map((entry) => entry.id === verified.key.id ? verified.key : entry),
+          updatedAt: monotonicTimestamp(current.updatedAt) });
+        await this.commitSlot(next);
+        this.assertSecurityKeyOperation(generation, signal);
+        if (current.requireSecurityKeyPresence) {
+          await this.assertKeyPresent(authenticator, verified.key.id, generation, signal);
+          this.startKeyPresenceMonitor(authenticator, verified.key.id);
+        }
+        this.adoptInnerSession(session);
+        return { persona, encryptedStore: session.store };
+      } finally { verified.passphrase = ""; }
+    });
+  }
+
+  async securityKeyProtection() {
+    return this.serialized(async () => {
+      const record = await this.loadSlot();
+      return { required: record?.requireSecurityKeyPresence === true,
+        keys: record?.status === "active" ? (record.securityKeys ?? []).map(({ id, name }) => ({ id, name })) : [] };
+    });
+  }
+
+  async assertKeyPresent(authenticator, id, generation, signal) {
+    this.assertSecurityKeyOperation(generation, signal);
+    if (authenticator?.continuousPresence !== true || typeof authenticator.isPresent !== "function"
+      || !await authenticator.isPresent(id)) {
+      throw new Error("Keep the verified USB key connected. Continuous presence requires the macOS desktop app.");
+    }
+    this.assertSecurityKeyOperation(generation, signal);
+  }
+
+  stopKeyPresenceMonitor() {
+    if (this.keyPresenceTimer !== null) clearInterval(this.keyPresenceTimer);
+    this.keyPresenceTimer = null;
+    const lease = this.keyPresenceLease;
+    this.keyPresenceLease = null;
+    if (lease) void Promise.resolve(lease.authenticator.releasePresence?.()).catch(() => {});
+  }
+
+  async checkSecurityKeyPresence() {
+    const lease = this.keyPresenceLease;
+    if (!lease) return true;
+    try {
+      if (await lease.authenticator.isPresent(lease.id) && this.keyPresenceLease === lease) return true;
+    } catch { /* Losing the monitor is equivalent to losing the key. */ }
+    if (this.keyPresenceLease === lease) {
+      this.lock();
+      this.onSecurityKeyDisconnected?.();
+    }
+    return false;
+  }
+
+  startKeyPresenceMonitor(authenticator, id) {
+    if (this.keyPresenceTimer !== null) clearInterval(this.keyPresenceTimer);
+    const lease = { authenticator, id };
+    this.keyPresenceLease = lease;
+    let checking = false;
+    const check = async () => {
+      if (checking || this.keyPresenceLease !== lease) return;
+      checking = true;
+      try { await this.checkSecurityKeyPresence(); }
+      finally { checking = false; }
+    };
+    this.keyPresenceTimer = setInterval(() => void check(), 250);
+    this.keyPresenceTimer.unref?.();
+  }
+
+  async setSecurityKeyPresenceRequired({ required, passphrase, authenticator, signal }) {
+    const generation = this.operationGeneration;
+    return this.serialized(async () => {
+      this.assertSecurityKeyOperation(generation, signal);
+      const current = await this.loadSlot();
+      if (typeof required !== "boolean" || !this.innerRepository || current?.status !== "active"
+        || current.vaultScopeID !== this.innerVaultScopeID) throw new Error("Unlock the vault to change key protection.");
+      await this.verifiedPassphraseSession(current, passphrase);
+      const verified = await openWithSecurityKey({ keys: current.securityKeys ?? [],
+        scope: current.vaultScopeID, authenticator, signal, crypto: this.storageCrypto });
+      verified.passphrase = "";
+      await this.assertKeyPresent(authenticator, verified.key.id, generation, signal);
+      const next = validateApplicationVaultSlotRecord({ ...current, requireSecurityKeyPresence: required,
+        securityKeys: current.securityKeys.map((key) => key.id === verified.key.id ? verified.key : key),
+        updatedAt: monotonicTimestamp(current.updatedAt) });
+      await this.commitSlot(next);
+      try { await this.assertKeyPresent(authenticator, verified.key.id, generation, signal); }
+      catch (error) { this.lock(); this.onSecurityKeyDisconnected?.(); throw error; }
+      if (required) this.startKeyPresenceMonitor(authenticator, verified.key.id);
+      else this.stopKeyPresenceMonitor();
     });
   }
 
@@ -155,6 +332,7 @@ export class HostAnchoredBrowserApplicationVaultV2 {
   async unlock({ passphrase }) {
     return this.serialized(async () => {
       const current = await this.loadSlot();
+      if (current?.requireSecurityKeyPresence) throw new Error("This vault requires a connected registered security key. Use security key unlock.");
       if (current?.status !== "active") {
         throw new BrowserMessagingAvailabilityError(
           "vaultUnavailable",
@@ -278,6 +456,8 @@ export class HostAnchoredBrowserApplicationVaultV2 {
       const next = validateApplicationVaultSlotRecord({
         ...current,
         status: "burned",
+        ...(current.securityKeys === undefined ? {} : { securityKeys: [] }),
+        ...(current.requireSecurityKeyPresence === undefined ? {} : { requireSecurityKeyPresence: false }),
         salt: null,
         encryptedRecord: null,
         updatedAt: monotonicTimestamp(current.updatedAt)
@@ -290,6 +470,8 @@ export class HostAnchoredBrowserApplicationVaultV2 {
   }
 
   lock() {
+    this.stopKeyPresenceMonitor();
+    this.operationGeneration += 1;
     this.innerBackend = null;
     this.innerStore = null;
     this.innerRepository = null;
@@ -2077,8 +2259,17 @@ function validateApplicationVaultSlotRecord(value) {
     "salt",
     "encryptedRecord",
     "createdAt",
-    "updatedAt"
+    "updatedAt",
+    ...(Object.hasOwn(value ?? {}, "securityKeys") ? ["securityKeys"] : []),
+    ...(Object.hasOwn(value ?? {}, "requireSecurityKeyPresence") ? ["requireSecurityKeyPresence"] : [])
   ], "Application vault slot record");
+  if (Object.hasOwn(value, "securityKeys")) validateSecurityKeyEntries(value.securityKeys);
+  if (Object.hasOwn(value, "requireSecurityKeyPresence") && (typeof value.requireSecurityKeyPresence !== "boolean"
+    || (value.requireSecurityKeyPresence && (value.status !== "active" && value.status !== "burning"
+      || !(value.securityKeys?.length > 0))))) throw new Error("Invalid continuous key presence policy.");
+  if (value.status === "burned" && (value.securityKeys ?? []).length !== 0) {
+    throw new Error("A burned vault retained security key authority.");
+  }
   if (value.stateSchema !== APPLICATION_VAULT_SCHEMA || value.version !== 2 ||
       !new Set(["active", "burning", "burned"]).has(value.status)) {
     throw new BrowserMessagingAvailabilityError(

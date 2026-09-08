@@ -32,6 +32,7 @@ export default {
       }
     },
     copy: {
+      ...(process.platform === "darwin" ? { ".build/security-key-bundle": "security-keys" } : {}),
       "client/index.html": "views/mainview/index.html",
       "client/styles.css": "views/mainview/styles.css",
       "client/assets": "views/mainview/assets",
@@ -55,6 +56,7 @@ export default {
     }
   },
   scripts: {
+    preBuild: "desktop/scripts/build-security-key-bridge.ts",
     postBuild: "desktop/scripts/install-mac-icon.ts",
     postWrap: "desktop/scripts/install-mac-icon.ts"
   }

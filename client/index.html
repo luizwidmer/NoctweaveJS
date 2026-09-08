@@ -43,6 +43,12 @@
         <button id="unlockVault" class="primaryWide">Create secure persona</button>
         <button id="forgetVault" class="subtle danger" hidden>Delete local persona</button>
       </div>
+      <section id="securityKeyUnlock" class="keyUnlock" hidden aria-label="Security key unlock">
+        <p id="keyUnlockHint" class="fieldHint">Or unlock with a registered security key.</p>
+        <div data-key-pin-field hidden><label for="unlockKeyPIN">Security key PIN</label><input id="unlockKeyPIN" type="password" autocomplete="off" maxlength="63"></div>
+        <div class="buttonRow"><button id="unlockWithKey" class="primaryWide">Use security key</button><button id="cancelKeyUnlock" class="subtle" hidden>Cancel</button></div>
+        <p id="keyUnlockStatus" class="fieldHint" role="status"></p>
+      </section>
       <p class="vaultError" id="vaultError" role="alert"></p>
     </div>
   </section>
@@ -209,6 +215,22 @@
             <div class="nativeSettingRow"><div><strong>Appearance</strong><p>Follow the system or choose a fixed theme.</p></div><div class="appearanceControl compact" data-appearance-control><label for="appAppearancePreference">Appearance</label><select id="appAppearancePreference" data-appearance-select aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div>
             <div class="nativeSettingRow"><div><strong>Lock local persona</strong><p>Clear decrypted state from this window.</p></div><button id="lockProfile" class="subtle">Lock</button></div>
             <div class="nativeSettingRow dangerRow"><div><strong>Burn local persona</strong><p>Destroy every local relationship and attempt route teardown. This cannot be undone.</p></div><button id="burnProfile" class="danger">Burn local persona</button></div>
+          </section>
+          <section class="panel nativeSettingsCard securityKeySettings" aria-labelledby="securityKeyTitle">
+            <div><h3 id="securityKeyTitle">Security keys</h3><p class="fieldHint">Unlock this vault with a FIDO2 key that supports PRF. Register a spare key and keep your vault passphrase safe.</p></div>
+            <div id="registeredSecurityKeys" class="registeredKeys" aria-label="Registered security keys"></div>
+            <label for="keyVaultPassphrase">Confirm your vault passphrase</label>
+            <input id="keyVaultPassphrase" type="password" autocomplete="current-password" maxlength="1024">
+            <label for="securityKeyName">Key name</label><input id="securityKeyName" value="Security key" maxlength="128" autocomplete="off">
+            <div data-key-pin-field hidden><label for="registerKeyPIN">Security key PIN</label><input id="registerKeyPIN" type="password" autocomplete="off" maxlength="63"></div>
+            <p class="fieldHint">Connect the key before continuing. Registration and verification may ask for two touches. Your browser may also ask for the key’s PIN.</p>
+            <div class="buttonRow"><button id="registerSecurityKey">Register key</button><button id="cancelKeySetup" class="subtle" hidden>Cancel</button></div>
+            <p id="keySetupStatus" class="fieldHint" role="status"></p>
+            <section id="continuousKeyPresence" class="keyPresenceSettings" hidden>
+              <label class="checkControl"><input id="keepSecurityKeyConnected" type="checkbox"><span>Keep key connected</span></label>
+              <p class="fieldHint">Require the verified USB key for the entire session. Removing it locks the app. Your passphrase alone cannot bypass this setting. Disable this option before adding or removing the active key.</p>
+              <button id="saveKeyPresence" class="subtle">Save connection requirement</button>
+            </section>
           </section>
         </section>
       </div>

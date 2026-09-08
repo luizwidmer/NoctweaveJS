@@ -1,3 +1,4 @@
+import type { SecurityKeyRequest, SecurityKeyResult } from "../bun/security-key-host.js";
 import Electrobun, { Electroview } from "electrobun/view";
 import type {
   DesktopRelayRequest,
@@ -21,6 +22,13 @@ if (groupsShortcut) {
 }
 
 declare global {
+  var __noctweaveDesktopSecurityKeys: {
+    available: boolean; rpID: string; origin: string; continuousPresence: boolean;
+    presence: () => Promise<{ present: boolean; credentialID: string | null }>;
+    releasePresence: () => Promise<{ released: boolean }>;
+    request: (request: SecurityKeyRequest) => Promise<SecurityKeyResult>;
+    cancel: () => Promise<{ cancelled: boolean }>;
+  } | undefined;
   var __noctweaveDesktopRelayFetch: ((request: DesktopRelayRequest) => Promise<Response>) | undefined;
   var __noctweaveDesktopWasmBinary: Uint8Array | undefined;
   var __noctweaveDesktopExportAttachment: ((request: {
@@ -75,6 +83,14 @@ globalThis.__noctweaveDesktopExportAttachment = async ({ bytes, mimeType, sha256
     bytesBase64: encodeBase64(bytes)
   });
 };
+
+globalThis.__noctweaveDesktopSecurityKeys = Object.freeze({
+  ...await desktop.rpc!.request.securityKeyCapability({}),
+  presence: () => desktop.rpc!.request.securityKeyPresence({}),
+  releasePresence: () => desktop.rpc!.request.releaseSecurityKeyPresence({}),
+  request: (request: SecurityKeyRequest) => desktop.rpc!.request.securityKeyRequest(request),
+  cancel: () => desktop.rpc!.request.cancelSecurityKeyRequest({})
+});
 
 await import("../../client/app.js");
 

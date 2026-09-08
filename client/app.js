@@ -1,3 +1,4 @@
+import { securityKeyAuthenticator } from "./security-keys.js";
 import oqsFactory from "../wasm/dist/noctweave_oqs.js";
 import {
   EncryptedNoctweaveStore,
@@ -63,6 +64,8 @@ const state = {
   lastMaintenanceAt: 0,
   pumpTimer: null,
   messagePumpTimer: null,
+  keyController: null,
+  keyPresenceRequired: false,
   activeView: "chats"
 };
 const RELAY_PREFERENCE_KEY = "application:relay-preference:v1";
@@ -142,6 +145,13 @@ const clientViewCopy = {
 };
 
 elements.unlock.addEventListener("click", () => run(hasVault() ? unlockVault : createVault));
+$("#unlockWithKey").addEventListener("click", () => void performSecurityKeyAction("unlock"));
+$("#registerSecurityKey").addEventListener("click", () => void performSecurityKeyAction("register"));
+$("#saveKeyPresence").addEventListener("click", () => void performSecurityKeyAction("presence"));
+for (const id of ["#cancelKeyUnlock", "#cancelKeySetup"]) $(id).addEventListener("click", cancelSecurityKeyAction);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) cancelSecurityKeyAction();
+});
 elements.forget.addEventListener("click", () => run(forgetVault));
 elements.onboardingRelayCheck.addEventListener("click", () => run(verifyOnboardingRelay));
 elements.onboardingRelay.addEventListener("input", () => {
@@ -181,8 +191,13 @@ elements.openAttachment.addEventListener("click", () => elements.attachmentFile.
 $("#lockProfile").addEventListener("click", lockProfile);
 $("#burnProfile").addEventListener("click", () => runMessaging(burnLocalPersona));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") void foregroundMessagingMaintenance();
+  if (document.visibilityState === "visible") void resumeAfterKeyPresenceCheck();
 });
+
+async function resumeAfterKeyPresenceCheck() {
+  if (await state.vault?.checkSecurityKeyPresence() === false) return;
+  await foregroundMessagingMaintenance();
+}
 
 boot();
 
@@ -277,6 +292,7 @@ function hasVault() {
 }
 
 function renderGate() {
+  void refreshSecurityKeyUI();
   const existing = hasVault();
   elements.vaultTitle.textContent = existing ? "Unlock NoctweaveJS" : "Create your local persona";
   elements.vaultIntro.textContent = existing
@@ -343,6 +359,7 @@ async function createVault() {
 }
 
 async function unlockVault() {
+  if (state.keyController) throw new Error("Finish or cancel the security key request first.");
   if (state.vault === null) throw new Error(browserRollbackAnchorRequirement);
   const passphrase = validatePassphrase();
   try {
@@ -397,6 +414,7 @@ function createMessagingService(encryptedStore) {
 }
 
 function showApp() {
+  void refreshSecurityKeyUI();
   elements.gate.hidden = true;
   elements.app.hidden = false;
   elements.app.inert = false;
@@ -428,6 +446,8 @@ function activateClientView(view, selectedControl = null) {
 }
 
 function lockProfile() {
+  cancelSecurityKeyAction();
+  for (const id of ["#keyVaultPassphrase", "#registerKeyPIN", "#unlockKeyPIN"]) $(id).value = "";
   void closeRelayPairing({ bestEffort: true });
   stopPairingPump();
   stopMessagePump();
@@ -457,6 +477,121 @@ function lockProfile() {
   elements.gate.hidden = false;
   globalThis.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
   renderGate();
+}
+
+function cancelSecurityKeyAction() {
+  state.keyController?.abort();
+}
+
+async function refreshSecurityKeyUI() {
+  const authenticator = securityKeyAuthenticator();
+  if (state.vault) state.vault.onSecurityKeyDisconnected = () => {
+    lockProfile();
+    $("#keyUnlockStatus").textContent = "The security key was disconnected. Reconnect it and unlock again.";
+  };
+  const busy = state.keyController !== null;
+  for (const field of document.querySelectorAll("[data-key-pin-field]")) {
+    field.hidden = !globalThis.__noctweaveDesktopSecurityKeys?.available;
+  }
+  $("#registerSecurityKey").disabled = busy || !authenticator;
+  $("#unlockWithKey").disabled = busy || !authenticator;
+  $("#cancelKeyUnlock").hidden = !busy;
+  $("#cancelKeySetup").hidden = !busy;
+  for (const id of ["#keyVaultPassphrase", "#securityKeyName", "#registerKeyPIN", "#unlockKeyPIN"]) $(id).disabled = busy;
+  if (busy) elements.unlock.disabled = true;
+  if (!state.vault) return;
+  try {
+    const protection = await state.vault.securityKeyProtection();
+    const keys = protection.keys;
+    state.keyPresenceRequired = protection.required;
+    $("#keyUnlockHint").textContent = protection.required
+      ? "Connect your registered USB key to unlock this vault."
+      : "Or unlock with a registered security key.";
+    $("#continuousKeyPresence").hidden = !authenticator?.continuousPresence;
+    if (!busy) $("#keepSecurityKeyConnected").checked = protection.required;
+    $("#keepSecurityKeyConnected").disabled = busy;
+    $("#saveKeyPresence").disabled = busy || !keys.length;
+    elements.passphrase.disabled = protection.required || busy;
+    elements.unlock.disabled = protection.required || busy || state.securityProfile?.available === false;
+    if (protection.required && !state.persona && !busy) $("#keyUnlockStatus").textContent = "This vault requires a connected registered USB key.";
+    $("#securityKeyUnlock").hidden = state.vaultStatus !== "active" || keys.length === 0;
+    $("#registerSecurityKey").disabled = busy || !authenticator || keys.length >= 8 || protection.required;
+    const list = $("#registeredSecurityKeys");
+    list.replaceChildren();
+    for (const key of keys) {
+      const row = document.createElement("div"); row.className = "registeredKey";
+      const label = document.createElement("span"); label.textContent = key.name;
+      const remove = document.createElement("button"); remove.className = "subtle"; remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove ${key.name}`); remove.disabled = busy;
+      remove.addEventListener("click", () => void performSecurityKeyAction("remove", key.id));
+      row.append(label, remove); list.append(row);
+    }
+    if (!keys.length) list.textContent = "No security keys registered.";
+    if (!authenticator) {
+      const message = "Security keys are unavailable here. Use a compatible browser over HTTPS or localhost, or the macOS desktop app.";
+      $("#keySetupStatus").textContent = message;
+      $("#keyUnlockStatus").textContent = message;
+    }
+  } catch {
+    $("#securityKeyUnlock").hidden = true;
+    $("#registerSecurityKey").disabled = true;
+    $("#keySetupStatus").textContent = "The protected key list could not be read.";
+  }
+}
+
+async function performSecurityKeyAction(operation, id = null) {
+  if (state.keyController || !state.vault) return;
+  const required = $("#keepSecurityKeyConnected").checked;
+  const controller = new AbortController();
+  state.keyController = controller;
+  const status = $(operation === "unlock" ? "#keyUnlockStatus" : "#keySetupStatus");
+  const pinField = $(operation === "unlock" ? "#unlockKeyPIN" : "#registerKeyPIN");
+  const authenticator = securityKeyAuthenticator({ pin: pinField.value });
+  pinField.value = "";
+  let passphrase = $("#keyVaultPassphrase").value;
+  $("#keyVaultPassphrase").value = "";
+  status.textContent = operation === "remove" ? "Verifying your passphrase…" : "Follow the prompt and touch your security key. You can cancel at any time.";
+  void refreshSecurityKeyUI();
+  try {
+    if (!authenticator && operation !== "remove") throw new Error("Security keys are unavailable here.");
+    if (operation === "unlock") {
+      const opened = await state.vault.unlockWithSecurityKey({ authenticator, signal: controller.signal });
+      controller.signal.throwIfAborted();
+      await activateVaultSession(opened);
+      controller.signal.throwIfAborted();
+      await restoreRelayPreference();
+      controller.signal.throwIfAborted();
+      showApp();
+    } else {
+      requireUnlocked();
+      if (passphrase.length < 12) throw new Error("Enter your vault passphrase to change registered keys.");
+      if (operation === "remove") await state.vault.removeSecurityKey({ id, passphrase, signal: controller.signal });
+      else if (operation === "presence") await state.vault.setSecurityKeyPresenceRequired({ required, passphrase,
+        authenticator, signal: controller.signal });
+      else await state.vault.addSecurityKey({ passphrase, name: $("#securityKeyName").value,
+        authenticator, signal: controller.signal });
+      controller.signal.throwIfAborted();
+    }
+    status.textContent = operation === "register" ? "Key registered and verified. Your passphrase remains available for recovery."
+      : operation === "remove" ? "Key removed from this vault."
+      : operation === "presence" ? (required ? "Keep key connected is enabled. Removing the key locks this app." : "Connection requirement disabled.")
+      : "Security key verified.";
+  } catch (error) {
+    if (operation === "unlock") {
+      state.vault.lock();
+      if (state.persona) lockProfile();
+    }
+    status.textContent = controller.signal.aborted ? "Security key request cancelled." : displayError(error);
+  } finally {
+    passphrase = "";
+    authenticator?.clearPIN?.();
+    if (!state.keyPresenceRequired) {
+      try { await authenticator?.releasePresence?.(); } catch { /* No continuous lease is active. */ }
+    }
+    if (state.keyController === controller) state.keyController = null;
+    elements.unlock.disabled = state.keyPresenceRequired || state.securityProfile?.available === false || state.vault === null;
+    void refreshSecurityKeyUI();
+  }
 }
 
 async function forgetVault() {
