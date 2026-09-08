@@ -7,6 +7,19 @@ import { installDesktopRelationshipStateAnchorFactory } from "./relationship-sta
 
 document.documentElement.dataset.runtime = "desktop";
 
+// The companion page depends on the browser client's local server and is not
+// bundled into the desktop host. Keep the shortcut explicit about availability.
+const groupsShortcut = document.querySelector<HTMLAnchorElement>(".groupsShortcut");
+if (groupsShortcut) {
+  const groupsAvailability = document.createElement("button");
+  groupsAvailability.className = groupsShortcut.className;
+  groupsAvailability.textContent = "Groups";
+  groupsAvailability.disabled = true;
+  groupsAvailability.title = "Groups are available in the browser companion.";
+  groupsAvailability.setAttribute("aria-label", "Groups: available in the browser companion");
+  groupsShortcut.replaceWith(groupsAvailability);
+}
+
 declare global {
   var __noctweaveDesktopRelayFetch: ((request: DesktopRelayRequest) => Promise<Response>) | undefined;
   var __noctweaveDesktopWasmBinary: Uint8Array | undefined;

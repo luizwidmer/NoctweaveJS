@@ -140,8 +140,10 @@ small { color: var(--muted); }
 .appearanceControl.compact { padding: 5px 7px 5px 10px; box-shadow: none; }
 .appearanceControl.compact select { min-width: 86px; }
 
-.vaultGate { min-height: 100vh; display: grid; place-items: center; padding: 32px 24px; overflow: auto; }
+.vaultGate { height: 100vh; height: 100dvh; display: grid; place-items: safe center; padding: 32px 24px; overflow: auto; }
 .vaultCard { width: min(620px, 100%); padding: clamp(24px, 5vw, 42px); border: 1px solid var(--border); border-radius: 26px; background: var(--surface); box-shadow: var(--shadow); }
+.vaultCard input:not([type="checkbox"]) { height: 46px; border-radius: 12px; }
+.vaultCard button { min-height: 44px; }
 .vaultTopRow { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .vaultMark { width: 58px; height: 58px; flex: 0 0 auto; padding: 11px; border: 1px solid var(--border-strong); border-radius: 17px; background: var(--accent-soft); }
 .vaultMark img, .heroIdentity img { width: 100%; height: 100%; display: block; }
@@ -154,6 +156,7 @@ small { color: var(--muted); }
 .securityDetails .securityProfile { margin: 0 10px 10px; }
 .onboardingAcknowledgment { margin-bottom: 10px; }
 .onboardingRelayRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.onboardingRelayRow input, .onboardingRelayRow button { height: 46px; margin-top: 0; border-radius: 12px; }
 .vaultActions, .buttonRow, .pairingHeader { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .vaultActions { margin-top: 18px; }
 .primaryWide { flex: 1; }
@@ -249,7 +252,6 @@ small { color: var(--muted); }
   .vaultCard .onboardingAcknowledgment { min-height: 34px; margin-bottom: 4px; }
   .vaultCard label { margin: 9px 0 5px; }
   .vaultCard input { margin-top: 0; padding: 9px 12px; }
-  .vaultCard button { min-height: 38px; }
   .vaultCard .fieldHint { margin-bottom: 6px; }
   #personaCreationFields {
     display: grid;
@@ -437,12 +439,13 @@ small { color: var(--muted); }
 .nativeViewStack, .clientView { min-width: 0; min-height: 0; }
 .nativeViewStack { overflow: hidden; }
 .clientView { height: 100%; overflow: auto; }
-.conversationView { overflow: hidden; }
+.conversationView { overflow: auto; }
 
 .nativeConversation {
+  min-height: 100%;
   height: 100%;
   display: grid;
-  grid-template-rows: auto auto auto minmax(150px, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(min-content, 1fr) auto;
   gap: 12px;
   padding: clamp(20px, 3vw, 34px) clamp(22px, 4vw, 48px) 22px;
 }
@@ -459,7 +462,7 @@ small { color: var(--muted); }
   border-radius: 18px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--raised) 70%, transparent);
 }
-.nativeConversation .messageList[data-empty="true"] { place-items: center; text-align: center; }
+.nativeConversation .messageList[data-empty="true"] { min-height: min-content; place-items: safe center; text-align: center; }
 .conversationEmpty { width: min(430px, 100%); display: grid; justify-items: center; gap: 8px; color: var(--muted); }
 .conversationEmpty img { width: 68px; height: 68px; margin-bottom: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 19px; background: var(--accent-soft); }
 .conversationEmpty h2 { margin: 0; color: var(--text); font-size: 1.45rem; }
@@ -476,6 +479,7 @@ small { color: var(--muted); }
 .conversationDetails .fieldHint { margin: 2px 0 8px; }
 
 .nativeComposer {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px 10px;
@@ -511,7 +515,7 @@ small { color: var(--muted); }
 .nativeSettingRow:last-child { border-bottom: 0; }
 .nativeSettingRow p { margin: 4px 0 0; color: var(--muted); font-size: .8rem; }
 .nativeSettingRow .appearanceControl label { display: none; }
-.nativeDestinationRow { width: 100%; border: 0; border-radius: 0; color: var(--text); background: transparent; text-align: left; }
+.nativeDestinationRow { width: 100%; border: 0; border-radius: 12px; padding-inline: 12px; color: var(--text); background: transparent; text-align: left; }
 .nativeDestinationRow:hover:not(:disabled) { border-color: transparent; background: var(--accent-soft); transform: none; }
 .nativeDestinationRow > span { color: var(--muted); font-size: 1.4rem; }
 .dangerRow strong { color: var(--status-danger); }
@@ -529,7 +533,8 @@ small { color: var(--muted); }
   body { overflow: hidden; }
   .nativeShell {
     height: 100vh;
-    min-height: 100vh;
+    height: 100dvh;
+    min-height: 0;
     grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
     overflow: hidden;
   }
@@ -553,6 +558,7 @@ small { color: var(--muted); }
   .nativeToolbarActions .subtle { display: none; }
   .nativeToolbarActions .groupsShortcut { display: inline-flex; }
   .nativeConversation { padding: 14px; }
+  .nativeConversation .messageHeader button, .nativeToolbarActions button, .nativeToolbarActions .buttonLink { min-height: 44px; }
   .nativeConversation .messageHeader { align-items: flex-start; flex-direction: column; }
   .nativeConversation .messageHeader .buttonRow { width: 100%; justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; }
   .nativeComposer { grid-template-columns: 1fr; }
