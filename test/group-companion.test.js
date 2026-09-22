@@ -24,7 +24,7 @@ test("admission returns a durably written Welcome when relay maintenance fails",
 
     const result = await companion.acceptAdmissionRequest(
       groupID,
-      "noctweave-group-admission-v1:request"
+      admissionLink(groupID)
     );
 
     assert.equal(result.groupID, groupID);
@@ -80,3 +80,78 @@ async function withCompanion(operation) {
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+const otherGroupID = "57364e86-d934-4f1e-9816-e18d76658bdb";
+
+function admissionLink(targetGroupID) {
+  return "noctweave-group-admission-v1:" + Buffer.from(JSON.stringify({
+    version: 1,
+    groupID: targetGroupID
+  })).toString("base64");
+}
+
+test("admission rejects a different group before the CLI can commit membership", async () => {
+  await withCompanion(async ({ companion }) => {
+    let commands = 0;
+    companion.executeCLI = async () => {
+      commands += 1;
+      return { stdout: JSON.stringify({ groupID: otherGroupID }) };
+    };
+    await assert.rejects(
+      companion.acceptAdmissionRequest(groupID, admissionLink(otherGroupID)),
+      /different group/u
+    );
+    assert.equal(commands, 0, "Group authorization must happen before any CLI side effect");
+  });
+});
+
+test("wrong-group admission cannot be mislabeled as a durable maintenance recovery", async () => {
+  await withCompanion(async ({ companion }) => {
+    let commands = 0;
+    companion.executeCLI = async (_cliPath, args) => {
+      commands += 1;
+      await writeFile(args[args.indexOf("--response-out") + 1], "noctweave-group-welcome-v1:other-group");
+      throw new Error("relay maintenance failed after membership was committed");
+    };
+    await assert.rejects(
+      companion.acceptAdmissionRequest(groupID, admissionLink(otherGroupID)),
+      /different group/u
+    );
+    assert.equal(commands, 0);
+  });
+});
+
+test("admission rejects ambiguous and malformed group links before launching the CLI", async () => {
+  await withCompanion(async ({ companion }) => {
+    let commands = 0;
+    companion.executeCLI = async () => {
+      commands += 1;
+      return { stdout: JSON.stringify({ groupID }) };
+    };
+    const prefix = "noctweave-group-admission-v1:";
+    const encode = (text) => prefix + Buffer.from(text).toString("base64");
+    for (const link of [
+      "invalid",
+      prefix + "!!!!",
+      encode(`{"version":1,"groupID":"${otherGroupID}","groupID":"${groupID}"}`),
+      encode(`{"version":1,"groupID":"${otherGroupID}","group\\u0049D":"${groupID}"}`),
+      encode(`{"version":2,"groupID":"${groupID}"}`),
+      encode('{"version":1,"groupID":null}'),
+      prefix + Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]).toString("base64")
+    ]) {
+      await assert.rejects(companion.acceptAdmissionRequest(groupID, link));
+    }
+    assert.equal(commands, 0);
+  });
+});
+
+test("admission group comparison accepts uppercase protocol UUIDs", async () => {
+  await withCompanion(async ({ companion }) => {
+    companion.executeCLI = async (_cliPath, args) => {
+      await writeFile(args[args.indexOf("--response-out") + 1], "noctweave-group-welcome-v1:durable");
+      return { stdout: JSON.stringify({ groupID: groupID.toUpperCase() }) };
+    };
+    const result = await companion.acceptAdmissionRequest(groupID, admissionLink(groupID.toUpperCase()));
+    assert.equal(result.groupID, groupID.toUpperCase());
+  });
+});

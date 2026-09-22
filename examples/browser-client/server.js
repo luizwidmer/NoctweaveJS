@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { extname, join, normalize, sep } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
+import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRelayEndpoint, relayEndpointURL } from "../../src/endpoint.js";
 import { NoctweaveGroupCompanion } from "./group-companion.js";
@@ -10,7 +11,8 @@ const root = normalize(join(fileURLToPath(new URL("../..", import.meta.url))));
 const port = Number(process.env.PORT ?? 5173);
 const maxBodyBytes = 1_000_000;
 const proxyTimeoutMs = 10_000;
-const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+const maximumStaticBytes = 8 * 1024 * 1024;
+const canonicalRoot = await realpath(root);
 const defaultClientPath = process.env.NOCTWEAVE_CLIENT === "production"
   ? "/client/"
   : "/examples/browser-client/";
@@ -192,17 +194,52 @@ async function serveStatic(request, response) {
   const pathname = decodedPath.endsWith("/")
     ? `${decodedPath}index.html`
     : decodedPath;
-  const filePath = normalize(join(root, pathname));
-  if (filePath !== root && !filePath.startsWith(rootPrefix)) {
-    writeResponse(response, 403, "Forbidden", "text/plain; charset=utf-8");
+  // Only browser runtime assets are public. The checkout also contains private
+  // companion state, Git metadata, and host-side code that must never be served.
+  if (!isPublicAsset(pathname)) {
+    writeResponse(response, 404, "Not found", "text/plain; charset=utf-8");
     return;
   }
+  const filePath = join(canonicalRoot, pathname);
+  let handle;
   try {
-    const bytes = await readFile(filePath);
-    writeResponse(response, 200, bytes, mimeTypes[extname(filePath)] ?? "application/octet-stream");
+    // Reject symlinks anywhere beneath the served root, including directory
+    // links. A permitted asset name must not make an outside file public.
+    if (await realpath(filePath) !== filePath) {
+      writeResponse(response, 404, "Not found", "text/plain; charset=utf-8");
+      return;
+    }
+    handle = await open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maximumStaticBytes) {
+      writeResponse(response, 404, "Not found", "text/plain; charset=utf-8");
+      return;
+    }
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > maximumStaticBytes) throw new Error("Static asset exceeds size limit.");
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    writeResponse(response, 200, Buffer.concat(chunks, total), mimeTypes[extname(filePath)] ?? "application/octet-stream");
   } catch {
     writeResponse(response, 404, "Not found", "text/plain; charset=utf-8");
+  } finally {
+    await handle?.close();
   }
+}
+
+function isPublicAsset(pathname) {
+  if (pathname.includes("\\") || pathname.includes("\0") ||
+      pathname.split("/").some((part) => part.startsWith("."))) return false;
+  if (/^\/src\/.+\.js$/u.test(pathname)) return true;
+  if (/^\/client\/.+\.(?:html|js|css|svg)$/u.test(pathname)) return true;
+  if (/^\/examples\/browser-client\/(?:index\.html|app\.js|styles\.css|assets\/[^/]+\.svg)$/u.test(pathname)) return true;
+  return pathname === "/wasm/dist/noctweave_oqs.js" || pathname === "/wasm/dist/noctweave_oqs.wasm";
 }
 
 function readBody(request) {

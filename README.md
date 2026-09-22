@@ -124,6 +124,11 @@ npm test
 npm run typecheck:desktop
 ```
 
+The loopback development server serves only browser runtime assets. Private
+companion state, checkout metadata, host scripts, and symlink targets are not
+public files. Group admission links must match the group selected in the UI
+before the companion invokes the CLI.
+
 The checked-in liboqs WASM artifact is the reference post-quantum runtime. To
 rebuild it, provide Emscripten 6.0.1 and a liboqs checkout at the pinned commit,
 then run:

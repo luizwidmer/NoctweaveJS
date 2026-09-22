@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseExactJSON } from "../../src/strict-json.js";
 import {
   access,
   chmod,
@@ -132,6 +133,7 @@ export class NoctweaveGroupCompanion {
   async acceptAdmissionRequest(groupID, requestLink) {
     requireUUID(groupID);
     const value = boundedText(requestLink, "Admission request", 1, 2 * 1024 * 1024);
+    requireAdmissionGroup(value, groupID);
     return this.withPrivateDirectory(async (directory) => {
       const requestPath = join(directory, "request.txt");
       const responsePath = join(directory, "response.txt");
@@ -242,5 +244,31 @@ function requireUUID(value) {
   if (typeof value !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) {
     throw new TypeError("Group ID must be a UUID.");
+  }
+}
+
+// Bind the selected UI group before invoking the CLI: admission mutates durable
+// membership before its result is returned, including on maintenance failures.
+// Core remains responsible for validating the full admission and signatures.
+function requireAdmissionGroup(link, groupID) {
+  const prefix = "noctweave-group-admission-v1:";
+  if (!link.startsWith(prefix)) {
+    throw new Error("The group admission request is invalid.");
+  }
+  const encoded = link.slice(prefix.length);
+  if (!encoded || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) {
+    throw new Error("The group admission request is invalid.");
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) {
+    throw new Error("The group admission request is invalid.");
+  }
+  const request = parseExactJSON(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (!request || typeof request !== "object" || Array.isArray(request) || request.version !== 1) {
+    throw new Error("The group admission request is invalid.");
+  }
+  requireUUID(request.groupID);
+  if (request.groupID.toLowerCase() !== groupID.toLowerCase()) {
+    throw new Error("The admission request targets a different group.");
   }
 }
