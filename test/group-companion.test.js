@@ -67,6 +67,27 @@ test("group synchronization maintains routes before fetching messages", async ()
   });
 });
 
+test("group messages reach Core over stdin without a plaintext temporary file", async () => {
+  await withCompanion(async ({ companion, directory }) => {
+    let inputSeen = null;
+    companion.executeCLIWithInput = async (_path, args, _options, inputText) => {
+      assert.deepEqual(args.slice(0, 5), ["group-send", "--group", groupID, "--text-stdin", "true"]);
+      assert.equal(args.includes("--text-file"), false);
+      inputSeen = inputText;
+      return { stdout: JSON.stringify({ sent: true }) };
+    };
+    companion.executeCLI = async (_path, args) => {
+      assert.equal(args[0], "group-events");
+      return { stdout: "[]" };
+    };
+    const sent = await companion.sendMessage(groupID, "private canary");
+    assert.equal(inputSeen, "private canary");
+    assert.deepEqual(sent, { sent: true, events: [] });
+    const { readdir } = await import("node:fs/promises");
+    assert.deepEqual(await readdir(directory), ["state"]);
+  });
+});
+
 async function withCompanion(operation) {
   const directory = await mkdtemp(join(tmpdir(), "noctweave-group-test-"));
   try {

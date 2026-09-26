@@ -20,13 +20,27 @@ if (!process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD) {
     const result = await runChildSmoke("key-stages");
     assert.equal(result.code, 0, result.stderr || result.stdout);
   });
+  test("production client blocks and preserves legacy plaintext IndexedDB state", async () => {
+    const result = await runChildSmoke("legacy-anchor");
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  });
 }
 
 async function runProductionBrowserSmoke() {
   const html = await readFile(new URL("../client/index.html", import.meta.url), "utf8");
   const dom = new TestDocument([...html.matchAll(/id="([^"]+)"/gu)].map((match) => match[1]));
   const previous = installBrowserHarness(dom);
-  const keyStages = process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD === "key-stages";
+  const mode = process.env.NOCTWEAVE_PRODUCTION_DOM_SMOKE_CHILD;
+  const keyStages = mode === "key-stages";
+  if (mode === "legacy-anchor") {
+    const database = new TestDatabase();
+    database.createObjectStore("anchors");
+    database.createObjectStore("encryptedStates");
+    database.stores.get("anchors").set("legacy", {
+      id: "legacy", value: { relationshipID: "PRIVATE_LEGACY_CANARY" }
+    });
+    globalThis.indexedDB.databases.set("NoctweaveJS-Browser-v2", database);
+  }
   const key = new SecurityKeyFixture();
   let attached = [];
   if (keyStages) {
@@ -39,7 +53,14 @@ async function runProductionBrowserSmoke() {
   }
   try {
     await import(`../client/index.js?dom-smoke=${Date.now()}`);
-    await settle();
+    if (mode === "legacy-anchor") {
+      await waitFor(() => /Legacy plaintext IndexedDB/u.test(dom.get("securityProfileInfo").textContent));
+      assert.equal(dom.get("unlockVault").disabled, true);
+      assert.equal(globalThis.indexedDB.databases.get("NoctweaveJS-Browser-v2")
+        .stores.get("anchors").get("legacy").value.relationshipID, "PRIVATE_LEGACY_CANARY");
+      return;
+    }
+    await waitFor(() => /browser|desktop/i.test(dom.get("securityProfileInfo").textContent));
     assert.match(dom.get("securityProfileInfo").textContent, /browser|desktop/i);
     assert.match(dom.get("onboardingRelayInfo").textContent, /verified before/i);
     assert.match(dom.get("securityProfileWarning").textContent, /rollbackable|hardened/i);
@@ -329,6 +350,7 @@ class TestTransaction {
 class TestObjectStore {
   constructor(store, transaction) { this.store = store; this.transaction = transaction; }
   get(key) { return this.request(this.store.get(key)); }
+  count() { return this.request(this.store.size); }
   add(value) { if (this.store.has(value.id)) throw new Error("ConstraintError"); this.store.set(value.id, value); return this.request(value); }
   put(value) { this.store.set(value.id, value); return this.request(value); }
   delete(key) { this.store.delete(key); return this.request(undefined); }

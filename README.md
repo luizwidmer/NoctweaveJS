@@ -50,6 +50,23 @@ storage profile, check a relay you control, and create an encrypted local
 persona. For the desktop wrapper, use `bun run desktop:dev`; hardware-key
 support also requires the [native helper setup](INTEGRATION_GUIDE.md#hardware-security-key-unlock).
 
+The optional Groups page uses a local Core companion. Interactive server runs
+display a fresh token once in the terminal; enter it on the Groups page. The
+token lasts only for that server process and is held in the browser tab's memory.
+For non-interactive runs, supply a random 64-character lowercase hex token as
+`NOCTWEAVE_GROUP_COMPANION_TOKEN` through a secret manager. The server refuses
+to start without one. The app does not write this token to a file. Terminal
+scrollback, shell history, and external logging remain under operator control.
+If a prerelease `.local/group-companion/access-token` file exists, the server
+refuses to start. The browser client similarly refuses plaintext preferences or
+old IndexedDB anchors. These developer records are preserved for explicit
+cleanup. Group names are session-only; backgrounding the Groups tab clears its
+ordinary token, messages, and drafts. A pending one-use Welcome remains in the
+tab until explicitly cleared or the page closes, because a committed admission cannot
+recreate it. The current one-use admission exchange still
+uses private temporary request/Welcome files while the Core CLI requires file
+arguments; a process crash can leave those files behind.
+
 `bun.lock` is the reproducible dependency source used by CI. An `npm install`
 checkout is a development alternative.
 
@@ -85,10 +102,14 @@ checkout is a development alternative.
 
 The first-run workspace requires an explicit storage/security profile
 acknowledgment, a relay connectivity check, and then creates the encrypted
-local persona. Plain browsers use an authenticated atomic IndexedDB anchor as a
+local persona. Plain browsers seal their atomic IndexedDB anchors and state
+envelopes with AES-256-GCM and use keyed opaque record IDs. The non-extractable
+WebCrypto keys also live in that browser profile, so this remains a
 best-effort, rollbackable profile; ordinary browser storage has no hardware
 rollback resistance and is not equivalent to the hardened Electrobun host
-anchor. There is no silent storage fallback.
+anchor. Missing or wrong keys fail closed without replacing the ciphertext.
+There is no silent storage fallback. The web client locks and clears its
+decrypted conversation view when the tab goes into the background.
 
 Electrobun uses durable host anchors backed by macOS Keychain, Linux Secret
 Service, or Windows Credential Manager. If the platform backend is unavailable,

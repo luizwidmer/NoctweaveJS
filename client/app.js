@@ -158,7 +158,10 @@ $("#saveKeyPresence").addEventListener("click", () => void performSecurityKeyAct
 $("#saveUnlockVisibility").addEventListener("click", () => void performSecurityKeyAction("visibility"));
 for (const id of ["#cancelKeyUnlock", "#cancelKeySetup", "#cancelUnlockPrivacy"]) $(id).addEventListener("click", cancelSecurityKeyAction);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { cancelSecurityKeyAction(); stopKeyAttachmentWatch(); }
+  if (document.hidden) {
+    if (state.persona) lockProfile();
+    else { cancelSecurityKeyAction(); stopKeyAttachmentWatch(); }
+  }
   else startKeyAttachmentWatch();
 });
 elements.forget.addEventListener("click", () => run(forgetVault));
@@ -252,7 +255,20 @@ async function boot() {
           storageCrypto: globalThis.crypto,
           stateAnchorStoreFactory: state.anchorFactory
         });
-        state.vaultStatus = (await state.vault.inspect()).status;
+        try {
+          state.vaultStatus = (await state.vault.inspect()).status;
+        } catch (error) {
+          const detail = displayError(error);
+          state.securityProfile = {
+            ...state.securityProfile,
+            available: false,
+            reason: detail.startsWith("Legacy plaintext IndexedDB")
+              ? detail
+              : "Encrypted browser storage could not be opened. Preserve this profile for review before clearing its IndexedDB data."
+          };
+          state.vault = null;
+          state.anchorFactory = null;
+        }
       } else {
         state.messageSyncStatus = state.securityProfile.reason;
       }
@@ -433,6 +449,10 @@ function createMessagingService(encryptedStore) {
 }
 
 function showApp() {
+  if (document.hidden) {
+    lockProfile();
+    return;
+  }
   state.keyDetectedForAttempt = false;
   stopKeyAttachmentWatch();
   void refreshSecurityKeyUI();
@@ -467,6 +487,7 @@ function activateClientView(view, selectedControl = null) {
 }
 
 function lockProfile() {
+  const discardedDraft = elements.messageText.value.trim().length > 0;
   cancelSecurityKeyAction();
   for (const id of ["#keyVaultPassphrase", "#registerKeyPIN", "#unlockKeyPIN", "#visibilityPassphrase", "#visibilityKeyPIN"]) $(id).value = "";
   void closeRelayPairing({ bestEffort: true });
@@ -478,6 +499,7 @@ function lockProfile() {
   state.messaging = null;
   state.persona = null;
   state.invitation = null;
+  state.invitationPairingID = null;
   state.selectedRelationshipID = null;
   state.messageSnapshot = null;
   state.messageSyncStatus = "Select a relationship to begin.";
@@ -493,11 +515,23 @@ function lockProfile() {
   elements.invitation.value = "";
   elements.peerInvitation.value = "";
   elements.messageText.value = "";
+  elements.attachmentFile.value = "";
+  for (const input of [elements.displayName, elements.relay, elements.onboardingRelay,
+    elements.relationshipPseudonym]) input.value = "";
+  for (const output of [elements.relationshipList, elements.messageList,
+    elements.pendingPairingList, elements.relayPairingResults]) output.replaceChildren();
+  for (const output of [elements.personaName, elements.relationshipCount,
+    elements.selectedRelationshipName, elements.selectedRelationshipState,
+    elements.safetyNumber, elements.attachmentStatus, elements.outboxStatus,
+    elements.invitationResult, elements.pairingStatus, elements.relayPairingStatus]) {
+    output.textContent = "";
+  }
   elements.app.hidden = true;
   elements.app.inert = true;
   elements.gate.hidden = false;
   globalThis.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
   renderGate();
+  if (discardedDraft) elements.error.textContent = "Unsent draft discarded when the profile locked.";
 }
 
 function cancelSecurityKeyAction() {
@@ -1857,6 +1891,13 @@ function renderPersona() {
 }
 
 function renderSelectedMessages() {
+  if (!state.persona) {
+    state.messageSnapshot = null;
+    state.safetyNumber = null;
+    elements.messageList.replaceChildren();
+    elements.safetyNumber.textContent = "";
+    return;
+  }
   const relationship = selectedRelationship();
   const snapshot = state.messageSnapshot;
   const availability = snapshot?.availability ?? null;

@@ -32,7 +32,15 @@
 
     <section class="workspace">
       <aside class="sideRail">
-        <section class="panel compact" id="setupPanel">
+        <section class="panel compact" id="companionAccessPanel">
+          <p class="eyebrow">Local access</p>
+          <h2>Connect companion</h2>
+          <p class="info">Enter the access token from <code>.local/group-companion/access-token</code> in this checkout. It stays in this tab's memory.</p>
+          <label for="companionAccessToken">Access token</label>
+          <input id="companionAccessToken" type="password" autocomplete="off" spellcheck="false">
+          <button id="unlockCompanion" class="primaryWide">Connect</button>
+        </section>
+        <section class="panel compact" id="setupPanel" hidden>
           <p class="eyebrow">One-time local setup</p>
           <h2>Core companion</h2>
           <p class="info">The loopback companion runs NoctweaveCore locally. Group keys and plaintext never enter the relay or a remote web service.</p>
@@ -97,7 +105,7 @@
           <div id="admissionResponseActions" class="groupArtifactOutput" hidden>
             <strong>Signed Welcome ready</strong>
             <p class="fieldHint">Return this file through the same authenticated private channel. It works only for the request you just approved.</p>
-            <div class="buttonRow"><button id="shareAdmissionResponse">Share or save Welcome</button><button id="copyAdmissionResponse" class="subtle">Copy fallback</button></div>
+            <div class="buttonRow"><button id="shareAdmissionResponse">Share or save Welcome</button><button id="copyAdmissionResponse" class="subtle">Copy fallback</button><button id="clearAdmissionResponse" class="subtle">Clear Welcome</button></div>
             <details class="pairingRawData groupArtifactRaw">
               <summary>Show raw Welcome</summary>
               <label for="admissionResponse">Welcome response</label>

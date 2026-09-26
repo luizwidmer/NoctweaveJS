@@ -10,7 +10,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -24,12 +24,14 @@ export class NoctweaveGroupCompanion {
     cliPath,
     statePath,
     plaintextForTesting = false,
-    executeCLI = executeFile
+    executeCLI = executeFile,
+    executeCLIWithInput = executeFileWithInput
   }) {
     this.cliPath = cliPath;
     this.statePath = statePath;
     this.plaintextForTesting = plaintextForTesting;
     this.executeCLI = executeCLI;
+    this.executeCLIWithInput = executeCLIWithInput;
   }
 
   async capability() {
@@ -118,16 +120,12 @@ export class NoctweaveGroupCompanion {
   async sendMessage(groupID, text) {
     requireUUID(groupID);
     const value = boundedText(text, "Message", 1, 16_384);
-    return this.withPrivateDirectory(async (directory) => {
-      const messagePath = join(directory, "message.txt");
-      await writeFile(messagePath, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      const result = await this.runJSON([
-        "group-send",
-        "--group", groupID,
-        "--text-file", messagePath
-      ]);
-      return { ...result, events: await this.readEvents(groupID) };
-    });
+    const result = await this.runJSON([
+      "group-send",
+      "--group", groupID,
+      "--text-stdin", "true"
+    ], { inputText: value });
+    return { ...result, events: await this.readEvents(groupID) };
   }
 
   async acceptAdmissionRequest(groupID, requestLink) {
@@ -165,7 +163,7 @@ export class NoctweaveGroupCompanion {
     });
   }
 
-  async runJSON(argumentsList, { acceptDurableStructuredFailure = false } = {}) {
+  async runJSON(argumentsList, { acceptDurableStructuredFailure = false, inputText = null } = {}) {
     const stateDirectory = dirname(this.statePath);
     await mkdir(stateDirectory, {
       recursive: true,
@@ -178,16 +176,16 @@ export class NoctweaveGroupCompanion {
     }
     let stdout;
     try {
-      ({ stdout } = await this.executeCLI(
-        this.cliPath,
-        [...argumentsList, ...stateArguments],
-        {
-          encoding: "utf8",
-          timeout: commandTimeoutMs,
-          maxBuffer: maximumOutputBytes,
-          windowsHide: true
-        }
-      ));
+      const args = [...argumentsList, ...stateArguments];
+      const options = {
+        encoding: "utf8",
+        timeout: commandTimeoutMs,
+        maxBuffer: maximumOutputBytes,
+        windowsHide: true
+      };
+      ({ stdout } = inputText === null
+        ? await this.executeCLI(this.cliPath, args, options)
+        : await this.executeCLIWithInput(this.cliPath, args, options, inputText));
     } catch (error) {
       const detail = String(
         String(error?.stderr ?? "").trim()
@@ -226,6 +224,55 @@ export class NoctweaveGroupCompanion {
       await rm(directory, { recursive: true, force: true });
     }
   }
+}
+
+function executeFileWithInput(cliPath, args, options, inputText) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cliPath, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const output = [];
+    const errors = [];
+    let outputBytes = 0;
+    let errorBytes = 0;
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error("Group companion command timed out."));
+    }, options.timeout);
+    child.on("error", (error) => finish(error));
+    child.stdout.on("data", (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > options.maxBuffer) {
+        child.kill();
+        finish(new Error("Group companion output exceeded its limit."));
+      } else output.push(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      errorBytes += chunk.length;
+      if (errorBytes > options.maxBuffer) {
+        child.kill();
+        finish(new Error("Group companion error output exceeded its limit."));
+      } else errors.push(chunk);
+    });
+    child.stdin.on("error", () => {}); // A rejected CLI may close stdin early.
+    child.stdin.end(inputText, "utf8");
+    child.on("close", (code) => {
+      const stdout = Buffer.concat(output).toString("utf8");
+      const stderr = Buffer.concat(errors).toString("utf8");
+      if (code !== 0) {
+        const error = new Error(`Group companion command failed (${code}).`);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        finish(error);
+      } else finish(null, { stdout, stderr });
+    });
+  });
 }
 
 function boundedText(value, label, minimum, maximum) {

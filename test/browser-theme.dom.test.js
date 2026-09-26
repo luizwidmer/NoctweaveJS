@@ -24,7 +24,7 @@ test("production exposes the appearance control and the browser example redirect
   assert.doesNotMatch(css, /#151924|101,84,207|123,97,255/);
 });
 
-test("appearance preference persists and follows System before and after unlock", async () => {
+test("appearance stays in memory and rejects the old plaintext browser preference", async () => {
   const controls = [new TestControl(), new TestControl()];
   const document = {
     documentElement: { dataset: {} },
@@ -49,20 +49,24 @@ test("appearance preference persists and follows System before and after unlock"
   globalThis.document = document;
   globalThis.localStorage = {
     getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value)
+    setItem: () => { throw new Error("appearance must not write plaintext storage"); },
+    removeItem: () => { throw new Error("appearance must not delete developer data"); }
   };
   globalThis.matchMedia = () => mediaQuery;
 
   try {
     const { initializeAppearanceControl } = await import(`../client/theme.js?theme-dom=${Date.now()}`);
+    assert.throws(() => initializeAppearanceControl(), /Legacy plaintext browser preferences/u);
+    assert.equal(values.get("noctweavejs-appearance"), "dark");
+    values.delete("noctweavejs-appearance"); // Explicit owner cleanup.
     initializeAppearanceControl();
-    assert.equal(controls[0].value, "dark");
-    assert.equal(controls[1].value, "dark");
-    assert.equal(document.documentElement.dataset.theme, "dark");
+    assert.equal(controls[0].value, "system");
+    assert.equal(controls[1].value, "system");
+    assert.equal(document.documentElement.dataset.theme, "light");
 
     controls[0].value = "light";
     controls[0].dispatch("change");
-    assert.equal(values.get("noctweavejs-appearance"), "light");
+    assert.equal(values.size, 0);
     assert.equal(document.documentElement.dataset.theme, "light");
     assert.equal(controls[1].value, "light");
 

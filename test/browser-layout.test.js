@@ -1,17 +1,31 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { once } from "node:events";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 test("production client root redirects to its directory so relative assets resolve", async () => {
   const port = 24_000 + (process.pid % 10_000);
-  const serverPath = fileURLToPath(new URL("../examples/browser-client/server.js", import.meta.url));
+  const directory = await mkdtemp(join(tmpdir(), "noctweave-layout-server-"));
+  const root = join(directory, "checkout");
+  for (const path of ["examples/browser-client", "src", "client"]) {
+    await mkdir(join(root, path), { recursive: true });
+  }
+  for (const path of ["examples/browser-client/server.js", "examples/browser-client/companion-access.js",
+    "examples/browser-client/group-companion.js", "src/strict-json.js", "src/endpoint.js",
+    "client/index.html", "client/styles.css"]) {
+    await copyFile(new URL(`../${path}`, import.meta.url), join(root, path));
+  }
+  await writeFile(join(root, "package.json"), '{"type":"module"}');
+  const serverPath = join(root, "examples/browser-client/server.js");
   const child = spawn(process.execPath, [serverPath], {
     env: {
       ...process.env,
       NODE_ENV: "test",
       NOCTWEAVE_CLIENT: "production",
+      NOCTWEAVE_GROUP_COMPANION_TOKEN: "a".repeat(64),
       PORT: String(port)
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -30,7 +44,12 @@ test("production client root redirects to its directory so relative assets resol
     assert.match(await page.text(), /\.\/styles\.css/);
     assert.equal((await fetch(`http://127.0.0.1:${port}/client/styles.css`)).status, 200);
   } finally {
-    child.kill("SIGTERM");
+    if (child.exitCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

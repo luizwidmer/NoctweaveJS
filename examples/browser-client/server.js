@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import { constants as fsConstants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRelayEndpoint, relayEndpointURL } from "../../src/endpoint.js";
+import { createCompanionAccessToken, hasCompanionAccess } from "./companion-access.js";
 import { NoctweaveGroupCompanion } from "./group-companion.js";
 
 const root = normalize(join(fileURLToPath(new URL("../..", import.meta.url))));
@@ -24,10 +25,20 @@ const defaultCLIPath = normalize(join(
   "debug",
   "NoctweaveCLI"
 ));
+const companionDirectory = normalize(join(root, ".local", "group-companion"));
+// A prerelease token file is never read or silently destroyed. Its presence
+// means the operator must remove legacy plaintext data explicitly.
+try {
+  await lstat(join(companionDirectory, "access-token"));
+  throw new Error("Legacy plaintext group companion token exists; remove .local/group-companion/access-token before starting.");
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+const groupCompanionAccess = createCompanionAccessToken();
 const groupCompanion = new NoctweaveGroupCompanion({
   cliPath: process.env.NOCTWEAVE_CLI_PATH ?? defaultCLIPath,
-  statePath: normalize(join(root, ".local", "group-companion", "client-state.json")),
-  plaintextForTesting: process.env.NOCTWEAVE_GROUP_COMPANION_PLAINTEXT === "1"
+  statePath: join(companionDirectory, "client-state.json"),
+  plaintextForTesting: false
 });
 
 const mimeTypes = {
@@ -63,6 +74,10 @@ const server = createServer(async (request, response) => {
 async function serveGroupCompanion(request, response) {
   if (!isSameOriginBrowserRequest(request)) {
     writeJSON(response, 403, { error: "The group companion accepts same-origin loopback requests only." });
+    return;
+  }
+  if (!hasCompanionAccess(request, groupCompanionAccess.token)) {
+    writeJSON(response, 401, { error: "Enter the local companion access token to continue." });
     return;
   }
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -129,6 +144,9 @@ async function serveGroupCompanion(request, response) {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`NoctweaveJS client: http://127.0.0.1:${port}${defaultClientPath}`);
+  if (groupCompanionAccess.reveal) {
+    console.log(`One-time group companion token for this server run: ${groupCompanionAccess.token}`);
+  }
 });
 
 async function proxyRelay(request, response) {

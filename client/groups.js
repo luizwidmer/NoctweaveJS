@@ -1,10 +1,14 @@
-import { initializeAppearanceControl } from "./theme.js";
+import { initializeAppearanceControl, rejectLegacyPlaintextPreference } from "./theme.js";
 
 initializeAppearanceControl();
+rejectLegacyPlaintextPreference("noctweave.groupNames.v1");
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
   companionStatus: $("#companionStatus"),
+  companionAccessPanel: $("#companionAccessPanel"),
+  companionAccessToken: $("#companionAccessToken"),
+  unlockCompanion: $("#unlockCompanion"),
   setupPanel: $("#setupPanel"),
   createPanel: $("#createPanel"),
   groupListPanel: $("#groupListPanel"),
@@ -33,6 +37,7 @@ const elements = {
   admissionResponseActions: $("#admissionResponseActions"),
   acceptAdmission: $("#acceptAdmission"),
   copyAdmissionResponse: $("#copyAdmissionResponse"),
+  clearAdmissionResponse: $("#clearAdmissionResponse"),
   admissionStatus: $("#admissionStatus")
 };
 
@@ -42,12 +47,22 @@ const GROUP_WELCOME_PREFIX = "noctweave-group-welcome-v1:";
 const GROUP_ARTIFACT_MEDIA_TYPE = "application/vnd.noctweave.group-exchange";
 
 const state = {
+  accessToken: "",
   selectedGroupID: null,
   groups: [],
   busy: false,
-  localNames: loadLocalNames()
+  sessionRevision: 0,
+  localNames: Object.create(null)
 };
 
+// Aliases now last only for this page's lifetime until an encrypted companion
+// preference store is available.
+
+elements.unlockCompanion.addEventListener("click", () =>
+  perform(connectCompanion, elements.companionStatus));
+elements.companionAccessToken.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") void perform(connectCompanion, elements.companionStatus);
+});
 elements.setupCompanion.addEventListener("click", () =>
   perform(setupCompanion, elements.companionStatus));
 elements.createGroup.addEventListener("click", () =>
@@ -72,12 +87,27 @@ $("#shareAdmissionResponse").addEventListener("click", () =>
   perform(shareWelcome, elements.admissionStatus));
 elements.copyAdmissionResponse.addEventListener("click", () =>
   perform(copyWelcome, elements.admissionStatus));
+elements.clearAdmissionResponse.addEventListener("click", () => {
+  clearAdmissionResponse();
+  elements.admissionStatus.textContent = "Welcome cleared from this tab.";
+});
 elements.groupMessage.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     void perform(sendMessage, elements.groupMessageStatus);
   }
 });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  // A one-use Welcome cannot be reconstructed after admission commits. Keep
+  // that active handoff available until the owner shares it or leaves the page.
+  if (!state.busy && !elements.admissionResponse.value) resetCompanionSession();
+  else {
+    elements.groupMessages.replaceChildren();
+    elements.groupMessage.value = "";
+  }
+});
+globalThis.addEventListener?.("pagehide", resetCompanionSession);
 
 void perform(boot, elements.companionStatus);
 setInterval(() => {
@@ -86,7 +116,12 @@ setInterval(() => {
 }, 5_000);
 
 async function boot() {
+  if (!state.accessToken) {
+    elements.companionStatus.textContent = "Enter the local access token";
+    return;
+  }
   const status = await api("/status");
+  elements.companionAccessPanel.hidden = true;
   elements.storageProfile.textContent = status.encryptedState
     ? "Group state is encrypted by NoctweaveCore using the host secure-storage boundary."
     : "Development-only plaintext Core state is active. Do not use this mode for real conversations.";
@@ -98,9 +133,20 @@ async function boot() {
   }
   if (!status.initialized) {
     elements.companionStatus.textContent = "Setup required";
+    elements.setupPanel.hidden = false;
     return;
   }
   activate(status.groups ?? []);
+}
+
+async function connectCompanion() {
+  const token = elements.companionAccessToken.value.trim();
+  if (!/^[0-9a-f]{64}$/u.test(token)) {
+    throw new Error("Enter the 64-character token shown at server startup or supplied by the operator.");
+  }
+  state.accessToken = token;
+  elements.companionAccessToken.value = "";
+  await boot();
 }
 
 async function setupCompanion() {
@@ -129,7 +175,6 @@ async function createGroup() {
     body: { relay: elements.createRelay.value }
   });
   state.localNames[result.groupID] = localName;
-  saveLocalNames();
   renderGroups(result.groups ?? await api("/groups"));
   selectGroup(result.groupID);
   await syncMessages();
@@ -384,17 +429,54 @@ function resetAdmissionExchange() {
 }
 
 async function api(path, options = {}) {
-  const init = { method: options.method ?? "GET", headers: {} };
+  const sessionRevision = state.sessionRevision;
+  if (!state.accessToken) throw new Error("Enter the local access token to continue.");
+  const init = {
+    method: options.method ?? "GET",
+    headers: { authorization: `Bearer ${state.accessToken}` }
+  };
   if (options.body !== undefined) {
     init.headers["content-type"] = "application/json";
     init.body = JSON.stringify(options.body);
   }
   const response = await fetch(`/api/group-companion${path}`, init);
   const result = await response.json();
+  if (sessionRevision !== state.sessionRevision) throw new Error("The local session locked while this request was running.");
   if (!response.ok) {
+    if (response.status === 401) {
+      resetCompanionSession();
+      throw new Error("Access token rejected. Use the token for this server run.");
+    }
     throw new Error(result.error ?? `Group companion failed (${response.status}).`);
   }
   return result;
+}
+
+function resetCompanionSession() {
+  state.sessionRevision += 1;
+  state.accessToken = "";
+  state.selectedGroupID = null;
+  state.groups = [];
+  state.localNames = Object.create(null);
+  elements.companionStatus.textContent = "Enter the local access token";
+  elements.companionAccessPanel.hidden = false;
+  elements.setupPanel.hidden = true;
+  elements.createPanel.hidden = true;
+  elements.groupListPanel.hidden = true;
+  elements.groupConversationPanel.hidden = true;
+  elements.groupEmptyState.hidden = false;
+  elements.groupList.replaceChildren();
+  elements.groupMessages.replaceChildren();
+  elements.companionAccessToken.value = "";
+  elements.groupPersonaName.value = "";
+  elements.groupRelay.value = "";
+  elements.groupName.value = "";
+  elements.createRelay.value = "";
+  elements.selectedGroupName.textContent = "Selected group";
+  elements.selectedGroupID.textContent = "No group selected";
+  elements.groupMessage.value = "";
+  elements.groupMessageStatus.textContent = "";
+  resetAdmissionExchange();
 }
 
 async function perform(operation, errorTarget = elements.companionStatus) {
@@ -416,6 +498,7 @@ async function perform(operation, errorTarget = elements.companionStatus) {
   } finally {
     state.busy = false;
     setButtonsDisabled(false);
+    if (document.hidden && !elements.admissionResponse.value) resetCompanionSession();
   }
 }
 
@@ -441,17 +524,4 @@ function shortHandle(value) {
     ? value
     : value?.rawValue ?? value?.value ?? JSON.stringify(value);
   return `Member ${String(text).slice(0, 8)}`;
-}
-
-function loadLocalNames() {
-  try {
-    const value = JSON.parse(localStorage.getItem("noctweave.groupNames.v1") ?? "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveLocalNames() {
-  localStorage.setItem("noctweave.groupNames.v1", JSON.stringify(state.localNames));
 }
