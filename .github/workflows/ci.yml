@@ -35,8 +35,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Prepare desktop SDK
+        run: npm run desktop:prepare
+
       - name: Run protocol tests
         run: npm test
+
+      - name: Run desktop build checks
+        run: npm run desktop:test
 
       - name: Type-check desktop client
         run: npm run typecheck:desktop
