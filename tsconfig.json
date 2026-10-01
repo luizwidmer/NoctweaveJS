@@ -1,5 +1,7 @@
 {
+  "extends": "./.hutch/devkit/tsconfig.json",
   "compilerOptions": {
+    "baseUrl": null,
     "allowJs": true,
     "checkJs": false,
     "lib": ["ESNext", "DOM"],

@@ -141,9 +141,21 @@ key escrow services, identity providers, or required notification providers.
 ## Development
 
 ```sh
+bun install --frozen-lockfile --ignore-scripts
+npm run desktop:prepare
 npm test
+npm run desktop:test
 npm run typecheck:desktop
 ```
+
+The desktop host pins Electrobun 2.0.2 and retains its Bun main process.
+`desktop:prepare` verifies the paired build tools and projects the SDK into the
+ignored `.hutch/devkit` directory. TypeScript 7 clears the SDK's inherited
+legacy `baseUrl` while retaining its SDK aliases. Run `npm run desktop:build`
+for checked stable archives and installers. With those tools already prepared,
+`DASH_RELEASE_OFFLINE=1 npm run desktop:build` requires cached tools. Artifact
+checks need `tar` with Zstd support. Existing macOS signing/notarization settings
+remain disabled; these local packages are not notarized distribution builds.
 
 The loopback development server serves only browser runtime assets. Private
 companion state, checkout metadata, host scripts, and symlink targets are not

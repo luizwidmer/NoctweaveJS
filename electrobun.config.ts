@@ -21,6 +21,7 @@ export default {
     description: "Open-source post-quantum Noctweave messaging client."
   },
   build: {
+    mainProcess: "bun",
     bun: {
       entrypoint: isUITestBuild
         ? "desktop/ui-test-bun/index.ts"
@@ -38,8 +39,6 @@ export default {
       "client/assets": "views/mainview/assets",
       "wasm/dist/noctweave_oqs.wasm": "views/mainview/noctweave_oqs.wasm"
     },
-    targets: "current",
-    useAsar: false,
     watch: ["client", "desktop", "src", "wasm/dist"],
     mac: {
       bundleCEF: false,

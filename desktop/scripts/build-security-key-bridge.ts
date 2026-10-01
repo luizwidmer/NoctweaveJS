@@ -10,7 +10,9 @@ if (process.platform === "darwin") {
     throw new Error("Building the macOS app requires the NoctweaveSecurityKeys package from the Noctweave checkout.");
   }
   const scratch = join(root, ".build", "security-key-bridge");
-  const flags = ["--package-path", source, "--scratch-path", scratch, "-c", "release", "--product", "NoctweaveSecurityKeyBridge"];
+  const help = execFileSync("xcrun", ["swift", "build", "--help"], { encoding: "utf8" });
+  const backend = help.includes("swiftbuild") ? ["--build-system", "swiftbuild"] : [];
+  const flags = ["--package-path", source, "--scratch-path", scratch, "--disable-automatic-resolution", ...backend, "-c", "release", "--product", "NoctweaveSecurityKeyBridge"];
   execFileSync("xcrun", ["swift", "build", ...flags], { stdio: "inherit" });
   const bin = execFileSync("xcrun", ["swift", "build", ...flags, "--show-bin-path"], { encoding: "utf8" }).trim();
   const target = join(root, ".build", "security-key-bundle");
