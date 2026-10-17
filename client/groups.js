@@ -204,6 +204,9 @@ function renderGroups(groups) {
     details.append(title, metadata);
     const button = document.createElement("button");
     button.className = "subtle";
+    // Refresh can rebuild this list before the selected group's events arrive.
+    // Keep the replacement controls inside the same operation lock.
+    button.disabled = state.busy;
     button.textContent = state.selectedGroupID === group.groupID ? "Open" : "Select";
     button.addEventListener("click", () => {
       selectGroup(group.groupID);

@@ -1425,7 +1425,9 @@ function stopMessagePump() {
 async function backgroundMessageResume(resumeOutbound) {
   if (!state.persona || !state.messaging || !selectedRelationship() || state.messageBusy) return;
   try {
-    if (resumeOutbound) await resumeAllMessagingOutboxes();
+    // The runtime owns durable intent status and ordering. Revisit its
+    // outboxes on every poll so a transient failure can recover while open.
+    await resumeAllMessagingOutboxes();
     if (resumeOutbound || Date.now() - state.lastMaintenanceAt >= 5 * 60 * 1_000) {
       await maintainAllBrowserRelationships();
     }
