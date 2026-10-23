@@ -169,8 +169,8 @@ test("browser shell exposes route state and durable encrypted attachment control
   assert.match(html, /id="attachmentFile"[^>]*disabled/);
   assert.match(html, /Attachments are encrypted before upload; plaintext is never stored/);
   assert.match(html, /Maximum 3 MiB/);
-  assert.match(script, /state\.messaging\.sendAttachment/);
-  assert.match(script, /state\.messaging\.downloadAttachment/);
+  assert.match(script, /session\.messaging\.sendAttachment/);
+  assert.match(script, /session\.messaging\.downloadAttachment/);
   assert.match(script, /__noctweaveDesktopExportAttachment/);
   assert.match(script, /browserMessagingAttachmentMaximumBytes/);
   assert.match(script, /elements\.attachmentFile\.disabled = !availability\?\.canSend/);

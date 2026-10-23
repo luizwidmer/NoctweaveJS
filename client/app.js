@@ -1422,17 +1422,39 @@ function stopMessagePump() {
   state.messagePumpTimer = null;
 }
 
+function messageOperationSession(relationship = null) {
+  const messaging = state.messaging;
+  const repository = state.repository;
+  const sameSession = () => state.messaging === messaging && state.repository === repository;
+  return {
+    messaging,
+    isCurrent: () => sameSession() && Boolean(state.persona) &&
+      !elements.app.hidden &&
+      (relationship === null || state.selectedRelationshipID === relationship.relationshipID),
+    finish: () => {
+      if (sameSession()) {
+        state.messageBusy = false;
+        renderSelectedMessages();
+      }
+    }
+  };
+}
+
 async function backgroundMessageResume(resumeOutbound) {
   if (!state.persona || !state.messaging || !selectedRelationship() || state.messageBusy) return;
+  const session = messageOperationSession(selectedRelationship());
   try {
     // The runtime owns durable intent status and ordering. Revisit its
     // outboxes on every poll so a transient failure can recover while open.
     await resumeAllMessagingOutboxes();
+    if (!session.isCurrent()) return;
     if (resumeOutbound || Date.now() - state.lastMaintenanceAt >= 5 * 60 * 1_000) {
       await maintainAllBrowserRelationships();
+      if (!session.isCurrent()) return;
     }
     await refreshSelectedMessages({ synchronize: true });
   } catch (error) {
+    if (!session.isCurrent()) return;
     state.messageSyncStatus = `Messaging paused: ${displayError(error)}`;
     renderSelectedMessages();
   }
@@ -1440,10 +1462,13 @@ async function backgroundMessageResume(resumeOutbound) {
 
 async function foregroundMessagingMaintenance() {
   if (!state.persona || !state.messaging || state.messageBusy) return;
+  const session = messageOperationSession(selectedRelationship());
   try {
     await maintainAllBrowserRelationships();
+    if (!session.isCurrent()) return;
     await refreshSelectedMessages({ synchronize: true });
   } catch (error) {
+    if (!session.isCurrent()) return;
     state.messageSyncStatus = `Foreground maintenance paused: ${displayError(error)}`;
     renderSelectedMessages();
   }
@@ -1451,19 +1476,23 @@ async function foregroundMessagingMaintenance() {
 
 async function maintainAllBrowserRelationships() {
   if (state.messageBusy) return;
+  const session = messageOperationSession();
+  const relationships = [...state.persona.relationships];
   state.messageBusy = true;
   renderSelectedMessages();
   const reports = [];
   try {
-    for (const relationship of state.persona.relationships) {
+    for (const relationship of relationships) {
+      if (!session.isCurrent()) return;
       try {
-        reports.push(await state.messaging.maintainRelationship(relationship, {
-          persistAppliedRelationship: persistRuntimeRelationship
+        reports.push(await session.messaging.maintainRelationship(relationship, {
+          persistAppliedRelationship: persistRuntimeRelationshipForSession()
         }));
       } catch (error) {
         reports.push({ prekey: "failed", routes: "failed", routeBlocker: displayError(error) });
       }
     }
+    if (!session.isCurrent()) return;
     state.lastMaintenanceAt = Date.now();
     const pending = reports.filter(({ prekey, routeBlocker }) =>
       prekey === "publicationPending" || prekey === "failed" || routeBlocker !== null);
@@ -1471,43 +1500,50 @@ async function maintainAllBrowserRelationships() {
       state.messageSyncStatus = `${pending.length} relationship maintenance operation${pending.length === 1 ? "" : "s"} need attention.`;
     }
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function resumeAllMessagingOutboxes() {
+  const session = messageOperationSession();
+  const relationships = [...state.persona.relationships];
   state.messageBusy = true;
   renderSelectedMessages();
   const failures = [];
   try {
-    const teardowns = await state.messaging.resumeRouteTeardowns({
-      relationships: state.persona.relationships
+    const teardowns = await session.messaging.resumeRouteTeardowns({
+      relationships
     });
+    if (!session.isCurrent()) return;
     failures.push(...teardowns.failures);
-    for (const relationship of state.persona.relationships) {
+    for (const relationship of relationships) {
+      if (!session.isCurrent()) return;
       try {
-        let snapshot = await state.messaging.open(relationship, {
-          persistAppliedRelationship: persistRuntimeRelationship
+        let snapshot = await session.messaging.open(relationship, {
+          persistAppliedRelationship: persistRuntimeRelationshipForSession()
         });
+        if (!session.isCurrent()) return;
         if (snapshot.availability.consent !== "blocked" &&
             snapshot.availability.routeTeardownState === null) {
-          snapshot = (await state.messaging.resumeOutbound(relationship)).snapshot;
+          snapshot = (await session.messaging.resumeOutbound(relationship)).snapshot;
+          if (!session.isCurrent()) return;
         }
         if (relationship.relationshipID === state.selectedRelationshipID) {
+          const safetyNumber = await session.messaging.safetyNumber(relationship);
+          if (!session.isCurrent()) return;
           state.messageSnapshot = snapshot;
-          state.safetyNumber = (await state.messaging.safetyNumber(relationship)).display;
+          state.safetyNumber = safetyNumber.display;
         }
       } catch (error) {
         failures.push(displayError(error));
       }
     }
+    if (!session.isCurrent()) return;
     state.messageSyncStatus = failures.length === 0
       ? "Encrypted outboxes reopened and resumed after unlock."
       : `${failures.length} durable maintenance operation${failures.length === 1 ? "" : "s"} remain retryable.`;
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
@@ -1520,22 +1556,36 @@ async function refreshSelectedMessages({ resumeOutbound = false, synchronize = f
     renderSelectedMessages();
     return;
   }
+  const messaging = state.messaging;
+  const repository = state.repository;
+  const isCurrent = () => state.messaging === messaging && state.repository === repository &&
+    state.selectedRelationshipID === relationship.relationshipID &&
+    Boolean(state.persona) && !elements.app.hidden;
+  const persistAppliedRelationship = (update) => {
+    if (!isCurrent()) throw new Error("The messaging session changed during synchronization.");
+    return persistRuntimeRelationship(update, messaging, repository);
+  };
   if (state.messageBusy) return;
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    let snapshot = await state.messaging.open(relationship, {
-      persistAppliedRelationship: persistRuntimeRelationship
+    let snapshot = await messaging.open(relationship, {
+      persistAppliedRelationship
     });
-    state.safetyNumber = (await state.messaging.safetyNumber(relationship)).display;
+    if (!isCurrent()) return;
+    const safetyNumber = await messaging.safetyNumber(relationship);
+    if (!isCurrent()) return;
+    state.safetyNumber = safetyNumber.display;
     if (resumeOutbound && snapshot.availability.consent !== "blocked") {
-      const resumed = await state.messaging.resumeOutbound(relationship);
+      const resumed = await messaging.resumeOutbound(relationship);
+      if (!isCurrent()) return;
       snapshot = resumed.snapshot;
     }
     if (synchronize && snapshot.availability.canReceive) {
-      const synchronized = await state.messaging.syncReceiveRoutes(requireSelectedRelationship(), {
-        persistAppliedRelationship: persistRuntimeRelationship
+      const synchronized = await messaging.syncReceiveRoutes(relationship, {
+        persistAppliedRelationship
       });
+      if (!isCurrent()) return;
       snapshot = synchronized.snapshot;
       const failures = synchronized.outcomes.filter(({ status }) =>
         status === "failed" || status === "continuityGap" || status === "expired");
@@ -1554,22 +1604,26 @@ async function refreshSelectedMessages({ resumeOutbound = false, synchronize = f
     }
     state.messageSnapshot = snapshot;
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    if (state.messaging === messaging && state.repository === repository) {
+      state.messageBusy = false;
+      renderSelectedMessages();
+    }
   }
 }
 
 async function sendMessage() {
   requireUnlocked();
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    const sent = await state.messaging.sendText({
+    const sent = await session.messaging.sendText({
       relationship,
       text: elements.messageText.value
     });
+    if (!session.isCurrent()) return;
     state.messageSnapshot = sent.snapshot;
     elements.messageText.value = "";
     const accepted = sent.intent.status === "relayAccepted" ||
@@ -1578,26 +1632,26 @@ async function sendMessage() {
       ? "Message is encrypted, durably stored, and accepted by a peer route relay."
       : "Message is encrypted in the local outbox; relay retry is pending.";
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function resumeSelectedOutbox() {
   requireUnlocked();
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    const resumed = await state.messaging.resumeOutbound(relationship);
+    const resumed = await session.messaging.resumeOutbound(relationship);
+    if (!session.isCurrent()) return;
     state.messageSnapshot = resumed.snapshot;
     state.messageSyncStatus = resumed.resumed.completed > 0
       ? `${resumed.resumed.completed} pending message${resumed.resumed.completed === 1 ? "" : "s"} reached relay acceptance.`
       : "No pending message reached relay acceptance. Review the route and failure state below.";
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
@@ -1607,58 +1661,64 @@ async function syncSelectedMessages() {
 
 async function retrySelectedRouteTeardown() {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    const teardown = await state.messaging.resumeRouteTeardowns({
+    const teardown = await session.messaging.resumeRouteTeardowns({
       relationship,
       relationshipID: relationship.relationshipID
     });
-    state.messageSnapshot = await state.messaging.snapshot(relationship);
+    if (!session.isCurrent()) return;
+    const snapshot = await session.messaging.snapshot(relationship);
+    if (!session.isCurrent()) return;
+    state.messageSnapshot = snapshot;
     state.messageSyncStatus = teardown.complete
       ? "All local receive routes are now torn down. Fresh pairing is required."
       : `${teardown.failures.length} route teardown${teardown.failures.length === 1 ? "" : "s"} remain retryable.`;
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function discardOutbound(clientTransactionId) {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    const discarded = await state.messaging.discard(relationship, clientTransactionId);
+    const discarded = await session.messaging.discard(relationship, clientTransactionId);
+    if (!session.isCurrent()) return;
     state.messageSnapshot = discarded.snapshot;
     state.messageSyncStatus = "Unaccepted local outbox entry discarded.";
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function markMessageRead(eventID) {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   try {
-    const marked = await state.messaging.markRead(relationship, eventID);
+    const marked = await session.messaging.markRead(relationship, eventID);
+    if (!session.isCurrent()) return;
     state.messageSnapshot = marked.snapshot;
     state.messageSyncStatus = marked.resumed.completed > 0
       ? "Relationship-scoped read receipt reached relay acceptance."
       : "Read receipt is durable locally and awaits relay retry.";
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function updateSelectedConsent() {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   const consent = elements.relationshipConsent.value;
   if (!new Set(["accepted", "pendingRequest", "blocked"]).has(consent)) {
@@ -1671,25 +1731,29 @@ async function updateSelectedConsent() {
   renderSelectedMessages();
   try {
     await persistRelationshipPolicy(relationship, { ...relationship.localPolicy, consent });
+    if (!session.isCurrent()) return;
     if (consent === "blocked") {
-      const teardown = await state.messaging.teardownRelationshipRoutes(
-        requireSelectedRelationship(),
+      const teardown = await session.messaging.teardownRelationshipRoutes(
+        relationship,
         "blocked"
       );
+      if (!session.isCurrent()) return;
       state.messageSyncStatus = teardown.complete
         ? "Blocked locally and all live receive routes were torn down. Fresh pairing is required."
         : "Blocked locally. Route teardown remains encrypted, retryable, and pending.";
     }
-    state.messageSnapshot = await state.messaging.snapshot(requireSelectedRelationship());
+    const snapshot = await session.messaging.snapshot(relationship);
+    if (!session.isCurrent()) return;
+    state.messageSnapshot = snapshot;
     if (consent !== "blocked") state.messageSyncStatus = state.messageSnapshot.availability.message;
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function toggleSelectedRelationshipMute() {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
@@ -1697,16 +1761,19 @@ async function toggleSelectedRelationshipMute() {
     const muted = state.messageSnapshot?.availability.muted ?? false;
     const mutedUntil = muted ? null : swiftISODate(new Date(Date.now() + 8 * 60 * 60 * 1_000));
     await persistRelationshipPolicy(relationship, { ...relationship.localPolicy, mutedUntil });
-    state.messageSnapshot = await state.messaging.snapshot(requireSelectedRelationship());
+    if (!session.isCurrent()) return;
+    const snapshot = await session.messaging.snapshot(relationship);
+    if (!session.isCurrent()) return;
+    state.messageSnapshot = snapshot;
     state.messageSyncStatus = state.messageSnapshot.availability.message;
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function updateReceiptPreferences() {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
@@ -1716,28 +1783,43 @@ async function updateReceiptPreferences() {
       deliveryReceiptsEnabled: elements.deliveryReceiptsEnabled.checked,
       readReceiptsEnabled: elements.readReceiptsEnabled.checked
     });
-    state.messageSnapshot = await state.messaging.snapshot(requireSelectedRelationship());
+    if (!session.isCurrent()) return;
+    const snapshot = await session.messaging.snapshot(relationship);
+    if (!session.isCurrent()) return;
+    state.messageSnapshot = snapshot;
     state.messageSyncStatus = "Relationship-scoped receipt preferences saved only in this encrypted vault.";
   } finally {
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
 async function persistRelationshipPolicy(relationship, policy) {
   return state.messaging.updateRelationshipLocalPolicy(relationship, policy, {
-    persistAppliedRelationship: persistRuntimeRelationship
+    persistAppliedRelationship: persistRuntimeRelationshipForSession()
   });
 }
 
-async function persistRuntimeRelationship({ relationship }) {
+function persistRuntimeRelationshipForSession() {
+  const messaging = state.messaging;
+  const repository = state.repository;
+  return (update) => persistRuntimeRelationship(update, messaging, repository);
+}
+
+async function persistRuntimeRelationship({ relationship }, messaging, repository) {
+  if (!messaging || !repository || state.messaging !== messaging ||
+      state.repository !== repository || !state.persona) {
+    throw new Error("The messaging session changed before relationship state could be saved.");
+  }
   const persona = structuredClone(validateBrowserPersonaState(state.persona));
   const index = persona.relationships.findIndex(({ relationshipID }) =>
     relationshipID === relationship.relationshipID);
   if (index < 0) throw new Error("Durable relationship state is not part of this local persona.");
   persona.relationships[index] = relationship;
   const validated = validateBrowserPersonaState(persona);
-  await state.repository.save(validated);
+  await repository.save(validated);
+  if (state.messaging !== messaging || state.repository !== repository || !state.persona) {
+    throw new Error("The messaging session changed while relationship state was saved.");
+  }
   state.persona = validated;
 }
 
@@ -1782,6 +1864,7 @@ async function completeLocalBurn({ persona, messaging }) {
 async function sendSelectedAttachment() {
   requireUnlocked();
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   const file = elements.attachmentFile.files?.[0];
   if (!file) return;
   if (state.messageBusy) throw new Error("Messaging is already working.");
@@ -1797,11 +1880,13 @@ async function sendSelectedAttachment() {
   let bytes;
   try {
     bytes = new Uint8Array(await file.arrayBuffer());
-    const sent = await state.messaging.sendAttachment({
+    if (!session.isCurrent()) return;
+    const sent = await session.messaging.sendAttachment({
       relationship,
       bytes,
       mimeType: canonicalAttachmentMIME(file.type)
     });
+    if (!session.isCurrent()) return;
     state.messageSnapshot = sent.snapshot;
     const accepted = sent.intent.status === "relayAccepted" ||
       sent.resumed.intents.some(({ id, status }) =>
@@ -1811,23 +1896,26 @@ async function sendSelectedAttachment() {
       : "Attachment is encrypted in the local outbox; relay retry is pending.";
   } finally {
     bytes?.fill(0);
-    elements.attachmentFile.value = "";
-    state.messageBusy = false;
-    renderSelectedMessages();
+    if (session.isCurrent()) elements.attachmentFile.value = "";
+    session.finish();
   }
 }
 
 async function downloadReceivedAttachment(eventID) {
   const relationship = requireSelectedRelationship();
+  const session = messageOperationSession(relationship);
   if (state.messageBusy) throw new Error("Messaging is already working.");
   state.messageBusy = true;
   renderSelectedMessages();
   let bytes;
   let objectURL;
   try {
-    const result = await state.messaging.downloadAttachment({ relationship, eventID });
-    state.messageSnapshot = result.snapshot;
+    const result = await session.messaging.downloadAttachment({ relationship, eventID });
     bytes = result.downloaded.bytes;
+    // A delayed relay fetch can finish after the profile has locked or reopened.
+    // Never hand its plaintext to the host once that messaging session is gone.
+    if (!session.isCurrent() || document.hidden) return;
+    state.messageSnapshot = result.snapshot;
     const descriptor = result.downloaded.descriptor;
     const desktopExport = globalThis.__noctweaveDesktopExportAttachment;
     if (typeof desktopExport === "function") {
@@ -1836,6 +1924,7 @@ async function downloadReceivedAttachment(eventID) {
         mimeType: descriptor.mimeType,
         sha256: descriptor.sha256
       });
+      if (!session.isCurrent() || document.hidden) return;
       state.messageSyncStatus = exported.saved
         ? `Attachment verified and saved as ${exported.fileName} (${exported.byteCount} bytes).`
         : `Attachment verified (${exported.byteCount} bytes); save canceled.`;
@@ -1851,8 +1940,7 @@ async function downloadReceivedAttachment(eventID) {
   } finally {
     if (objectURL) setTimeout(() => URL.revokeObjectURL(objectURL), 30_000);
     bytes?.fill(0);
-    state.messageBusy = false;
-    renderSelectedMessages();
+    session.finish();
   }
 }
 
@@ -2137,12 +2225,15 @@ async function run(operation) {
 }
 
 async function runMessaging(operation) {
+  const messaging = state.messaging;
   elements.status.textContent = "Working";
   elements.error.textContent = "";
   try {
     await operation();
+    if (state.messaging !== messaging) return;
     elements.status.textContent = "Ready";
   } catch (error) {
+    if (state.messaging !== messaging) return;
     elements.status.textContent = "Error";
     const message = displayError(error);
     elements.error.textContent = message;

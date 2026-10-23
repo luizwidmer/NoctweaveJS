@@ -32,6 +32,7 @@ async function clientHarness() {
     },
     initializeAppearanceControl() {},
     browserMessagingAttachmentStatus: "Dummy attachment policy",
+    browserMessagingAttachmentMaximumBytes: 16 * 1024 * 1024,
     setInterval(callback, milliseconds) {
       const id = timers.size + 1;
       timers.set(id, { callback, milliseconds });
@@ -41,8 +42,10 @@ async function clientHarness() {
   });
   vm.runInContext(source.replace(/^import\b[\s\S]*?;\n/gmu, "")
     .replace(/^boot\(\);$/mu, "") +
-    "\nglobalThis.harness = { state, startMessagePump, stopMessagePump };", context);
-  const { state, startMessagePump, stopMessagePump } = context.harness;
+    "\nglobalThis.harness = { state, startMessagePump, stopMessagePump, lockProfile, resumeAllMessagingOutboxes, updateReceiptPreferences, updateSelectedConsent, sendSelectedAttachment };", context);
+  const { state, startMessagePump, stopMessagePump, lockProfile,
+    resumeAllMessagingOutboxes, updateReceiptPreferences,
+    updateSelectedConsent, sendSelectedAttachment } = context.harness;
   const relationship = {
     relationshipID: "dummy-relationship",
     peerIdentity: { relationshipPseudonym: "Dummy peer" },
@@ -69,6 +72,7 @@ async function clientHarness() {
   };
   Object.assign(state, {
     persona: { relationships: [relationship] }, repository: {}, messaging,
+    vault: { lock() {} },
     selectedRelationshipID: relationship.relationshipID
   });
   async function settle() {
@@ -76,7 +80,19 @@ async function clientHarness() {
     for (let i = 0; i < 100; i++) await Promise.resolve();
     assert.equal(state.messageBusy, false);
   }
-  return { state, calls, timers, startMessagePump, stopMessagePump, settle,
+  return { state, calls, timers, messaging, relationship, elements,
+    document: context.document,
+    startMessagePump, stopMessagePump, lockProfile,
+    resumeAllMessagingOutboxes, updateReceiptPreferences,
+    updateSelectedConsent, sendSelectedAttachment, settle,
+    lockSession() {
+      state.repository = null;
+      state.messaging = null;
+      state.persona = null;
+      state.messageSnapshot = null;
+      state.messageBusy = false;
+      elements.get("#appShell").hidden = true;
+    },
     advance(milliseconds) { now += milliseconds; } };
 }
 
@@ -117,4 +133,105 @@ test("the periodic message pump leaves busy or locked sessions alone", async () 
   await timer.callback();
   assert.equal(app.calls.retries, 1);
   assert.equal(app.calls.syncs, 1);
+});
+
+test("an unlocked background tab continues encrypted outbox and route maintenance", async () => {
+  const app = await clientHarness();
+  app.document.hidden = true;
+  app.startMessagePump();
+  await app.settle();
+  assert.equal(app.calls.retries, 1);
+  assert.equal(app.calls.maintenance, 1);
+  assert.equal(app.calls.syncs, 1);
+});
+
+test("an old outbox resume cannot install its snapshot in a reopened conversation", async () => {
+  const app = await clientHarness();
+  let resolveTeardowns;
+  app.messaging.resumeRouteTeardowns = () => new Promise((resolve) => {
+    resolveTeardowns = resolve;
+  });
+  const pending = app.resumeAllMessagingOutboxes();
+  app.lockSession();
+  const nextRelationship = { ...app.relationship, relationshipID: "next-conversation" };
+  app.state.persona = { relationships: [nextRelationship] };
+  app.state.repository = {};
+  app.state.messaging = {};
+  app.state.selectedRelationshipID = nextRelationship.relationshipID;
+  app.state.messageBusy = true;
+  app.elements.get("#appShell").hidden = false;
+  resolveTeardowns({ failures: [] });
+  await pending;
+  assert.equal(app.state.messageSnapshot, null);
+  assert.equal(app.state.messageBusy, true);
+  assert.equal(app.calls.retries, 0);
+});
+
+test("an old receipt update cannot snapshot the newly selected conversation", async () => {
+  const app = await clientHarness();
+  let resolvePolicy;
+  app.messaging.updateRelationshipLocalPolicy = () => new Promise((resolve) => {
+    resolvePolicy = resolve;
+  });
+  const pending = app.updateReceiptPreferences();
+  app.lockSession();
+  const nextRelationship = { ...app.relationship, relationshipID: "next-conversation" };
+  let newSnapshotCalls = 0;
+  app.state.persona = { relationships: [nextRelationship] };
+  app.state.repository = {};
+  app.state.messaging = { snapshot() { newSnapshotCalls++; } };
+  app.state.selectedRelationshipID = nextRelationship.relationshipID;
+  app.state.messageBusy = true;
+  app.elements.get("#appShell").hidden = false;
+  resolvePolicy();
+  await pending;
+  assert.equal(newSnapshotCalls, 0);
+  assert.equal(app.state.messageSnapshot, null);
+  assert.equal(app.state.messageBusy, true);
+});
+
+test("a delayed file read cannot send an old attachment through a reopened session", async () => {
+  const app = await clientHarness();
+  let resolveFileRead;
+  app.elements.get("#attachmentFile").files = [{
+    size: 3, type: "application/octet-stream",
+    arrayBuffer: () => new Promise((resolve) => { resolveFileRead = resolve; })
+  }];
+  const pending = app.sendSelectedAttachment();
+  app.lockSession();
+  const nextRelationship = { ...app.relationship, relationshipID: "next-conversation" };
+  let newSendCalls = 0;
+  app.state.persona = { relationships: [nextRelationship] };
+  app.state.repository = {};
+  app.state.messaging = { sendAttachment() { newSendCalls++; } };
+  app.state.selectedRelationshipID = nextRelationship.relationshipID;
+  app.state.messageBusy = true;
+  app.elements.get("#appShell").hidden = false;
+  resolveFileRead(new Uint8Array([65, 66, 67]).buffer);
+  await pending;
+  assert.equal(newSendCalls, 0);
+  assert.equal(app.state.messageBusy, true);
+});
+
+test("an old block action cannot tear down newly selected relationship routes", async () => {
+  const app = await clientHarness();
+  let resolvePolicy;
+  app.messaging.updateRelationshipLocalPolicy = () => new Promise((resolve) => {
+    resolvePolicy = resolve;
+  });
+  app.elements.get("#relationshipConsent").value = "blocked";
+  const pending = app.updateSelectedConsent();
+  app.lockSession();
+  const nextRelationship = { ...app.relationship, relationshipID: "next-conversation" };
+  let newTeardownCalls = 0;
+  app.state.persona = { relationships: [nextRelationship] };
+  app.state.repository = {};
+  app.state.messaging = { teardownRelationshipRoutes() { newTeardownCalls++; } };
+  app.state.selectedRelationshipID = nextRelationship.relationshipID;
+  app.state.messageBusy = true;
+  app.elements.get("#appShell").hidden = false;
+  resolvePolicy();
+  await pending;
+  assert.equal(newTeardownCalls, 0);
+  assert.equal(app.state.messageBusy, true);
 });

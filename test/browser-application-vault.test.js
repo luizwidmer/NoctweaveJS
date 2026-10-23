@@ -125,6 +125,45 @@ test("fixed application vault slot authenticates scope, burn, and fresh reinitia
   assert.equal(host.anchor.generation, generationAfterBurn + 1);
 });
 
+test("a locked in-flight save commits before reopening and cannot overwrite a later save", async () => {
+  const host = new AtomicApplicationSlotHost();
+  const vault = applicationVault(host);
+  await vault.initialize({ passphrase, persona: { revision: 1 } });
+
+  let releaseCommit;
+  let signalCommitStarted;
+  const delayedCommit = new Promise((resolve) => { releaseCommit = resolve; });
+  const commitStarted = new Promise((resolve) => { signalCommitStarted = resolve; });
+  const originalCommitSlot = vault.commitSlot.bind(vault);
+  let delayNextCommit = true;
+  vault.commitSlot = async (record) => {
+    if (delayNextCommit) {
+      delayNextCommit = false;
+      signalCommitStarted();
+      await delayedCommit;
+    }
+    return originalCommitSlot(record);
+  };
+
+  const olderSave = vault.save({ revision: 2 });
+  await commitStarted;
+  vault.lock();
+  let reopened = false;
+  const reopening = vault.unlock({ passphrase }).then((result) => {
+    reopened = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(reopened, false, "unlock must wait behind the pending save");
+  releaseCommit();
+  await olderSave;
+  assert.deepEqual((await reopening).persona, { revision: 2 });
+
+  await vault.save({ revision: 3 });
+  const finalVault = applicationVault(host);
+  assert.deepEqual((await finalVault.unlock({ passphrase })).persona, { revision: 3 });
+});
+
 test("application vault rejects ciphertext rollback and scope substitution", async () => {
   const host = new AtomicApplicationSlotHost();
   const vault = applicationVault(host);
