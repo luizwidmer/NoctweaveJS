@@ -36,7 +36,7 @@ labels.
 
 ## Quick start
 
-Requires Node.js 20+ and Bun 1.3+. Run the browser client from a source checkout:
+Requires Node.js 20+ and Bun 1.4.4+. Run the browser client from a source checkout:
 
 ```sh
 git clone https://github.com/luizwidmer/NoctweaveJS.git
@@ -148,9 +148,16 @@ npm run desktop:test
 npm run typecheck:desktop
 ```
 
-The desktop host pins Electrobun 2.0.2 and retains its Bun main process.
-`desktop:prepare` verifies the paired build tools and projects the SDK into the
-ignored `.hutch/devkit` directory. TypeScript 7 clears the SDK's inherited
+The desktop host pins Electrobun 2.0.5 and retains its Bun main process. Its
+paired desktop toolchain includes Bun 1.4.4; CI also uses Bun 1.4.4.
+Desktop prepare, build, dev, and watch commands reject a host Bun older than
+1.4.4 before starting Electrobun; `engines.bun` alone does not enforce this.
+`desktop:prepare` verifies the paired build tools in an owner-only
+`.local/hutch-store` on macOS and Linux, or `%LOCALAPPDATA%/NoctweaveJS/hutch-store`
+on Windows, and projects the SDK into the ignored `.hutch/devkit` directory.
+On Unix, a cache path accessible to other users or replaced by a symlink fails
+before the toolchain starts. Windows uses the current user's LocalAppData ACL;
+keep that profile directory private. TypeScript 7 clears the SDK's inherited
 legacy `baseUrl` while retaining its SDK aliases. Run `npm run desktop:build`
 for checked stable archives and installers. With those tools already prepared,
 `DASH_RELEASE_OFFLINE=1 npm run desktop:build` requires cached tools. Artifact

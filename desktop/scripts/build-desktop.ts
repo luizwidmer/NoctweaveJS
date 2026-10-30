@@ -4,7 +4,10 @@ import type { ElectrobunConfig } from "electrobun";
 import config from "../../electrobun.config";
 import hutchConfig from "../../hutch.config";
 import { runCheckedBuild, verifyReleaseArchive } from "./checked-build";
+import { privateHutchEnvironment } from "./private-hutch-home";
+import { requirePatchedBun } from "./require-patched-bun";
 
+requirePatchedBun();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const settings: ElectrobunConfig = config;
 const platform = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "win" : process.platform;
@@ -25,6 +28,7 @@ const payloadResources = posix.join(payloadBundle, ...(platform === "macos" ? ["
 runCheckedBuild({
   command: [process.execPath, join(root, "node_modules", "electrobun", "bin", "electrobun.cjs"), "build", "--env=stable"],
   cwd: root,
+  env: privateHutchEnvironment(root),
   outputs: [
     { path: archive, fresh: true }, { path: update, fresh: true }, { path: metadata },
     ...(platform === "macos" ? [{ path: join(root, settings.build?.artifactFolder ?? "artifacts", `macos-${process.arch}-${artifactName}.dmg`), fresh: true }] : []),
@@ -45,6 +49,7 @@ runCheckedBuild({
       version: settings.app.version, identifier: settings.app.identifier,
       platform, arch: process.arch, name: settings.app.name,
       electrobunVersion: hutchConfig.electrobun.version,
+      bunVersion: "1.4.4",
       mainProcess: settings.build?.mainProcess ?? "cottontail",
     },
   }),

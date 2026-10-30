@@ -28,6 +28,8 @@ test("desktop relay proxy forwards bounded HTTPS relay requests", async () => {
   assert.equal(observed.url, "https://relay.example/relay");
   assert.equal(observed.init.method, "POST");
   assert.equal(observed.init.redirect, "error");
+  assert.equal(observed.init.headers["accept-encoding"], "identity");
+  assert.equal(observed.init.decompress, false);
   assert.equal(observed.init.body, body);
   assert.deepEqual(response, {
     status: 200,

@@ -20,8 +20,8 @@ function fingerprint(path: string): string | undefined {
 
 // Keep signal and missing-tool failures explicit, including through Electrobun
 // 2's installed npm bootstrap. Do not invoke an on-demand package installer.
-export function runCachedTool(command: string[], cwd: string): void {
-  const result = spawnSync(command[0]!, command.slice(1), { cwd, stdio: "inherit" });
+export function runCachedTool(command: string[], cwd: string, env = process.env): void {
+  const result = spawnSync(command[0]!, command.slice(1), { cwd, env, stdio: "inherit" });
   if (result.error) throw new Error(`Cannot start the cached build tool: ${result.error.message}`);
   if (result.signal) throw new Error(`Tool terminated by ${result.signal}.`);
   if (result.status !== 0) throw new Error(`Build tool exited with status ${result.status ?? "unknown"}.`);
@@ -30,12 +30,13 @@ export function runCachedTool(command: string[], cwd: string): void {
 export function runCheckedBuild(options: {
   command: string[];
   cwd: string;
+  env?: NodeJS.ProcessEnv;
   outputs: BuildOutput[];
   verify?: () => void;
 }): void {
   const before = new Map(options.outputs.filter(output => output.fresh)
     .map(output => [output.path, fingerprint(output.path)]));
-  runCachedTool(options.command, options.cwd);
+  runCachedTool(options.command, options.cwd, options.env);
 
   for (const output of options.outputs) {
     const after = fingerprint(output.path);
@@ -84,7 +85,7 @@ export function verifyReleaseArchive(options: {
   requiredEntries: string[];
   expected: {
     version: string; identifier: string; platform: string; arch: string;
-    name: string; electrobunVersion: string; mainProcess: string;
+    name: string; electrobunVersion: string; bunVersion: string; mainProcess: string;
   };
 }): void {
   const entries = execFileSync("tar", ["-tf", options.archive], {
@@ -111,6 +112,7 @@ export function verifyReleaseArchive(options: {
       || wrapper.identifier !== options.expected.identifier || wrapper.channel !== "stable"
       || wrapper.name !== options.expected.name || wrapper.hash !== update.hash
       || build.electrobunVersion !== options.expected.electrobunVersion
+      || build.runtimeVersions?.bun !== options.expected.bunVersion
       || build.mainProcess !== options.expected.mainProcess || build.buildEnvironment !== "stable") {
     throw new Error("Release archive, wrapper or runtime metadata does not match the requested build.");
   }
