@@ -352,15 +352,6 @@ small { color: var(--muted); }
   scrollbar-width: thin;
 }
 
-.nativeSectionLabel {
-  margin: 20px 10px 8px;
-  color: var(--muted);
-  font-size: .66rem;
-  font-weight: 820;
-  letter-spacing: .13em;
-  text-transform: uppercase;
-}
-
 .nativeNavItem {
   width: 100%;
   min-height: 40px;
@@ -386,8 +377,26 @@ small { color: var(--muted); }
 }
 
 .nativeChatList { gap: 5px; margin: 0; padding: 0 2px; font-size: .82rem; }
+.chatPicker { display: grid; gap: 8px; margin-top: 14px; }
+.chatPicker input { width: 100%; min-width: 0; }
+.chatPicker .fieldHint { padding-inline: 8px; }
+#chooseChat { display: none; }
+.chatChooser {
+  width: min(420px, calc(100% - 28px));
+  max-height: min(540px, 80dvh);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  overflow: auto;
+}
+.chatChooser::backdrop { background: rgba(0, 0, 0, .55); }
+.chatChooserHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chatChooserHeading h2 { margin: 0; font-size: 1.12rem; }
 .nativeChatList .relationshipChoice {
   min-height: 50px;
+  justify-content: stretch;
   padding: 9px 11px;
   border: 0;
   border-radius: 11px;
@@ -450,6 +459,14 @@ small { color: var(--muted); }
   padding: clamp(20px, 3vw, 34px) clamp(22px, 4vw, 48px) 22px;
 }
 .nativeConversation .messageHeader { align-items: center; }
+.nativeConversation .conversationTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.nativeConversation .conversationTitle > div { min-width: 0; overflow-wrap: anywhere; }
 .nativeConversation .messageHeader h3 { font-size: 1.22rem; }
 .nativeConversation .messageHeader .buttonRow { flex-wrap: nowrap; }
 .nativeConversation .messageHeader button { min-height: 36px; padding-inline: 12px; font-size: .78rem; }
@@ -547,7 +564,8 @@ small { color: var(--muted); }
     border-top: 1px solid var(--border);
     border-right: 0;
   }
-  .nativeBrand, .nativeSectionLabel, .nativeChatList, .nativeSidebarStatus { display: none; }
+  .nativeBrand, #desktopChatPicker, .nativeSidebarStatus { display: none; }
+  #chooseChat { display: inline-flex; }
   .nativeNavigation { display: flex; justify-content: space-between; gap: 4px; overflow-x: auto; }
   .nativeNavItem { min-width: 58px; width: auto; min-height: 48px; flex: 1 0 auto; display: grid; justify-items: center; gap: 2px; padding: 5px 7px; font-size: .62rem; }
   .nativeNavItem > span:first-child { width: auto; font-size: .95rem; }
@@ -560,6 +578,8 @@ small { color: var(--muted); }
   .nativeConversation { padding: 14px; }
   .nativeConversation .messageHeader button, .nativeToolbarActions button, .nativeToolbarActions .buttonLink { min-height: 44px; }
   .nativeConversation .messageHeader { align-items: flex-start; flex-direction: column; }
+  .nativeConversation .conversationTitle { width: 100%; }
+  #chooseChat { flex-shrink: 0; }
   .nativeConversation .messageHeader .buttonRow { width: 100%; justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; }
   .nativeComposer { grid-template-columns: 1fr; }
   .nativeComposer .messageComposerActions { justify-content: flex-end; }

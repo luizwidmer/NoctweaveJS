@@ -23,6 +23,7 @@ const elements = {
   groupEmptyState: $("#groupEmptyState"),
   groupConversationPanel: $("#groupConversationPanel"),
   selectedGroupName: $("#selectedGroupName"),
+  groupMembership: $("#groupMembership"),
   selectedGroupID: $("#selectedGroupID"),
   syncGroup: $("#syncGroup"),
   groupMessages: $("#groupMessages"),
@@ -50,6 +51,8 @@ const state = {
   accessToken: "",
   selectedGroupID: null,
   groups: [],
+  groupListSignature: null,
+  drafts: new Map(),
   busy: false,
   sessionRevision: 0,
   localNames: Object.create(null)
@@ -99,6 +102,7 @@ elements.groupMessage.addEventListener("keydown", (event) => {
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) return;
+  state.drafts.clear();
   // A one-use Welcome cannot be reconstructed after admission commits. Keep
   // that active handoff available until the owner shares it or leaves the page.
   if (!state.busy && !elements.admissionResponse.value) resetCompanionSession();
@@ -189,6 +193,13 @@ async function refreshGroups() {
 
 function renderGroups(groups) {
   state.groups = Array.isArray(groups) ? groups : [];
+  const signature = JSON.stringify([state.selectedGroupID, state.groups]);
+  if (signature === state.groupListSignature) return;
+  state.groupListSignature = signature;
+  const selectedGroup = state.groups.find((group) => group.groupID === state.selectedGroupID);
+  elements.groupMembership.textContent = selectedGroup
+    ? `${selectedGroup.memberCount} member${selectedGroup.memberCount === 1 ? "" : "s"} · epoch ${selectedGroup.epoch}`
+    : "";
   elements.groupList.replaceChildren();
   if (state.groups.length === 0) {
     elements.groupList.textContent = "No groups yet.";
@@ -207,10 +218,12 @@ function renderGroups(groups) {
     // Refresh can rebuild this list before the selected group's events arrive.
     // Keep the replacement controls inside the same operation lock.
     button.disabled = state.busy;
-    button.textContent = state.selectedGroupID === group.groupID ? "Open" : "Select";
+    const selected = state.selectedGroupID === group.groupID;
+    button.textContent = selected ? "Selected" : "Open";
+    button.setAttribute("aria-pressed", String(selected));
     button.addEventListener("click", () => {
       selectGroup(group.groupID);
-      void perform(syncMessages, elements.groupMessageStatus);
+      return perform(syncMessages, elements.groupMessageStatus);
     });
     article.append(details, button);
     elements.groupList.append(article);
@@ -219,20 +232,26 @@ function renderGroups(groups) {
 
 function selectGroup(groupID) {
   const changedGroup = state.selectedGroupID !== groupID;
+  if (changedGroup) {
+    if (state.selectedGroupID && elements.groupMessage.value) {
+      state.drafts.set(state.selectedGroupID, elements.groupMessage.value);
+    }
+    elements.groupMessage.value = state.drafts.get(groupID) ?? "";
+    state.drafts.delete(groupID);
+    elements.groupMessages.replaceChildren();
+    resetAdmissionExchange();
+  }
   state.selectedGroupID = groupID;
-  if (changedGroup) resetAdmissionExchange();
-  const group = state.groups.find((candidate) => candidate.groupID === groupID);
   elements.selectedGroupName.textContent = state.localNames[groupID] ?? `Group ${groupID.slice(0, 8)}`;
   elements.groupEmptyState.hidden = true;
   elements.groupConversationPanel.hidden = false;
   elements.selectedGroupID.textContent = groupID;
   elements.syncGroup.disabled = false;
+  elements.syncGroup.textContent = "Sync now";
   elements.groupMessage.disabled = false;
   elements.sendGroupMessage.disabled = false;
   elements.admissionPanel.hidden = false;
-  elements.groupMessageStatus.textContent = group
-    ? `${group.memberCount} member${group.memberCount === 1 ? "" : "s"} · epoch ${group.epoch}`
-    : "Group selected.";
+  elements.groupMessageStatus.textContent = "Loading group messages…";
   renderGroups(state.groups);
 }
 
@@ -242,8 +261,9 @@ async function syncMessages() {
   renderMessages(events);
   state.groups = await api("/groups");
   renderGroups(state.groups);
-  elements.groupMessageStatus.textContent = `Synchronized ${events.length} durable event${events.length === 1 ? "" : "s"}.`;
-  elements.syncGroup.hidden = true;
+  const status = `Synchronized ${events.length} durable event${events.length === 1 ? "" : "s"}.`;
+  if (elements.groupMessageStatus.textContent !== status) elements.groupMessageStatus.textContent = status;
+  elements.syncGroup.textContent = "Sync now";
 }
 
 async function sendMessage() {
@@ -255,33 +275,42 @@ async function sendMessage() {
     body: { text }
   });
   elements.groupMessage.value = "";
-  renderMessages(result.events ?? []);
+  renderMessages(result.events ?? [], true);
   elements.groupMessageStatus.textContent = result.complete
     ? "Encrypted group message published."
     : `Message retained for retry: ${result.disposition}.`;
 }
 
-function renderMessages(events) {
-  elements.groupMessages.replaceChildren();
+function renderMessages(events, jumpToLatest = false) {
+  const list = elements.groupMessages;
+  const scrollTop = list.scrollTop;
+  const followLatest = jumpToLatest || list.scrollHeight - list.clientHeight - scrollTop < 40;
   if (!Array.isArray(events) || events.length === 0) {
+    if (list.firstElementChild?.className === "groupEmpty") return;
     const empty = document.createElement("div");
     empty.className = "groupEmpty";
     empty.textContent = "No group messages yet.";
-    elements.groupMessages.append(empty);
+    list.replaceChildren(empty);
     return;
   }
-  for (const event of events) {
+  const displayed = Array.from(list.children);
+  const firstNewEvent = displayed.length && displayed.every((bubble, index) =>
+    bubble.dataset.eventID === events[index]?.id && !!bubble.dataset.eventID)
+    ? displayed.length : 0;
+  if (firstNewEvent === 0) list.replaceChildren();
+  for (const event of events.slice(firstNewEvent)) {
     const bubble = document.createElement("article");
     bubble.className = `messageBubble ${event.outgoing ? "outbound" : "inbound"}`;
+    bubble.dataset.eventID = event.id;
     const text = document.createElement("div");
     text.textContent = event.text ?? event.fallbackText ?? `[${event.contentType?.canonicalName ?? "group event"}]`;
     const metadata = document.createElement("span");
     const author = event.outgoing ? "You" : shortHandle(event.authorCredentialHandle);
     metadata.textContent = `${author} · ${new Date(event.createdAt).toLocaleString()}`;
     bubble.append(text, metadata);
-    elements.groupMessages.append(bubble);
+    list.append(bubble);
   }
-  elements.groupMessages.scrollTop = elements.groupMessages.scrollHeight;
+  list.scrollTop = followLatest ? list.scrollHeight : scrollTop;
 }
 
 async function acceptAdmission() {
@@ -460,6 +489,8 @@ function resetCompanionSession() {
   state.accessToken = "";
   state.selectedGroupID = null;
   state.groups = [];
+  state.groupListSignature = null;
+  state.drafts.clear();
   state.localNames = Object.create(null);
   elements.companionStatus.textContent = "Enter the local access token";
   elements.companionAccessPanel.hidden = false;
@@ -476,7 +507,8 @@ function resetCompanionSession() {
   elements.groupName.value = "";
   elements.createRelay.value = "";
   elements.selectedGroupName.textContent = "Selected group";
-  elements.selectedGroupID.textContent = "No group selected";
+  elements.groupMembership.textContent = "";
+  elements.selectedGroupID.textContent = "";
   elements.groupMessage.value = "";
   elements.groupMessageStatus.textContent = "";
   resetAdmissionExchange();
@@ -495,7 +527,7 @@ async function perform(operation, errorTarget = elements.companionStatus) {
     } else {
       errorTarget.textContent = message;
       if (errorTarget === elements.groupMessageStatus && state.selectedGroupID !== null) {
-        elements.syncGroup.hidden = false;
+        elements.syncGroup.textContent = "Retry sync";
       }
     }
   } finally {

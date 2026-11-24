@@ -27,6 +27,7 @@ function attachmentDownloadFixture() {
     persona: { relationships: [] },
     repository: {},
     selectedRelationshipID: "fixture",
+    drafts: new Map(),
     vault: { lock() {} },
     pairingBusy: new Set(),
     messaging: { downloadAttachment: () => delayedDownload },
@@ -63,6 +64,8 @@ ${productionFunction("async function downloadReceivedAttachment(eventID)", "func
 
 test("a delayed attachment cannot export plaintext after profile lock", async () => {
   const fixture = attachmentDownloadFixture();
+  fixture.state.drafts.set("another-relationship", "Unsent text");
+  fixture.elements.chatSearch.value = "Private contact";
   const bytes = new Uint8Array([65, 66, 67]);
   const pending = fixture.downloadReceivedAttachment("fixture-event");
   fixture.lockProfile();
@@ -73,6 +76,8 @@ test("a delayed attachment cannot export plaintext after profile lock", async ()
   await pending;
   assert.equal(fixture.elements.app.hidden, true);
   assert.equal(fixture.elements.gate.hidden, false);
+  assert.equal(fixture.state.drafts.size, 0);
+  assert.equal(fixture.elements.chatSearch.value, "");
   assert.deepEqual(fixture.exported, []);
   assert.deepEqual([...bytes], [0, 0, 0]);
 });

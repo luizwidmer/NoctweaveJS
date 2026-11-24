@@ -42,10 +42,10 @@ async function clientHarness() {
   });
   vm.runInContext(source.replace(/^import\b[\s\S]*?;\n/gmu, "")
     .replace(/^boot\(\);$/mu, "") +
-    "\nglobalThis.harness = { state, startMessagePump, stopMessagePump, lockProfile, resumeAllMessagingOutboxes, updateReceiptPreferences, updateSelectedConsent, sendSelectedAttachment };", context);
+    "\nglobalThis.harness = { state, startMessagePump, stopMessagePump, lockProfile, resumeAllMessagingOutboxes, updateReceiptPreferences, updateSelectedConsent, sendSelectedAttachment, setSelectedRelationship };", context);
   const { state, startMessagePump, stopMessagePump, lockProfile,
     resumeAllMessagingOutboxes, updateReceiptPreferences,
-    updateSelectedConsent, sendSelectedAttachment } = context.harness;
+    updateSelectedConsent, sendSelectedAttachment, setSelectedRelationship } = context.harness;
   const relationship = {
     relationshipID: "dummy-relationship",
     peerIdentity: { relationshipPseudonym: "Dummy peer" },
@@ -84,7 +84,7 @@ async function clientHarness() {
     document: context.document,
     startMessagePump, stopMessagePump, lockProfile,
     resumeAllMessagingOutboxes, updateReceiptPreferences,
-    updateSelectedConsent, sendSelectedAttachment, settle,
+    updateSelectedConsent, sendSelectedAttachment, setSelectedRelationship, settle,
     lockSession() {
       state.repository = null;
       state.messaging = null;
@@ -95,6 +95,22 @@ async function clientHarness() {
     },
     advance(milliseconds) { now += milliseconds; } };
 }
+
+test("a relationship change keeps the unsent text with its original conversation", async () => {
+  const app = await clientHarness();
+  const composer = app.elements.get("#messageText");
+  composer.value = "Unsent text for the original chat";
+  app.state.messageSnapshot = { timeline: ["original chat"] };
+
+  app.setSelectedRelationship("newly-paired-relationship");
+  assert.equal(composer.value, "");
+  assert.equal(app.state.messageSnapshot, null);
+  composer.value = "Unsent text for the new chat";
+
+  app.setSelectedRelationship(app.relationship.relationshipID);
+  assert.equal(composer.value, "Unsent text for the original chat");
+  assert.equal(app.state.drafts.get("newly-paired-relationship"), "Unsent text for the new chat");
+});
 
 test("the periodic message pump retries durable outboxes without waiting for another unlock", async () => {
   const app = await clientHarness();

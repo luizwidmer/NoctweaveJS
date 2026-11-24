@@ -51,6 +51,7 @@ const state = {
   invitation: null,
   invitationPairingID: null,
   selectedRelationshipID: null,
+  drafts: new Map(),
   messageSnapshot: null,
   messageSyncStatus: "Select a relationship to begin.",
   securityProfile: null,
@@ -106,7 +107,11 @@ const elements = {
   personaName: $("#personaName"),
   relationshipCount: $("#relationshipCount"),
   relationshipList: $("#relationshipList"),
-  relationshipSectionLabel: $("#relationshipSectionLabel"),
+  chatPicker: $("#chatPicker"),
+  chatSearch: $("#chatSearch"),
+  chatSearchEmpty: $("#chatSearchEmpty"),
+  chatChooser: $("#chatChooser"),
+  chooseChat: $("#chooseChat"),
   selectedRelationshipName: $("#selectedRelationshipName"),
   selectedRelationshipState: $("#selectedRelationshipState"),
   messageList: $("#messageList"),
@@ -191,6 +196,13 @@ for (const control of clientViewNavigation) {
   ));
 }
 elements.sendMessage.addEventListener("click", () => runMessaging(sendMessage));
+elements.chatSearch.addEventListener("input", renderRelationshipList);
+elements.chooseChat.addEventListener("click", () => {
+  $("#mobileChatPicker").append(elements.chatPicker);
+  elements.chatChooser.showModal();
+  elements.chatSearch.focus();
+});
+elements.chatChooser.addEventListener("close", () => $("#desktopChatPicker").append(elements.chatPicker));
 elements.resumeOutbox.addEventListener("click", () => runMessaging(resumeSelectedOutbox));
 elements.syncMessages.addEventListener("click", () => runMessaging(syncSelectedMessages));
 elements.retryRouteTeardown.addEventListener("click", () => runMessaging(retrySelectedRouteTeardown));
@@ -501,6 +513,7 @@ function lockProfile() {
   state.invitation = null;
   state.invitationPairingID = null;
   state.selectedRelationshipID = null;
+  state.drafts.clear();
   state.messageSnapshot = null;
   state.messageSyncStatus = "Select a relationship to begin.";
   state.safetyNumber = null;
@@ -515,6 +528,11 @@ function lockProfile() {
   elements.invitation.value = "";
   elements.peerInvitation.value = "";
   elements.messageText.value = "";
+  if (elements.chatChooser.open) elements.chatChooser.close();
+  elements.chatSearch.value = "";
+  elements.chatSearchEmpty.hidden = true;
+  elements.chatPicker.hidden = true;
+  elements.chooseChat.hidden = true;
   elements.attachmentFile.value = "";
   for (const input of [elements.displayName, elements.relay, elements.onboardingRelay,
     elements.relationshipPseudonym]) input.value = "";
@@ -1132,8 +1150,12 @@ async function finalizePairing(pairingID, { alreadyBusy = false } = {}) {
     await deleteRendezvousLanes(pending, finalized.rendezvousDeletionRequests);
     await persistPersona(finalized.persona);
     if (state.invitationPairingID === pairingID) clearSharedInvitation();
-    state.selectedRelationshipID = finalized.relationship.relationshipID;
-    await refreshSelectedMessages({ resumeOutbound: true, synchronize: true });
+    if (!state.messageBusy) {
+      setSelectedRelationship(finalized.relationship.relationshipID);
+      state.messageSyncStatus = "Opening encrypted relationship state…";
+      renderPersona();
+      await refreshSelectedMessages({ resumeOutbound: true, synchronize: true });
+    }
     elements.pairingStatus.textContent = "Fresh pairwise relationship stored; the one-use rendezvous lanes were deleted.";
   } finally {
     if (!alreadyBusy) {
@@ -1386,7 +1408,7 @@ async function backgroundResume() {
 function selectInitialRelationship() {
   const relationships = state.persona?.relationships ?? [];
   if (!relationships.some(({ relationshipID }) => relationshipID === state.selectedRelationshipID)) {
-    state.selectedRelationshipID = relationships[0]?.relationshipID ?? null;
+    setSelectedRelationship(relationships[0]?.relationshipID ?? null);
   }
   state.messageSnapshot = null;
 }
@@ -1396,15 +1418,26 @@ function selectedRelationship() {
     relationshipID === state.selectedRelationshipID) ?? null;
 }
 
+function setSelectedRelationship(relationshipID) {
+  if (state.selectedRelationshipID === relationshipID) return;
+  if (state.selectedRelationshipID && elements.messageText.value) {
+    state.drafts.set(state.selectedRelationshipID, elements.messageText.value);
+  }
+  elements.messageText.value = state.drafts.get(relationshipID) ?? "";
+  state.drafts.delete(relationshipID);
+  elements.attachmentFile.value = "";
+  state.selectedRelationshipID = relationshipID;
+  state.messageSnapshot = null;
+  state.safetyNumber = null;
+}
+
 function selectRelationship(relationshipID) {
   if (state.messageBusy) return;
   if (!state.persona.relationships.some((relationship) =>
     relationship.relationshipID === relationshipID)) {
     throw new Error("Pairwise relationship was not found.");
   }
-  state.selectedRelationshipID = relationshipID;
-  state.messageSnapshot = null;
-  state.safetyNumber = null;
+  setSelectedRelationship(relationshipID);
   state.messageSyncStatus = "Opening encrypted relationship state…";
   activateClientView("chats");
   renderPersona();
@@ -1953,31 +1986,42 @@ function requireSelectedRelationship() {
 function renderPersona() {
   elements.personaName.textContent = state.persona.displayName;
   elements.relationshipCount.textContent = String(state.persona.relationships.length);
-  elements.relationshipList.replaceChildren(...state.persona.relationships.map((relationship) => {
+  renderRelationshipList();
+  renderPendingPairings();
+  renderSelectedMessages();
+}
+
+function renderRelationshipList() {
+  if (!state.persona) return;
+  const relationships = state.persona.relationships;
+  const query = elements.chatSearch.value.trim().toLocaleLowerCase();
+  const visible = relationships.filter((relationship) =>
+    relationship.peerIdentity.relationshipPseudonym.toLocaleLowerCase().includes(query));
+  elements.chatPicker.hidden = relationships.length === 0;
+  elements.chooseChat.hidden = relationships.length < 2;
+  elements.chatSearchEmpty.hidden = visible.length > 0 || relationships.length === 0;
+  elements.relationshipList.replaceChildren(...visible.map((relationship) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "relationshipChoice";
     item.disabled = state.messageBusy;
+    item.disabled = state.messageBusy;
     item.setAttribute("aria-pressed", String(relationship.relationshipID === state.selectedRelationshipID));
     const name = document.createElement("strong");
     name.textContent = relationship.peerIdentity.relationshipPseudonym;
-    const detail = document.createElement("span");
-    detail.textContent = relationship.localPolicy.consent === "blocked"
-      ? "Blocked locally"
-      : "Pairwise-only relationship";
-    item.append(name, detail);
-    item.addEventListener("click", () => selectRelationship(relationship.relationshipID));
+    item.append(name);
+    const consent = relationship.localPolicy.consent;
+    if (consent === "blocked" || consent === "pendingRequest") {
+      const detail = document.createElement("span");
+      detail.textContent = consent === "blocked" ? "Blocked locally" : "Message request";
+      item.append(detail);
+    }
+    item.addEventListener("click", () => {
+      if (elements.chatChooser.open) elements.chatChooser.close();
+      selectRelationship(relationship.relationshipID);
+    });
     return item;
   }));
-  if (state.persona.relationships.length === 0) {
-    elements.relationshipList.hidden = true;
-    elements.relationshipSectionLabel.hidden = true;
-  } else {
-    elements.relationshipList.hidden = false;
-    elements.relationshipSectionLabel.hidden = false;
-  }
-  renderPendingPairings();
-  renderSelectedMessages();
 }
 
 function renderSelectedMessages() {

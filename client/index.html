@@ -66,11 +66,25 @@
         <button class="nativeNavItem nativeChatsHome" data-client-view-target="chats"><span aria-hidden="true">◌</span><span>Chats</span></button>
         <button class="nativeNavItem" data-client-view-target="people"><span aria-hidden="true">◎</span><span>People</span></button>
         <button class="nativeNavItem" data-client-view-target="you"><span aria-hidden="true">◇</span><span>You</span></button>
-        <p class="nativeSectionLabel" id="relationshipSectionLabel" hidden>Chats</p>
-        <div id="relationshipList" class="contactList nativeChatList" hidden></div>
+        <div id="desktopChatPicker">
+          <div id="chatPicker" class="chatPicker" hidden>
+            <label class="visuallyHidden" for="chatSearch">Find a chat</label>
+            <input id="chatSearch" type="search" placeholder="Find a chat" autocomplete="off" spellcheck="false">
+            <div id="relationshipList" class="contactList nativeChatList"></div>
+            <p id="chatSearchEmpty" class="fieldHint" role="status" hidden>No matching chats.</p>
+          </div>
+        </div>
       </nav>
       <footer class="nativeSidebarStatus"><span class="statusDot" aria-hidden="true"></span><span id="status">Ready</span></footer>
     </aside>
+
+    <dialog id="chatChooser" class="chatChooser" aria-labelledby="chatChooserTitle">
+      <div class="chatChooserHeading">
+        <h2 id="chatChooserTitle">Choose a chat</h2>
+        <form method="dialog"><button type="submit" class="subtle">Close</button></form>
+      </div>
+      <div id="mobileChatPicker"></div>
+    </dialog>
 
     <section class="nativeContent">
       <header class="nativeToolbar">
@@ -86,7 +100,10 @@
         <section class="clientView conversationView" id="chatsView" data-client-view="chats">
           <div class="messagingPanel nativeConversation">
           <div class="messageHeader">
-            <div><p class="eyebrow">Selected relationship</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>
+            <div class="conversationTitle">
+              <div><p class="eyebrow">Conversation</p><h3 id="selectedRelationshipName">No relationship selected</h3></div>
+              <button id="chooseChat" class="subtle" type="button" aria-haspopup="dialog" aria-controls="chatChooser" hidden>Switch chat</button>
+            </div>
             <div class="buttonRow"><button id="syncMessages" class="subtle" hidden disabled>Sync</button><button id="resumeOutbox" class="subtle" hidden disabled>Retry outbox</button><button id="retryRouteTeardown" class="danger" hidden disabled>Retry route teardown</button><button id="muteRelationship" class="subtle" hidden disabled>Mute 8 hours</button></div>
           </div>
           <p id="selectedRelationshipState" class="relationshipState" role="status">Complete a fresh pairing to begin messaging.</p>

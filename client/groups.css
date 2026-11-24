@@ -17,3 +17,10 @@
   .hero { padding: 24px 14px; }
   #selectedGroupID { max-width: 100%; }
 }
+#groupList button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.groupDetails { min-width: 0; max-width: 100%; font-size: .82rem; }
+.groupDetails summary { color: var(--muted); cursor: pointer; }
+.groupDetails code { display: block; margin-top: 6px; overflow-wrap: anywhere; }

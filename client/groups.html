@@ -62,7 +62,7 @@
         </section>
 
         <section class="panel compact" id="groupListPanel" hidden>
-          <div class="pairingHeader"><div><p class="eyebrow">Local groups</p><h3>Group book</h3></div></div>
+          <div class="pairingHeader"><h3>Groups</h3></div>
           <div id="groupList" class="contactList">No groups yet.</div>
         </section>
       </aside>
@@ -74,13 +74,19 @@
           <details><summary>Runtime details</summary><p>The loopback Core companion holds group-scoped credentials and plaintext locally; relays receive encrypted group events only.</p></details>
         </section>
         <div id="groupConversationPanel" hidden>
-        <div class="chatHeader"><div><p class="eyebrow">Group workspace</p><h2 id="selectedGroupName">Selected group</h2></div></div>
+        <div class="chatHeader">
+          <div><h2 id="selectedGroupName">Selected group</h2><p class="fieldHint" id="groupMembership"></p></div>
+          <details class="groupDetails">
+            <summary>Group identifier</summary>
+            <code id="selectedGroupID"></code>
+          </details>
+        </div>
         <section class="panel messagingPanel">
           <div class="messageHeader">
-            <div><p class="eyebrow">Group conversation</p><h3 id="selectedGroupID">No group selected</h3></div>
-            <div class="buttonRow"><button id="syncGroup" class="subtle" hidden disabled>Retry sync</button></div>
+            <h3>Messages</h3>
+            <div class="buttonRow"><button id="syncGroup" class="subtle" disabled>Sync now</button></div>
           </div>
-          <div id="groupMessages" class="messageList" aria-live="polite">Select a group to view its encrypted local history.</div>
+          <div id="groupMessages" class="messageList" role="log" aria-label="Group messages"></div>
           <label for="groupMessage">Message</label>
           <textarea id="groupMessage" rows="3" maxlength="16384" placeholder="Write with this group-only credential" disabled></textarea>
           <div class="messageComposerActions"><button id="sendGroupMessage" disabled>Encrypt and send</button></div>

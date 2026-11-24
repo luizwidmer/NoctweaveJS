@@ -35,6 +35,7 @@ test("a delayed old-session sync cannot display its conversation in a new sessio
     repository: {}, vault: { lock() {} },
     messaging: oldMessaging,
     selectedRelationshipID: "A",
+    drafts: new Map(),
     messageBusy: false,
     pairingBusy: new Set()
   };
